@@ -76,6 +76,7 @@ namespace hyprland {
     std::optional<double> scale;
     std::optional<int> transform;  ///< 0-7.
     std::optional<int> bitdepth;  ///< 8 or 10.
+    std::optional<std::string> cm;  ///< Colour management preset, e.g. `srgb` or `hdr` (Lua dialect only).
     std::optional<bool> disabled;
   };
 

@@ -533,6 +533,9 @@ namespace hyprland {
     if (rule.bitdepth) {
       call += std::format(", bitdepth = {}", *rule.bitdepth);
     }
+    if (rule.cm) {
+      call += ", cm = " + lua_quote(*rule.cm);
+    }
     if (rule.disabled) {
       call += *rule.disabled ? ", disabled = true" : ", disabled = false";
     }
@@ -559,6 +562,12 @@ namespace hyprland {
     }
     if (rule.bitdepth) {
       value += std::format(",bitdepth,{}", *rule.bitdepth);
+    }
+    if (rule.cm) {
+      if (has_any(*rule.cm, separators)) {
+        return std::nullopt;
+      }
+      value += ",cm," + *rule.cm;
     }
     return value;
   }
