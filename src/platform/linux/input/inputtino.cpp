@@ -7,6 +7,7 @@
 #include <libevdev/libevdev.h>
 
 // local includes
+#include "input_options.h"
 #include "inputtino_common.h"
 #include "inputtino_gamepad.h"
 #include "inputtino_keyboard.h"
@@ -110,16 +111,8 @@ namespace platf {
   }
 
   platform_caps::caps_t get_capabilities() {
-    platform_caps::caps_t caps = 0;
-    // TODO: if has_uinput
-    caps |= platform_caps::pen_touch;
-
-    // We support controller touchpad input only when emulating the PS5 controller
-    if (config::input.gamepad == "ds5"sv || config::input.gamepad == "auto"sv) {
-      caps |= platform_caps::controller_touch;
-    }
-
-    return caps;
+    // Pen and touch need the per-client uinput devices; controller touchpads only exist on the emulated PS5 pad.
+    return input_options::capabilities(touch_pen::uinput_available(), config::input.native_pen_touch, config::input.gamepad);
   }
 
   util::point_t get_mouse_loc(input_t &input) {

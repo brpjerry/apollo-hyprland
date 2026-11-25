@@ -145,14 +145,18 @@ if(WAYLAND_FOUND)
     GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-data-control-unstable-v1)
     # wp-color-management-v1: HDR state and metadata of the captured output (wayland-protocols >= 1.41).
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/color-management" color-management-v1)
+    # Unicode text input (HYP-14). The protocol lives in wlroots' tree, not in wlr-protocols or wayland-protocols.
+    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party" "wlroots-protocols" virtual-keyboard-unstable-v1)
+    pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 
     include_directories(
             SYSTEM
             ${WAYLAND_INCLUDE_DIRS}
+            ${XKBCOMMON_INCLUDE_DIRS}
             ${CMAKE_BINARY_DIR}/generated-src
     )
 
-    list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES} gbm)
+    list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES} ${XKBCOMMON_LIBRARIES} gbm)
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wlgrab.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/extgrab.cpp"
@@ -164,6 +168,14 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/clipboard.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/clipboard.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/clipboard_logic.h"
+            # Unicode text through zwp_virtual_keyboard_v1 (HYP-14)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.cpp"
+            # Non-normalized key codes through the host layout (HYP-25)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp"
             # platf::vdisplay: Hyprland headless outputs (HYP-06)
@@ -250,6 +262,11 @@ file(GLOB_RECURSE INPUTTINO_SOURCES
         ${CMAKE_SOURCE_DIR}/src/platform/linux/input/inputtino*.h
         ${CMAKE_SOURCE_DIR}/src/platform/linux/input/inputtino*.cpp)
 list(APPEND PLATFORM_TARGET_FILES ${INPUTTINO_SOURCES})
+# Per-client touch screen and pen tablet (HYP-24) and the input option decisions (HYP-24, HYP-25)
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/input_options.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.cpp")
 
 # build libevdev before the libinputtino target
 if(EXTERNAL_PROJECT_LIBEVDEV_USED)

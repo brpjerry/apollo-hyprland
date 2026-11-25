@@ -334,7 +334,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td rowspan="6">Choices</td>
         <td>ds4</td>
         <td>DualShock 4 controller (PS4)
-            @note{This option applies to Windows only.}</td>
+            @note{This option applies to Windows only. On Linux it is accepted as ds5.}</td>
     </tr>
     <tr>
         <td>ds5</td>
@@ -349,7 +349,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>x360</td>
         <td>Xbox 360 controller
-            @note{This option applies to Windows only.}</td>
+            @note{This option applies to Windows only. On Linux it is accepted as xone.}</td>
     </tr>
     <tr>
         <td>xone</td>
@@ -366,7 +366,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Allow Select/Back inputs to also trigger DS4 touchpad click. Useful for clients looking to
             emulate touchpad click on Xinput devices.
-            @hint{Only applies when gamepad is set to ds4 manually. Unused in other gamepad modes.}
+            @hint{Only applies when gamepad is set to ds4 manually (ds5 on Linux). Unused in other gamepad modes.}
         </td>
     </tr>
     <tr>
@@ -519,6 +519,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             The initial delay, in milliseconds, before repeating keys. Controls how fast keys will
             repeat themselves.
+            @note{Not used on Linux: applications repeat held keys themselves, at the host's repeat settings.}
         </td>
     </tr>
     <tr>
@@ -543,6 +544,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             How often keys repeat every second.
             @tip{This configurable option supports decimals.}
+            @note{Not used on Linux: applications repeat held keys themselves, at the host's repeat settings.}
         </td>
     </tr>
     <tr>
@@ -573,7 +575,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             <br>
             Disable if keys on the client are generating the wrong input on the host.
-            @caution{Applies to Windows only.}
+            @note{On Linux, this applies to clients that send key codes not normalized to a US layout: when enabled,
+            their letter and digit keys are typed with the host key that has that character in the host's keyboard
+            layout; when disabled, they are sent as US-layout key positions.}
         </td>
     </tr>
     <tr>

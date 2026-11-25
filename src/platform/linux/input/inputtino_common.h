@@ -11,7 +11,9 @@
 
 // standard includes
 #include <atomic>
+#include <chrono>
 #include <format>
+#include <map>
 
 // local includes
 #include "inputtino_abs.h"
@@ -19,6 +21,12 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
+#include "touch_pen.h"
+
+#ifdef SUNSHINE_BUILD_WAYLAND
+  #include "keyboard_layout.h"
+  #include "virtual_keyboard.h"
+#endif
 
 using namespace std::literals;
 
@@ -74,6 +82,19 @@ namespace platf {
 
     /// Places absolute mouse moves in the live desktop layout (see inputtino_abs.h).
     abs_input::layout_mapper_t mouse_mapper;
+
+#ifdef SUNSHINE_BUILD_WAYLAND
+    /// Types Unicode text (see virtual_keyboard.h); connected on the first text event.
+    std::unique_ptr<keyboard::virtual_keyboard_t> text_keyboard;
+    /// When to try connecting text_keyboard again after a failure.
+    std::chrono::steady_clock::time_point text_keyboard_retry {};
+
+    /// Host layout of the uinput keyboard, for non-normalized key codes (HYP-25).
+    keyboard_layout::host_layout_t keyboard_layout {"Keyboard passthrough"};
+#endif
+
+    /// Key codes pressed through the keyboard -> the code actually pressed, so releases match their press.
+    std::map<std::uint16_t, std::uint16_t> pressed_keys;
   };
 
   /**
@@ -95,26 +116,27 @@ namespace platf {
     }
 
     client_input_raw_t(input_t &input, int client_id):
-        touch(inputtino::TouchScreen::create({
-          .name = client_device_name("Touch passthrough", client_id),
-          .vendor_id = 0xBEEF,
-          .product_id = 0xDEAD,
-          .version = 0x111,
-        })),
-        pen(inputtino::PenTablet::create({
-          .name = client_device_name("Pen passthrough", client_id),
-          .vendor_id = 0xBEEF,
-          .product_id = 0xDEAD,
-          .version = 0x111,
-        })),
         touch_mapper(client_device_name("Touch passthrough", client_id), abs_input::hyprland_compositor()),
         pen_mapper(client_device_name("Pen passthrough", client_id), abs_input::hyprland_compositor()) {
       global = (input_raw_t *) input.get();
+      std::string error;
+      touch = touch_pen::uinput_device_t::touch_screen(client_device_name("Touch passthrough", client_id), error);
       if (!touch) {
-        BOOST_LOG(warning) << "Unable to create virtual touch screen: " << touch.getErrorMessage();
+        BOOST_LOG(warning) << "Unable to create virtual touch screen: " << error;
       }
+      pen = touch_pen::uinput_device_t::pen_tablet(client_device_name("Pen passthrough", client_id), error);
       if (!pen) {
-        BOOST_LOG(warning) << "Unable to create virtual pen tablet: " << pen.getErrorMessage();
+        BOOST_LOG(warning) << "Unable to create virtual pen tablet: " << error;
+      }
+    }
+
+    ~client_input_raw_t() override {
+      // Lift whatever is still down before the devices go away.
+      if (touch) {
+        touch->write(touch_state.handle(LI_TOUCH_EVENT_CANCEL_ALL, 0, {}));
+      }
+      if (pen) {
+        pen->write(pen_state.handle(LI_TOUCH_EVENT_CANCEL_ALL, {}));
       }
     }
 
@@ -124,8 +146,10 @@ namespace platf {
     // input context, because each connected client may be sending their own independent
     // pen/touch events. To maintain separation, we expose separate pen and touch devices
     // for each client.
-    inputtino::Result<inputtino::TouchScreen> touch;
-    inputtino::Result<inputtino::PenTablet> pen;
+    std::unique_ptr<touch_pen::uinput_device_t> touch;
+    std::unique_ptr<touch_pen::uinput_device_t> pen;
+    touch_pen::touch_state_t touch_state;
+    touch_pen::pen_state_t pen_state;
 
     // Keep each device bound to the output being streamed (see inputtino_abs.h).
     abs_input::output_mapper_t touch_mapper;

@@ -8,6 +8,7 @@
 #include <libevdev/libevdev.h>
 
 // local includes
+#include "input_options.h"
 #include "inputtino_common.h"
 #include "inputtino_gamepad.h"
 #include "src/config.h"
@@ -53,16 +54,31 @@ namespace platf::gamepad {
     return inputtino::PS5Joypad::create({.name = "Sunshine PS5 (virtual) pad", .vendor_id = 0x054C, .product_id = 0x0CE6, .version = 0x8111, .device_phys = device_mac, .device_uniq = device_mac});
   }
 
+  std::function<void(int, int)> rumble_handler(feedback_queue_t feedback_queue, std::uint16_t idx, std::shared_ptr<joypad_state> gamepad) {
+    return [feedback_queue, idx, gamepad](int low_freq, int high_freq) {
+      // Ignored when forward_rumble is off, and not resent when unchanged.
+      if (!input_options::forward_rumble(config::input.forward_rumble, gamepad->last_rumble, low_freq, high_freq)) {
+        return;
+      }
+
+      gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rumble(idx, low_freq, high_freq);
+      feedback_queue->raise(msg);
+      gamepad->last_rumble = msg;
+    };
+  }
+
   int alloc(input_raw_t *raw, const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t feedback_queue) {
     ControllerType selectedGamepadType;
+    // The Windows names x360 and ds4 stand for the closest Linux pads.
+    const auto gamepad_type = input_options::gamepad_type(config::input.gamepad);
 
-    if (config::input.gamepad == "xone"sv) {
+    if (gamepad_type == "xone"sv) {
       BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will be Xbox One controller (manual selection)"sv;
       selectedGamepadType = XboxOneWired;
-    } else if (config::input.gamepad == "ds5"sv) {
+    } else if (gamepad_type == "ds5"sv) {
       BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will be DualSense 5 controller (manual selection)"sv;
       selectedGamepadType = DualSenseWired;
-    } else if (config::input.gamepad == "switch"sv) {
+    } else if (gamepad_type == "switch"sv) {
       BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will be Nintendo Pro controller (manual selection)"sv;
       selectedGamepadType = SwitchProWired;
     } else if (metadata.type == LI_CTYPE_XBOX) {
@@ -105,16 +121,7 @@ namespace platf::gamepad {
     }
 
     auto gamepad = std::make_shared<joypad_state>(joypad_state {});
-    auto on_rumble_fn = [feedback_queue, idx = id.clientRelativeIndex, gamepad](int low_freq, int high_freq) {
-      // Don't resend duplicate rumble data
-      if (gamepad->last_rumble.type == platf::gamepad_feedback_e::rumble && gamepad->last_rumble.data.rumble.lowfreq == low_freq && gamepad->last_rumble.data.rumble.highfreq == high_freq) {
-        return;
-      }
-
-      gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rumble(idx, low_freq, high_freq);
-      feedback_queue->raise(msg);
-      gamepad->last_rumble = msg;
-    };
+    auto on_rumble_fn = rumble_handler(feedback_queue, id.clientRelativeIndex, gamepad);
 
     switch (selectedGamepadType) {
       case XboxOneWired:
@@ -191,8 +198,12 @@ namespace platf::gamepad {
       return;
     }
 
-    std::visit([gamepad_state](inputtino::Joypad &gc) {
-      gc.set_pressed_buttons(gamepad_state.buttonFlags);
+    auto buttons = gamepad_state.buttonFlags;
+    if (std::holds_alternative<inputtino::PS5Joypad>(*gamepad->joypad)) {
+      buttons = input_options::ds5_buttons(buttons, config::input.gamepad, config::input.ds4_back_as_touchpad_click);
+    }
+    std::visit([&gamepad_state, buttons](inputtino::Joypad &gc) {
+      gc.set_pressed_buttons(buttons);
       gc.set_stick(inputtino::Joypad::LS, gamepad_state.lsX, gamepad_state.lsY);
       gc.set_stick(inputtino::Joypad::RS, gamepad_state.rsX, gamepad_state.rsY);
       gc.set_triggers(gamepad_state.lt, gamepad_state.rt);
@@ -264,11 +275,14 @@ namespace platf::gamepad {
 
   std::vector<supported_gamepad_t> &supported_gamepads(input_t *input) {
     if (!input) {
+      // x360 and ds4 are accepted in configs as the Windows names of xone and ds5 (input_options::gamepad_type()).
       static std::vector gps {
         supported_gamepad_t {"auto", true, ""},
         supported_gamepad_t {"xone", false, ""},
         supported_gamepad_t {"ds5", false, ""},
         supported_gamepad_t {"switch", false, ""},
+        supported_gamepad_t {"x360", false, ""},
+        supported_gamepad_t {"ds4", false, ""},
       };
 
       return gps;
