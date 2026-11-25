@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <format>
+#include <map>
 
 // local includes
 #include "inputtino_abs.h"
@@ -23,6 +24,7 @@
 #include "touch_pen.h"
 
 #ifdef SUNSHINE_BUILD_WAYLAND
+  #include "keyboard_layout.h"
   #include "virtual_keyboard.h"
 #endif
 
@@ -86,7 +88,13 @@ namespace platf {
     std::unique_ptr<keyboard::virtual_keyboard_t> text_keyboard;
     /// When to try connecting text_keyboard again after a failure.
     std::chrono::steady_clock::time_point text_keyboard_retry {};
+
+    /// Host layout of the uinput keyboard, for non-normalized key codes (HYP-25).
+    keyboard_layout::host_layout_t keyboard_layout {"Keyboard passthrough"};
 #endif
+
+    /// Key codes pressed through the keyboard -> the code actually pressed, so releases match their press.
+    std::map<std::uint16_t, std::uint16_t> pressed_keys;
   };
 
   /**

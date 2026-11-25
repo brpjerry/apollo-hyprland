@@ -8,6 +8,7 @@
 #include <libevdev/libevdev.h>
 
 // local includes
+#include "input_options.h"
 #include "inputtino_common.h"
 #include "inputtino_keyboard.h"
 #include "src/config.h"
@@ -154,13 +155,31 @@ namespace platf::keyboard {
   };
 
   void update(input_raw_t *raw, uint16_t modcode, bool release, uint8_t flags) {
-    if (raw->keyboard) {
-      if (release) {
-        (*raw->keyboard).release(modcode);
-      } else {
-        (*raw->keyboard).press(modcode);
+    if (!raw->keyboard) {
+      return;
+    }
+    if (release) {
+      // Release what the press pressed, even if the layout changed in between.
+      auto it = raw->pressed_keys.find(modcode);
+      auto code = it != raw->pressed_keys.end() ? it->second : modcode;
+      if (it != raw->pressed_keys.end()) {
+        raw->pressed_keys.erase(it);
+      }
+      (*raw->keyboard).release(code);
+      return;
+    }
+
+    auto code = modcode;
+#ifdef SUNSHINE_BUILD_WAYLAND
+    if (input_options::key_mapping(flags, config::input.always_send_scancodes) == input_options::key_mapping_e::host_layout) {
+      code = raw->keyboard_layout.translate(modcode);
+      if (code != modcode) {
+        BOOST_LOG(verbose) << std::format("Non-normalized key {:#04x} is host key {:#04x}", modcode, code);
       }
     }
+#endif
+    raw->pressed_keys[modcode] = code;
+    (*raw->keyboard).press(code);
   }
 
   /**

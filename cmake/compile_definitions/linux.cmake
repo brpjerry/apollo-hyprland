@@ -170,6 +170,9 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.cpp"
+            # Non-normalized key codes through the host layout (HYP-25)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp"
             # platf::vdisplay: Hyprland headless outputs (HYP-06)

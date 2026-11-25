@@ -768,9 +768,14 @@ namespace input {
           task_pool.cancel(key_press_repeat_id);
         }
 
+        // Linux: Wayland and X11 clients repeat held keys themselves, and evdev drops a press for a key that is
+        // already down, so a synthesized repeat would only replay the synthetic modifiers around the key
+        // (key_repeat_delay and key_repeat_frequency do not apply).
+#ifndef __linux__
         if (config::input.key_repeat_delay.count() > 0) {
           key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_delay, keyCode, packet->flags, synthetic_modifiers).task_id;
         }
+#endif
       } else {
         // Already released
         return;
