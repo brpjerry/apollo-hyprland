@@ -1,5 +1,6 @@
 ---
-# Builds Apollo on Arch Linux (the Hyprland port's reference platform) and runs the unit tests on every PR.
+# Builds Apollo on Arch Linux (the Hyprland port's reference platform), runs the unit tests, and runs the live
+# compositor tests against a headless Hyprland on every PR.
 # Uses the same scripts as a local build (docs/building.md, "Arch Linux + Hyprland"), with CUDA disabled because
 # the runners have no CUDA toolkit or NVIDIA GPU.
 name: Linux (Arch, Hyprland)
@@ -61,4 +62,82 @@ jobs:
         with:
           name: test-results
           path: build/tests/test_results.xml
+          if-no-files-found: ignore
+
+      # The live job runs on the host VM (it needs /dev/dri), so hand it the test binary without debug info.
+      - name: Stage test binary
+        run: |
+          mkdir -p live-tests
+          strip --strip-debug -o live-tests/test_sunshine build/tests/test_sunshine
+
+      - name: Upload test binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-binary
+          path: live-tests/test_sunshine
+          retention-days: 3
+
+  # Runs the *LiveTest suites against a private headless Hyprland (scripts/hyprland/test-live.sh).
+  # Hyprland 0.57 cannot run without a DRM device, even with only headless outputs, and the runners have no GPU, so this
+  # loads vkms (a virtual KMS device; Mesa renders on it in software) on the host and passes /dev/dri to an Arch
+  # container. If vkms cannot be loaded the tests are skipped with a warning.
+  # continue-on-error: the vkms + llvmpipe path has not been verified on GitHub's runners yet (locally the harness runs
+  # on a GPU render node). Remove it once this job has been green on a few PRs.
+  live_hyprland:
+    name: Live Hyprland tests (headless)
+    needs: build_and_test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download test binary
+        uses: actions/download-artifact@v4
+        with:
+          name: test-binary
+          path: build/tests
+
+      - name: Load vkms
+        id: vkms
+        run: |
+          if ! sudo modprobe vkms; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" && sudo modprobe vkms || true
+          fi
+          for _ in $(seq 1 50); do
+            compgen -G '/dev/dri/card*' > /dev/null && break
+            sleep 0.1
+          done
+          if compgen -G '/dev/dri/card*' > /dev/null; then
+            ls -l /dev/dri
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Live Hyprland tests skipped::vkms could not be loaded; Hyprland needs a DRM device"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run live tests
+        if: steps.vkms.outputs.available == 'true'
+        run: |
+          docker run --rm --device /dev/dri -v "$GITHUB_WORKSPACE:/w" -w /w archlinux:latest bash -euo pipefail -c '
+            pacman -Syu --noconfirm --needed base-devel hyprland mesa \
+              libva libdrm wayland libpulse libevdev avahi libayatana-appindicator libnotify miniupnpc libcap numactl \
+              opus icu
+            chmod +x build/tests/test_sunshine
+            if ldd build/tests/test_sunshine | grep "not found"; then
+              echo "test_sunshine has unresolved libraries; update the package list above" >&2
+              exit 1
+            fi
+            Hyprland --version
+            scripts/hyprland/test-live.sh /w/build --gtest_color=yes
+          '
+
+      - name: Upload Hyprland logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyprland-live-logs
+          path: build/tests/hyprland-live
           if-no-files-found: ignore
