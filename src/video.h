@@ -350,6 +350,48 @@ namespace video {
   bool validate_encoder(encoder_t &encoder, bool expect_failure);
 
   /**
+   * @brief Keeps the encoder at the client's frame rate: a frame that comes in well before the next frame slot is
+   *        dropped, and one that comes in about on time is stamped with the slot's time.
+   */
+  class encode_frame_limiter_t {
+  public:
+    explicit encode_frame_limiter_t(std::chrono::nanoseconds frame_interval):
+        interval {frame_interval},
+        variation {frame_interval / 4} {
+    }
+
+    /**
+     * @brief Decides whether to encode a captured frame.
+     * @param timestamp The frame's capture timestamp.
+     * @param repeat True if the frame repeats unchanged content (see platf::img_t::repeat).
+     * @return The timestamp to encode the frame with, or std::nullopt to drop it.
+     */
+    std::optional<std::chrono::steady_clock::time_point> admit(std::chrono::steady_clock::time_point timestamp, bool repeat) {
+      if (repeat) {
+        // Unchanged content only keeps the encoder fed. Encode it, but leave the schedule alone: otherwise the
+        // next real frame, if it comes within 3/4 of an interval, is dropped and waits for the next repeat.
+        return timestamp;
+      }
+      auto time_diff = timestamp - next_slot;
+      if (time_diff < -variation) {
+        return std::nullopt;
+      }
+      if (time_diff < variation) {
+        timestamp = next_slot;
+      } else {
+        next_slot = timestamp;
+      }
+      next_slot += interval;
+      return timestamp;
+    }
+
+  private:
+    std::chrono::nanoseconds interval;
+    std::chrono::nanoseconds variation;
+    std::chrono::steady_clock::time_point next_slot {};
+  };
+
+  /**
    * @brief Check if we can allow probing for the encoders.
    * @return True if there should be no issues with the probing, false if we should prevent it.
    */

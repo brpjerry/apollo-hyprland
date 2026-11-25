@@ -457,6 +457,7 @@ namespace wl {
 
       auto timestamp = slot < timestamps.size() ? timestamps[slot] : std::nullopt;
       img_out->frame_timestamp = next_timestamp(timestamp.value_or(std::chrono::steady_clock::now()));
+      img_out->repeat = false;
 
       // Kept to repeat it while the screen does not change (this also keeps its dma-buf from being reused).
       last_img = img_out;
@@ -492,6 +493,7 @@ namespace wl {
         copy_rows(last_img->data, last_img->row_pitch, img_out->data, img_out->row_pitch, (std::size_t) width * 4, (std::size_t) height, false);
       }
       img_out->frame_timestamp = next_timestamp(std::chrono::steady_clock::now());
+      img_out->repeat = true;
       last_img = img_out;
 
       if (!push_captured_image_cb(std::move(img_out), true)) {
