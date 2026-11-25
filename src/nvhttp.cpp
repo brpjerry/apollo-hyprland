@@ -30,6 +30,7 @@
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "platform/vdisplay.h"
 #include "process.h"
 #include "rtsp.h"
 #include "stream.h"
@@ -38,10 +39,6 @@
 #include "uuid.h"
 #include "video.h"
 #include "zwpad.h"
-
-#ifdef _WIN32
-  #include "platform/windows/virtual_display.h"
-#endif
 
 using namespace std::literals;
 
@@ -930,14 +927,14 @@ namespace nvhttp {
 
       tree.put("root.Permission", std::to_string((uint32_t)named_cert_p->perm));
 
-    #ifdef _WIN32
-      tree.put("root.VirtualDisplayCapable", true);
-      if (!!(named_cert_p->perm & PERM::_all_actions)) {
-        tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
-      } else {
-        tree.put("root.VirtualDisplayDriverReady", true);
+      if (const auto vdisplay_status = platf::vdisplay::status(); vdisplay_status != platf::vdisplay::status_e::unavailable) {
+        tree.put("root.VirtualDisplayCapable", true);
+        if (!!(named_cert_p->perm & PERM::_all_actions)) {
+          tree.put("root.VirtualDisplayDriverReady", vdisplay_status == platf::vdisplay::status_e::ok);
+        } else {
+          tree.put("root.VirtualDisplayDriverReady", true);
+        }
       }
-    #endif
     } else {
       tree.put("root.mac", "00:00:00:00:00:00");
       tree.put("root.Permission", "0");
