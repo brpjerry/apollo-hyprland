@@ -8,6 +8,7 @@
 // standard includes
 #include <filesystem>
 #include <format>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <string>
@@ -145,6 +146,9 @@ namespace nvhttp {
 
   // uniqueID, session
   std::unordered_map<std::string, pair_session_t> map_id_sess;
+  /// Guards map_id_sess and the one-time PIN state. Recursive: pair() holds it across a whole request and calls
+  /// helpers (remove_session, start_pair_session) that take it too.
+  std::recursive_mutex pair_mutex;
   client_t client_root;
   std::atomic<uint32_t> session_id_counter;
 
@@ -468,12 +472,15 @@ namespace nvhttp {
   }
 
   void remove_session(const pair_session_t &sess) {
+    std::lock_guard lock {pair_mutex};
     map_id_sess.erase(sess.client.uniqueID);
   }
 
   pair_session_t &start_pair_session(pair_session_t &&sess) {
     // A client that starts pairing again (the user retried, or a second host entry for this server) gets a
     // fresh session. Reusing its unfinished one would make the next PIN an out-of-order getservercert.
+    std::lock_guard lock {pair_mutex};
+    sess.started = std::chrono::steady_clock::now();
     auto key = sess.client.uniqueID;
     return map_id_sess.insert_or_assign(std::move(key), std::move(sess)).first->second;
   }
@@ -716,6 +723,9 @@ namespace nvhttp {
       response->close_connection_after_response = true;
     });
 
+    // Held for the whole request; declared after the fail guard, so the reply is written after it is released.
+    std::lock_guard lock {pair_mutex};
+
     if (!config::sunshine.enable_pairing) {
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", "Pairing is disabled for this instance");
@@ -831,6 +841,7 @@ namespace nvhttp {
 
   bool pin(std::string pin, std::string name) {
     pt::ptree tree;
+    std::lock_guard lock {pair_mutex};
     if (map_id_sess.empty()) {
       return false;
     }
@@ -854,7 +865,19 @@ namespace nvhttp {
       return false;
     }
 
-    auto &sess = std::begin(map_id_sess)->second;
+    // The PIN belongs to the newest client still waiting for one: the pairing the user just started. A client that
+    // gave up leaves its session behind, and with several in the map begin() would pick one at random.
+    auto waiting = std::end(map_id_sess);
+    for (auto it = std::begin(map_id_sess); it != std::end(map_id_sess); ++it) {
+      if (it->second.last_phase == PAIR_PHASE::NONE && (waiting == std::end(map_id_sess) || it->second.started > waiting->second.started)) {
+        waiting = it;
+      }
+    }
+    if (waiting == std::end(map_id_sess)) {
+      return false;
+    }
+
+    auto &sess = waiting->second;
     if (!name.empty()) {
       sess.client.name = name;
     }
@@ -1763,7 +1786,10 @@ namespace nvhttp {
     // Wait for any event
     shutdown_event->view();
 
-    map_id_sess.clear();
+    {
+      std::lock_guard lock {pair_mutex};
+      map_id_sess.clear();
+    }
 
     https_server.stop();
     http_server.stop();
@@ -1777,6 +1803,7 @@ namespace nvhttp {
       return "";
     }
 
+    std::lock_guard lock {pair_mutex};
     one_time_pin = crypto::rand_alphabet(4, "0123456789"sv);
     otp_passphrase = passphrase;
     otp_device_name = deviceName;

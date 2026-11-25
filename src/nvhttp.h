@@ -125,18 +125,25 @@ namespace nvhttp {
      * @brief used as a security measure to prevent out of order calls
      */
     PAIR_PHASE last_phase = PAIR_PHASE::NONE;
+
+    /**
+     * @brief When the client sent getservercert; a PIN goes to the newest session waiting for one.
+     */
+    std::chrono::steady_clock::time_point started {};
   };
 
   /**
    * @brief removes the temporary pairing session
    * @param sess
+   * @note Takes the pairing lock (recursive), like every function that touches the pairing sessions. The web UI
+   *       thread (pin) and the nvhttp server threads (pair) both change them.
    */
   void remove_session(const pair_session_t &sess);
 
   /**
    * @brief Store the pairing session a client opened with getservercert.
    * @param sess The new session; its client.uniqueID is the key.
-   * @return The stored session.
+   * @return The stored session. It stays valid only while the caller holds the pairing lock (pair() does).
    */
   pair_session_t &start_pair_session(pair_session_t &&sess);
 
