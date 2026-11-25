@@ -148,7 +148,14 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp")
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp"
+            # platf::vdisplay: Hyprland headless outputs (HYP-06)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/vdisplay.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/vdisplay.cpp")
+else()
+    # platf::vdisplay: no virtual display support without Wayland
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/vdisplay_stub.cpp")
 endif()
 
 # x11
@@ -242,7 +249,6 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/vdisplay.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/vdisplay_stub.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/glad/src/egl.c"
         "${CMAKE_SOURCE_DIR}/third-party/glad/src/gl.c"
         "${CMAKE_SOURCE_DIR}/third-party/glad/include/EGL/eglplatform.h"

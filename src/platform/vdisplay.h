@@ -4,6 +4,7 @@
  *
  * Each platform provides one implementation:
  * - Windows: src/platform/windows/vdisplay.cpp, a thin wrapper over the SudoVDA driver (VDISPLAY::*).
+ * - Linux with Wayland: src/platform/linux/hyprland/vdisplay.cpp, Hyprland headless outputs.
  * - Elsewhere: src/platform/vdisplay_stub.cpp, which reports status_e::unavailable and never creates a display.
  *
  * The rules for which identity, name and mode a session's display gets live in common code (src/process.cpp).
@@ -55,6 +56,7 @@ namespace platf::vdisplay {
 
   /**
    * @brief Remove displays left behind by a previous run that crashed. No-op on Windows.
+   * @note Safe to call while sessions run: displays this process created are never removed.
    */
   void cleanup_stale();
 

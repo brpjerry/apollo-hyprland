@@ -1575,6 +1575,12 @@ namespace proc {
       std::this_thread::sleep_for(1s);
     }
 
+    // There is no watchdog on Linux: remove virtual displays a crashed earlier run left behind.
+    // Displays of the current session are kept.
+    if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
+      platf::vdisplay::cleanup_stale();
+    }
+
     auto proc_opt = proc::parse(file_name);
 
     if (proc_opt) {
