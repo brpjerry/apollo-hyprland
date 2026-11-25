@@ -28,6 +28,7 @@ extern "C" {
 #include "logging.h"
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
+#include "platform/display_selection.h"
 #include "sync.h"
 #include "video.h"
 
@@ -1121,15 +1122,20 @@ namespace video {
 
     // If we had a name previously, let's try to find it in the new list
     if (!current_display_name.empty()) {
-      for (int x = 0; x < display_names.size(); ++x) {
-        if (display_names[x] == current_display_name) {
-          current_display_index = x;
-          return;
-        }
+#ifdef __linux__
+      // Wayland capture names outputs by connector (e.g. DP-3); older configs used the enumeration index.
+      constexpr bool allow_legacy_index = true;
+#else
+      constexpr bool allow_legacy_index = false;
+#endif
+      if (auto index = platf::find_display(display_names, current_display_name, allow_legacy_index)) {
+        current_display_index = (int) *index;
+        return;
       }
 
       // The old display was removed, so we'll start back at the first display again
-      BOOST_LOG(warning) << "Previous active display ["sv << current_display_name << "] is no longer present"sv;
+      BOOST_LOG(warning) << "Previous active display ["sv << current_display_name << "] is no longer present; available displays: "sv
+                         << platf::join_display_names(display_names);
     } else {
       for (int x = 0; x < display_names.size(); ++x) {
         if (display_names[x] == output_name) {
@@ -2078,7 +2084,15 @@ namespace video {
     auto offsetX = (config.width - w2) * 0.5f;
     auto offsetY = (config.height - h2) * 0.5f;
 
-    return input::touch_port_t {
+    // The letterboxing above is in captured-frame pixels. When the backend reports a logical size
+    // (offsets and layout in scaled desktop units, e.g. Wayland), convert so that input coordinates
+    // come out in that same space.
+    float to_desktop_units = 1.0f;
+    if (display->logical_width > 0 && wd > 0) {
+      to_desktop_units = display->logical_width / wd;
+    }
+
+    input::touch_port_t port {
       {
         display->offset_x,
         display->offset_y,
@@ -2089,8 +2103,11 @@ namespace video {
       display->env_height,
       offsetX,
       offsetY,
-      1.0f / scalar,
+      to_desktop_units / scalar,
     };
+    port.env_x = display->env_x;
+    port.env_y = display->env_y;
+    return port;
   }
 
   std::unique_ptr<platf::encode_device_t> make_encode_device(platf::display_t &disp, const encoder_t &encoder, const config_t &config) {

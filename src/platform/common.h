@@ -538,7 +538,21 @@ namespace platf {
     int offset_x, offset_y;
     int env_width, env_height;
 
+    // Size of the captured frame in pixels.
     int width, height;
+
+    /**
+     * Size of this display in the coordinate space of offset_x/offset_y and env_*.
+     * 0 means the same as width/height. Backends set it when that space is not hardware pixels,
+     * e.g. Wayland, where offsets and the layout are in logical (scaled) pixels.
+     */
+    int logical_width {0}, logical_height {0};
+
+    /**
+     * Top-left corner of the env_width x env_height bounding box, in the same space as offset_x/offset_y.
+     * 0 unless the desktop layout has outputs at negative coordinates (Wayland sets it to the layout minimum).
+     */
+    int env_x {0}, env_y {0};
 
   protected:
     // collect capture timing data (at loglevel debug)

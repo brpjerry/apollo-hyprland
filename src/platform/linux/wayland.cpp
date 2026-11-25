@@ -3,6 +3,7 @@
  * @brief Definitions for Wayland capture.
  */
 // standard includes
+#include <algorithm>
 #include <cstdlib>
 
 // platform includes
@@ -103,6 +104,17 @@ namespace wl {
     return true;
   }
 
+  namespace {
+    /// Highest wl_output version we handle (v4 adds the name and description events).
+#ifdef WL_OUTPUT_NAME_SINCE_VERSION
+    constexpr std::uint32_t max_wl_output_version = 4;
+#else
+    constexpr std::uint32_t max_wl_output_version = 2;
+#endif
+    /// Highest zxdg_output_manager_v1 version described by the protocol XML we generate code from.
+    constexpr std::uint32_t max_xdg_output_manager_version = 3;
+  }  // namespace
+
   wl_registry *display_t::registry() {
     return wl_display_get_registry(display_internal.get());
   }
@@ -114,6 +126,10 @@ namespace wl {
         &CLASS_CALL(monitor_t, wl_mode),
         &CLASS_CALL(monitor_t, wl_done),
         &CLASS_CALL(monitor_t, wl_scale),
+#ifdef WL_OUTPUT_NAME_SINCE_VERSION
+        &CLASS_CALL(monitor_t, wl_name),
+        &CLASS_CALL(monitor_t, wl_description),
+#endif
       },
       xdg_listener {
         &CLASS_CALL(monitor_t, xdg_position),
@@ -124,27 +140,51 @@ namespace wl {
       } {
   }
 
-  inline void monitor_t::xdg_name(zxdg_output_v1 *, const char *name) {
-    this->name = name;
+  void monitor_t::xdg_name(zxdg_output_v1 *, const char *name) {
+    // wl_output.name (v4) is the authoritative connector name; xdg_output.name is the fallback.
+    if (!has_wl_name) {
+      this->name = name;
+    }
 
-    BOOST_LOG(info) << "Name: "sv << this->name;
+    BOOST_LOG(debug) << "xdg_output name: "sv << name;
   }
 
   void monitor_t::xdg_description(zxdg_output_v1 *, const char *description) {
-    this->description = description;
+    if (this->description.empty()) {
+      this->description = description;
+    }
 
-    BOOST_LOG(info) << "Found monitor: "sv << this->description;
+    BOOST_LOG(debug) << "xdg_output description: "sv << description;
   }
 
   void monitor_t::xdg_position(zxdg_output_v1 *, std::int32_t x, std::int32_t y) {
-    viewport.offset_x = x;
-    viewport.offset_y = y;
+    geometry.logical_x = x;
+    geometry.logical_y = y;
 
-    BOOST_LOG(info) << "Offset: "sv << x << 'x' << y;
+    BOOST_LOG(debug) << "Logical position: "sv << x << ',' << y;
   }
 
   void monitor_t::xdg_size(zxdg_output_v1 *, std::int32_t width, std::int32_t height) {
-    BOOST_LOG(info) << "Logical size: "sv << width << 'x' << height;
+    geometry.logical_width = width;
+    geometry.logical_height = height;
+
+    BOOST_LOG(debug) << "Logical size: "sv << width << 'x' << height;
+  }
+
+  void monitor_t::wl_geometry(
+    wl_output *wl_output,
+    std::int32_t x,
+    std::int32_t y,
+    std::int32_t physical_width,
+    std::int32_t physical_height,
+    std::int32_t subpixel,
+    const char *make,
+    const char *model,
+    std::int32_t transform
+  ) {
+    geometry.transform = transform;
+
+    BOOST_LOG(debug) << "Transform: "sv << transform;
   }
 
   void monitor_t::wl_mode(
@@ -154,10 +194,29 @@ namespace wl {
     std::int32_t height,
     std::int32_t refresh
   ) {
-    viewport.width = width;
-    viewport.height = height;
+    if (!(flags & WL_OUTPUT_MODE_CURRENT)) {
+      return;
+    }
 
-    BOOST_LOG(info) << "Resolution: "sv << width << 'x' << height;
+    geometry.mode_width = width;
+    geometry.mode_height = height;
+
+    BOOST_LOG(debug) << "Mode: "sv << width << 'x' << height;
+  }
+
+  void monitor_t::wl_scale(wl_output *wl_output, std::int32_t factor) {
+    geometry.integer_scale = factor;
+  }
+
+  void monitor_t::wl_name(wl_output *wl_output, const char *name) {
+    this->name = name;
+    has_wl_name = true;
+
+    BOOST_LOG(debug) << "wl_output name: "sv << name;
+  }
+
+  void monitor_t::wl_description(wl_output *wl_output, const char *description) {
+    this->description = description;
   }
 
   void monitor_t::listen(zxdg_output_manager_v1 *output_manager) {
@@ -193,12 +252,12 @@ namespace wl {
       BOOST_LOG(info) << "Found interface: "sv << interface << '(' << id << ") version "sv << version;
       monitors.emplace_back(
         std::make_unique<monitor_t>(
-          (wl_output *) wl_registry_bind(registry, id, &wl_output_interface, 2)
+          (wl_output *) wl_registry_bind(registry, id, &wl_output_interface, std::min(version, max_wl_output_version))
         )
       );
     } else if (!std::strcmp(interface, zxdg_output_manager_v1_interface.name)) {
       BOOST_LOG(info) << "Found interface: "sv << interface << '(' << id << ") version "sv << version;
-      output_manager = (zxdg_output_manager_v1 *) wl_registry_bind(registry, id, &zxdg_output_manager_v1_interface, version);
+      output_manager = (zxdg_output_manager_v1 *) wl_registry_bind(registry, id, &zxdg_output_manager_v1_interface, std::min(version, max_xdg_output_manager_version));
 
       this->interface[XDG_OUTPUT] = true;
     } else if (!std::strcmp(interface, zwlr_screencopy_manager_v1_interface.name)) {
@@ -342,7 +401,7 @@ namespace wl {
     shm_info.height = height;
     shm_info.stride = stride;
 
-    BOOST_LOG(debug) << "Screencopy supports SHM format: "sv << format;
+    BOOST_LOG(debug) << "Screencopy supports SHM format: "sv << format << " ("sv << width << 'x' << height << ')';
   }
 
   // DMA-BUF format callback
@@ -357,7 +416,7 @@ namespace wl {
     dmabuf_info.width = width;
     dmabuf_info.height = height;
 
-    BOOST_LOG(debug) << "Screencopy supports DMA-BUF format: "sv << format;
+    BOOST_LOG(debug) << "Screencopy supports DMA-BUF format: "sv << format << " ("sv << width << 'x' << height << ')';
   }
 
   // Flags callback
@@ -557,6 +616,63 @@ namespace wl {
     display.roundtrip();
 
     return std::move(interface.monitors);
+  }
+
+  namespace {
+    struct frame_size_probe_t {
+      std::optional<extent_t> size;
+      bool done {false};
+
+      static void buffer(void *data, zwlr_screencopy_frame_v1 *, std::uint32_t, std::uint32_t width, std::uint32_t height, std::uint32_t) {
+        auto self = static_cast<frame_size_probe_t *>(data);
+        self->size = extent_t {(int) width, (int) height};
+      }
+
+      static void linux_dmabuf(void *data, zwlr_screencopy_frame_v1 *, std::uint32_t, std::uint32_t width, std::uint32_t height) {
+        auto self = static_cast<frame_size_probe_t *>(data);
+        self->size = extent_t {(int) width, (int) height};
+      }
+
+      static void buffer_done(void *data, zwlr_screencopy_frame_v1 *) {
+        static_cast<frame_size_probe_t *>(data)->done = true;
+      }
+
+      static void failed(void *data, zwlr_screencopy_frame_v1 *) {
+        static_cast<frame_size_probe_t *>(data)->done = true;
+      }
+
+      static void flags(void *, zwlr_screencopy_frame_v1 *, std::uint32_t) {}
+
+      static void ready(void *, zwlr_screencopy_frame_v1 *, std::uint32_t, std::uint32_t, std::uint32_t) {}
+
+      static void damage(void *, zwlr_screencopy_frame_v1 *, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) {}
+    };
+
+    const zwlr_screencopy_frame_v1_listener frame_size_probe_listener {
+      .buffer = frame_size_probe_t::buffer,
+      .flags = frame_size_probe_t::flags,
+      .ready = frame_size_probe_t::ready,
+      .failed = frame_size_probe_t::failed,
+      .damage = frame_size_probe_t::damage,
+      .linux_dmabuf = frame_size_probe_t::linux_dmabuf,
+      .buffer_done = frame_size_probe_t::buffer_done,
+    };
+  }  // namespace
+
+  std::optional<extent_t> probe_frame_size(display_t &display, zwlr_screencopy_manager_v1 *screencopy_manager, wl_output *output) {
+    frame_size_probe_t probe;
+
+    auto frame = zwlr_screencopy_manager_v1_capture_output(screencopy_manager, 0, output);
+    zwlr_screencopy_frame_v1_add_listener(frame, &frame_size_probe_listener, &probe);
+
+    // The buffer events are sent right away. A roundtrip is enough for every protocol version:
+    // version 3 ends them with buffer_done, older versions only send buffer.
+    display.roundtrip();
+
+    // Destroying a frame that was never copied is allowed and does not capture anything.
+    zwlr_screencopy_frame_v1_destroy(frame);
+
+    return probe.size;
   }
 
   static bool validate() {
