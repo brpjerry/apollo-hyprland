@@ -297,36 +297,40 @@ int main(int argc, char *argv[]) {
 
   // Create signal handler after logging has been initialized
   auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-  on_signal(SIGINT, [&force_shutdown, &display_device_deinit_guard, shutdown_event]() {
-    BOOST_LOG(info) << "Interrupt handler called"sv;
+  // Returns a handler that starts the normal shutdown: optionally stop the running app (undo its prep commands and
+  // remove its display) while everything is still initialised, then raise the shutdown event and arm a watchdog.
+  auto make_shutdown_handler = [&force_shutdown, &display_device_deinit_guard, shutdown_event](std::string_view message, bool terminate_app) {
+    return [&force_shutdown, &display_device_deinit_guard, shutdown_event, message, terminate_app]() {
+      BOOST_LOG(info) << message;
 
-    auto task = []() {
-      BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
-      logging::log_flush();
-      lifetime::debug_trap();
+      auto task = []() {
+        BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
+        logging::log_flush();
+        lifetime::debug_trap();
+      };
+
+      if (terminate_app) {
+        proc::proc.terminate();
+      }
+
+      force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
+
+      shutdown_event->raise(true);
+      display_device_deinit_guard = nullptr;
     };
+  };
 
-    proc::proc.terminate();
+  on_signal(SIGINT, make_shutdown_handler("Interrupt handler called"sv, true));
 
-    force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
-
-    shutdown_event->raise(true);
-    display_device_deinit_guard = nullptr;
-  });
-
-  on_signal(SIGTERM, [&force_shutdown, &display_device_deinit_guard, shutdown_event]() {
-    BOOST_LOG(info) << "Terminate handler called"sv;
-
-    auto task = []() {
-      BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
-      logging::log_flush();
-      lifetime::debug_trap();
-    };
-    force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
-
-    shutdown_event->raise(true);
-    display_device_deinit_guard = nullptr;
-  });
+#ifdef _WIN32
+  on_signal(SIGTERM, make_shutdown_handler("Terminate handler called"sv, false));
+#else
+  // systemd stops the user service with SIGTERM when the graphical session ends, and the session leader's
+  // terminal or compositor going away delivers SIGHUP. Both must clean up like SIGINT so no app, virtual
+  // display or input device is left behind.
+  on_signal(SIGTERM, make_shutdown_handler("Terminate handler called"sv, true));
+  on_signal(SIGHUP, make_shutdown_handler("Hangup handler called"sv, true));
+#endif
 
 #ifdef _WIN32
   // Terminate gracefully on Windows when console window is closed

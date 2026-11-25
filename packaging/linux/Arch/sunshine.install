@@ -1,5 +1,15 @@
+# CAP_SYS_ADMIN is only needed for KMS capture, so it is not set by default: Wayland capture (wlgrab, used on
+# Hyprland and other wlroots compositors) does not need it, and a file capability makes the binary run in secure
+# mode, where the dynamic loader drops LD_* variables from the environment.
+# KMS users can opt in by installing with APOLLO_ENABLE_KMS_CAPTURE=1 set, or afterwards with:
+#   sudo setcap cap_sys_admin+p $(readlink -f /usr/bin/sunshine)
 do_setcap() {
-  setcap cap_sys_admin+p $(readlink -f usr/bin/sunshine)
+  if [ "${APOLLO_ENABLE_KMS_CAPTURE:-0}" = "1" ]; then
+    setcap cap_sys_admin+p "$(readlink -f usr/bin/sunshine)"
+  else
+    echo "Not setting CAP_SYS_ADMIN (only KMS capture needs it). To enable KMS capture, run:"
+    echo "  sudo setcap cap_sys_admin+p \$(readlink -f /usr/bin/sunshine)"
+  fi
 }
 
 do_udev_reload() {

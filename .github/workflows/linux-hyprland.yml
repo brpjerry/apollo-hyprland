@@ -1,0 +1,64 @@
+---
+# Builds Apollo on Arch Linux (the Hyprland port's reference platform) and runs the unit tests on every PR.
+# Uses the same scripts as a local build (docs/building.md, "Arch Linux + Hyprland"), with CUDA disabled because
+# the runners have no CUDA toolkit or NVIDIA GPU.
+name: Linux (Arch, Hyprland)
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build_and_test:
+    name: Build and unit test
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    timeout-minutes: 90
+    steps:
+      # git must be present before checkout, or actions/checkout falls back to a tarball without submodules.
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git base-devel cmake ninja boost libva libdrm wayland wayland-protocols libpulse libevdev \
+            avahi libayatana-appindicator libnotify nodejs npm miniupnpc nlohmann-json libcap numactl opus
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # The workspace is owned by the runner user, not the container's root; CMake runs git for the version.
+      - name: Trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Build
+        env:
+          CMAKE_EXTRA_ARGS: -DSUNSHINE_ENABLE_CUDA=OFF -DCUDA_FAIL_ON_MISSING=OFF
+        run: |
+          echo "::add-matcher::.github/matchers/gcc.json"
+          scripts/hyprland/build.sh "$GITHUB_WORKSPACE/build"
+
+      - name: Run unit tests
+        run: scripts/hyprland/test.sh "$GITHUB_WORKSPACE/build" --gtest_color=yes --gtest_output=xml:test_results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/tests/test_results.xml
+          if-no-files-found: ignore
