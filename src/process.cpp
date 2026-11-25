@@ -83,6 +83,16 @@ namespace proc {
           while (platf::process_group_running((std::uintptr_t) group.native_handle()) && (--exit_timeout).count() >= 0) {
             std::this_thread::sleep_for(1s);
           }
+#ifdef __linux__
+          // Its windows were asked to close first. SIGTERM gets a short last chance before the SIGKILL below.
+          if (exit_timeout.count() < 0 && platf::escalate_process_group_exit((std::uintptr_t) group.native_handle())) {
+            BOOST_LOG(info) << "App did not exit after closing its windows. Sent SIGTERM."sv;
+            exit_timeout = 3s;
+            while (platf::process_group_running((std::uintptr_t) group.native_handle()) && (--exit_timeout).count() >= 0) {
+              std::this_thread::sleep_for(1s);
+            }
+          }
+#endif
 
           if (exit_timeout.count() < 0) {
             BOOST_LOG(warning) << "App did not fully exit within the timeout. Terminating the app's remaining processes."sv;

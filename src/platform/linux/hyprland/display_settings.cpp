@@ -311,6 +311,14 @@ namespace hyprland {
     if (!(rest >> state >> result.ppid >> result.pgid)) {
       return std::nullopt;
     }
+    // session tty_nr tpgid flags minflt cminflt majflt cmajflt utime stime cutime cstime priority nice
+    // num_threads itrealvalue, then starttime. Optional: truncated lines keep start_time 0.
+    std::string skipped;
+    for (int i = 0; i < 16 && rest >> skipped; ++i) {
+    }
+    if (std::uint64_t start_time; rest >> start_time) {
+      result.start_time = start_time;
+    }
     return result;
   }
 

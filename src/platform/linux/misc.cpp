@@ -11,6 +11,8 @@
 // standard includes
 #include <fstream>
 #include <iostream>
+#include <mutex>
+#include <set>
 
 // platform includes
 #include <arpa/inet.h>
@@ -46,6 +48,7 @@
   #include "clipboard.h"
   #include "hyprland/ipc.h"
   #include "hyprland/session.h"
+  #include "hyprland/vdisplay.h"
 #endif
 
 #ifdef SUNSHINE_BUILD_GIO
@@ -457,14 +460,54 @@ std::string get_local_ip_for_gateway() {
     return unsetenv(name.c_str());
   }
 
+  namespace {
+    std::mutex windows_closed_mutex;
+    /// Process groups whose windows request_process_group_exit() asked to close, and which got no SIGTERM yet.
+    std::set<pid_t> windows_closed_groups;
+  }  // namespace
+
   bool request_process_group_exit(std::uintptr_t native_handle) {
-    if (kill(-((pid_t) native_handle), SIGTERM) == 0 || errno == ESRCH) {
+    const auto pgid = (pid_t) native_handle;
+#ifdef SUNSHINE_BUILD_WAYLAND
+    // Like WM_CLOSE on Windows: ask the app's windows to close, so it can save or ask the user first.
+    if (auto ipc = hyprland::ipc_t::connect()) {
+      // Only an Apollo virtual display is the app's own; never close other windows on a physical monitor.
+      const auto &output = config::video.output_name;
+      const auto stream_output = hyprland::is_vdisplay_output_name(output) ? output : std::string {};
+      if (int closed = hyprland::close_app_windows(*ipc, pgid, stream_output); closed > 0) {
+        BOOST_LOG(info) << "Asked "sv << closed << " window(s) of process group "sv << pgid << " to close"sv;
+        std::lock_guard lock {windows_closed_mutex};
+        windows_closed_groups.insert(pgid);
+        return true;
+      }
+    }
+#endif
+    {
+      std::lock_guard lock {windows_closed_mutex};
+      windows_closed_groups.erase(pgid);  // a stale entry from an earlier group with the same id
+    }
+    if (kill(-pgid, SIGTERM) == 0 || errno == ESRCH) {
       BOOST_LOG(debug) << "Successfully sent SIGTERM to process group: "sv << native_handle;
       return true;
     } else {
       BOOST_LOG(warning) << "Unable to send SIGTERM to process group ["sv << native_handle << "]: "sv << errno;
       return false;
     }
+  }
+
+  bool escalate_process_group_exit(std::uintptr_t native_handle) {
+    const auto pgid = (pid_t) native_handle;
+    {
+      std::lock_guard lock {windows_closed_mutex};
+      if (windows_closed_groups.erase(pgid) == 0) {
+        return false;
+      }
+    }
+    if (kill(-pgid, SIGTERM) == 0) {
+      BOOST_LOG(debug) << "Sent SIGTERM to process group: "sv << pgid;
+      return true;
+    }
+    return false;
   }
 
   bool process_group_running(std::uintptr_t native_handle) {
