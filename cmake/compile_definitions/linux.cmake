@@ -143,14 +143,18 @@ if(WAYLAND_FOUND)
     # Clipboard sync: ext-data-control-v1 (wayland-protocols >= 1.39), falling back to wlr-data-control.
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-data-control" ext-data-control-v1)
     GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-data-control-unstable-v1)
+    # Unicode text input (HYP-14). The protocol lives in wlroots' tree, not in wlr-protocols or wayland-protocols.
+    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party" "wlroots-protocols" virtual-keyboard-unstable-v1)
+    pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 
     include_directories(
             SYSTEM
             ${WAYLAND_INCLUDE_DIRS}
+            ${XKBCOMMON_INCLUDE_DIRS}
             ${CMAKE_BINARY_DIR}/generated-src
     )
 
-    list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES} gbm)
+    list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES} ${XKBCOMMON_LIBRARIES} gbm)
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wlgrab.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/extgrab.cpp"
@@ -161,6 +165,11 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/clipboard.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/clipboard.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/clipboard_logic.h"
+            # Unicode text through zwp_virtual_keyboard_v1 (HYP-14)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp"
             # platf::vdisplay: Hyprland headless outputs (HYP-06)

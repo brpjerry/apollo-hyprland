@@ -11,6 +11,7 @@
 
 // standard includes
 #include <atomic>
+#include <chrono>
 #include <format>
 
 // local includes
@@ -19,6 +20,10 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
+
+#ifdef SUNSHINE_BUILD_WAYLAND
+  #include "virtual_keyboard.h"
+#endif
 
 using namespace std::literals;
 
@@ -74,6 +79,13 @@ namespace platf {
 
     /// Places absolute mouse moves in the live desktop layout (see inputtino_abs.h).
     abs_input::layout_mapper_t mouse_mapper;
+
+#ifdef SUNSHINE_BUILD_WAYLAND
+    /// Types Unicode text (see virtual_keyboard.h); connected on the first text event.
+    std::unique_ptr<keyboard::virtual_keyboard_t> text_keyboard;
+    /// When to try connecting text_keyboard again after a failure.
+    std::chrono::steady_clock::time_point text_keyboard_retry {};
+#endif
   };
 
   /**
