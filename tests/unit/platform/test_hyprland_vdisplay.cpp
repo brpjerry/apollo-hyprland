@@ -76,6 +76,7 @@ namespace {
         return true;
       };
       o.state_dir = tmp_.path() / "state";
+      o.settings_file = settings_file();
       o.timeout = 500ms;
       o.poll_interval = 10ms;
       return o;
@@ -83,6 +84,10 @@ namespace {
 
     fs::path state_dir() const {
       return tmp_.path() / "state";
+    }
+
+    fs::path settings_file() const {
+      return tmp_.path() / "vdisplay_settings.json";
     }
 
     std::vector<std::string> requests() {
@@ -161,6 +166,8 @@ namespace {
       static const std::regex output_re {"output = \"([^\"]+)\""};
       static const std::regex mode_re {"mode = \"(\\d+)x(\\d+)@([0-9.]+)\""};
       static const std::regex position_re {"position = \"([^\"]+)\""};
+      static const std::regex scale_re {"scale = ([0-9.]+)"};
+      static const std::regex transform_re {"transform = ([0-7])"};
       std::smatch match;
 
       if (req == "j/status") {
@@ -230,6 +237,12 @@ namespace {
           it->width = std::stoi(match[1]);
           it->height = std::stoi(match[2]);
           it->refresh = std::stod(match[3]);
+        }
+        if (std::regex_search(req, match, scale_re)) {
+          it->scale = std::stod(match[1]);
+        }
+        if (std::regex_search(req, match, transform_re)) {
+          it->transform = std::stoi(match[1]);
         }
         if (std::regex_search(req, match, position_re)) {
           const std::string pos = match[1];
@@ -645,6 +658,105 @@ TEST(HyprlandVdisplayTest, SetModeOnlyForOwnOutputs) {
   EXPECT_FALSE(vd.set_mode("DP-1", {1280, 720, 60000}, false));
   EXPECT_FALSE(vd.set_mode("APOLLO-deadbeef", {1280, 720, 60000}, false));
   EXPECT_EQ(hypr.count_requests("/eval"), 0u);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, RemembersTheScaleTheUserSetAcrossSessions) {
+  // HYP-12 acceptance: set scale 2 on a client's virtual display, disconnect, reconnect: scale is 2 again.
+  fake_hyprland_t hypr;
+  {
+    hyprland::vdisplay_t vd {hypr.options()};
+    ASSERT_EQ(vd.init(), status_e::ok);
+    hypr.wait_for_listener();
+    ASSERT_EQ(vd.create(client_identity(), "Living Room", {2560, 1600, 120000}), client_output);
+    ASSERT_TRUE(vd.set_mode(client_output, {2560, 1600, 120000}, false));
+    EXPECT_FALSE(fs::exists(hypr.settings_file())) << "nothing to remember yet";
+
+    // The user changes the scale during the stream (hyprctl, nwg-displays, ...).
+    hypr.update_monitor(client_output, [](fake_monitor_t &m) {
+      m.scale = 2.0;
+    });
+    EXPECT_TRUE(vd.remove(client_identity()));
+  }
+  ASSERT_TRUE(fs::exists(hypr.settings_file()));
+  {
+    std::ifstream in {hypr.settings_file()};
+    auto json = nlohmann::json::parse(in);
+    EXPECT_EQ(json["displays"][client_output]["scale"], 2.0);
+    EXPECT_EQ(json["displays"][client_output]["client"], "Living Room");
+    EXPECT_FALSE(json["displays"][client_output].contains("position")) << "the position did not change";
+  }
+
+  // A new Apollo process (restart), same client.
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1920, 1080, 60000}), client_output);
+  EXPECT_EQ(hypr.count_requests(R"(/eval hl.monitor({ output = "APOLLO-1a2b3c4d", mode = "1920x1080@60.000", position = "auto-right", scale = 2 }))"), 1u);
+  auto m = hypr.monitor(client_output);
+  ASSERT_TRUE(m);
+  EXPECT_DOUBLE_EQ(m->scale, 2.0);
+
+  // Unchanged this time: the file stays as it was.
+  const auto before = fs::last_write_time(hypr.settings_file());
+  EXPECT_TRUE(vd.remove(client_identity()));
+  EXPECT_EQ(fs::last_write_time(hypr.settings_file()), before);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, ScaleFactorBecomesTheOutputScale) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+
+  // 1920x1080 at a 200% scale factor renders 3840x2160; at scale 2 the desktop keeps the client's logical size.
+  platf::vdisplay::mode_t mode {3840, 2160, 60000, 200};
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", mode), client_output);
+  ASSERT_TRUE(vd.set_mode(client_output, mode, false));
+  auto m = hypr.monitor(client_output);
+  ASSERT_TRUE(m);
+  EXPECT_DOUBLE_EQ(m->scale, 2.0);
+  EXPECT_TRUE(vd.remove(client_identity()));
+  EXPECT_FALSE(fs::exists(hypr.settings_file())) << "Apollo's own scale is not a user change";
+
+  // The next session without a scale factor must not inherit scale 2 from the rule Hyprland keeps.
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1920, 1080, 60000}), client_output);
+  m = hypr.monitor(client_output);
+  ASSERT_TRUE(m);
+  EXPECT_DOUBLE_EQ(m->scale, 1.0);
+  EXPECT_TRUE(vd.remove(client_identity()));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, RemembersPositionOnlyWhenNotIsolated) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+
+  // Isolated: Apollo owns the position; moving it is not remembered.
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  ASSERT_TRUE(vd.set_mode(client_output, {1280, 720, 60000}, true));
+  hypr.update_monitor(client_output, [](fake_monitor_t &m) {
+    m.x = 0;
+    m.y = -720;
+  });
+  EXPECT_TRUE(vd.remove(client_identity()));
+  EXPECT_FALSE(fs::exists(hypr.settings_file()));
+
+  // Not isolated: the user put it above DP-1, and it goes there next time.
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  hypr.update_monitor(client_output, [](fake_monitor_t &m) {
+    m.x = 0;
+    m.y = -720;
+  });
+  EXPECT_TRUE(vd.remove(client_identity()));
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  auto m = hypr.monitor(client_output);
+  ASSERT_TRUE(m);
+  EXPECT_EQ(m->x, 0);
+  EXPECT_EQ(m->y, -720);
+  EXPECT_TRUE(vd.remove(client_identity()));
 }
 
 #endif

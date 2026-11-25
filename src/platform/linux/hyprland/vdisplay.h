@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -25,6 +26,7 @@
 #include <vector>
 
 // local includes
+#include "display_settings.h"
 #include "ipc.h"
 #include "src/platform/vdisplay.h"
 #include "src/uuid.h"
@@ -109,6 +111,11 @@ namespace hyprland {
       std::chrono::milliseconds poll_interval {50};
       /// Gap between an isolated virtual display and the rest of the layout, in logical pixels.
       int isolation_gap = 1000;
+      /// File with the remembered per-client settings (HYP-12). Empty: nothing is remembered.
+      /// Default: `vdisplay_settings.json` next to Apollo's state file (`file_state`).
+      std::filesystem::path settings_file;
+      /// Looks up a process for window placement. Default: read_proc_stat().
+      std::function<std::optional<proc_stat_t>(int pid)> read_stat;
     };
 
     /**
@@ -138,6 +145,10 @@ namespace hyprland {
 
     /**
      * @brief Create (or reuse) the output for an identity and give it a mode.
+     *
+     * The remembered settings for the output (scale, transform, bit depth, position) are applied with the mode;
+     * `mode.scale_percent` other than 100 sets the scale unless a scale was remembered under the same factor
+     * (see choose_scale()).
      * @return The output name, or "" on failure (the output is removed again in that case).
      */
     std::string create(const uuid_util::uuid_t &identity, const std::string &client_name, const platf::vdisplay::mode_t &mode);
@@ -149,7 +160,31 @@ namespace hyprland {
     bool set_mode(const std::string &name, const platf::vdisplay::mode_t &mode, bool isolated);
 
     /**
+     * @brief Show the display's workspace on it and move focus there, remembering the previous focus.
+     *
+     * The workspace is the remembered one, or `apollo-xxxxxxxx` (default_workspace_name()). It is created on the
+     * output, or moved there if it exists elsewhere (e.g. left behind on a physical monitor by the last session).
+     * New windows then open on the virtual display rather than on a physical monitor.
+     * @return true on success.
+     */
+    bool activate(const std::string &name);
+
+    /**
+     * @brief Move the windows of a launched app onto the display's workspace, now and whenever one opens later.
+     *
+     * A window belongs to the app if its process, or an ancestor, is in the process group (process_belongs_to_group()).
+     * Windows already on the display are left alone, and focus does not follow a moved window. Needs activate().
+     * Stops when the output is removed.
+     * @param pgid Process group of the launched app.
+     */
+    void track_process_group(const std::string &name, int pgid);
+
+    /**
      * @brief Remove the output for an identity.
+     *
+     * Before removing it, what the user changed on the output during the session (scale, transform, bit depth,
+     * position unless isolated, workspace) is saved for the next session (learn_settings()). If the display had focus
+     * and was activated, focus goes back to the workspace that had it before activate().
      * @return true if it existed and is gone.
      */
     bool remove(const uuid_util::uuid_t &identity);
@@ -166,9 +201,21 @@ namespace hyprland {
     std::optional<bool> any_monitor_active();
 
   private:
+    struct focus_t {
+      std::string monitor;
+      std::string workspace;
+    };
+
     struct owned_t {
       uuid_util::uuid_t identity;
       monitor_rule_t rule;  ///< The rule last applied, re-applied after a config reload.
+      display_settings_t settings;  ///< Remembered settings, as loaded at create().
+      int scale_percent = 100;  ///< The session's scale factor.
+      bool isolated = false;
+      std::optional<monitor_info_t> baseline;  ///< The output right after Apollo last applied its rule.
+      std::string workspace;  ///< Workspace shown by activate(); empty before.
+      std::optional<focus_t> previous_focus;  ///< Focus before activate().
+      int pgid = 0;  ///< Process group whose windows go to `workspace`; 0: none.
     };
 
     void on_event(std::string_view event, std::string_view data);
@@ -180,7 +227,14 @@ namespace hyprland {
     std::optional<std::vector<monitor_info_t>> monitors_locked();
     std::optional<monitor_info_t> find_monitor_locked(const std::string &name);
     bool apply_rule_locked(owned_t &entry, monitor_rule_t rule, const platf::vdisplay::mode_t &mode);
-    bool wait_for_mode_locked(const std::string &name, const platf::vdisplay::mode_t &mode, const std::optional<std::pair<int, int>> &position);
+    monitor_rule_t rule_for_locked(const std::string &name, const owned_t &entry, const platf::vdisplay::mode_t &mode, std::optional<std::string> isolated_position);
+    void learn_locked(const std::string &name, const owned_t &entry, const monitor_info_t &now);
+    void restore_focus_locked(const focus_t &focus);
+    bool focus_monitor_locked(const std::string &monitor);
+    void adopt_windows_locked(const std::vector<std::string> &addresses);
+    /// Wait until the output has the mode (and position, if given). Also waits for the rule's scale and transform,
+    /// which Hyprland applies together with the mode, but only fails on the mode and position.
+    bool wait_for_mode_locked(const monitor_rule_t &rule, const platf::vdisplay::mode_t &mode, const std::optional<std::pair<int, int>> &position);
     bool remove_output_locked(const std::string &name);
     void cleanup_stale_locked();
     /// Wait until more than `seen` monitoraddedv2 (added) or monitorremovedv2 events arrived for `name`.
@@ -202,6 +256,8 @@ namespace hyprland {
     std::unique_ptr<ipc_t> ipc_;
     std::unique_ptr<event_listener_t> listener_;
     std::map<std::string, owned_t> owned_;
+    std::map<std::string, emitted_fields_t> emitted_;  ///< Kept after removal; see emitted_fields_t.
+    display_settings_store_t store_;
     std::atomic<platf::vdisplay::status_e> status_ {platf::vdisplay::status_e::unknown};  ///< Written under mutex_, read without.
     bool cleaned_up_ = false;  ///< cleanup_stale() has run after a successful init().
 
@@ -210,6 +266,7 @@ namespace hyprland {
     std::map<std::string, std::uint64_t> added_;  ///< monitoraddedv2 events seen per output name.
     std::map<std::string, std::uint64_t> removed_;  ///< monitorremovedv2 events seen per output name.
     bool reload_pending_ = false;
+    std::deque<std::string> opened_windows_;  ///< Addresses from openwindow events, for the worker thread.
     bool stopping_ = false;
     std::thread reapply_thread_;
   };

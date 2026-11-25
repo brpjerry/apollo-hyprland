@@ -432,6 +432,9 @@ namespace hyprland {
       m.dpms_on = json_get<bool>(obj, "dpmsStatus", true);
       m.current_format = json_get<std::string>(obj, "currentFormat", "");
       m.focused = json_get<bool>(obj, "focused", false);
+      if (auto ws = obj.find("activeWorkspace"); ws != obj.end() && ws->is_object()) {
+        m.active_workspace = json_get<std::string>(*ws, "name", "");
+      }
       result.push_back(std::move(m));
     }
     return result;
