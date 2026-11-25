@@ -20,6 +20,17 @@ Dependencies vary depending on the distribution. You can reference our
 dependencies we use in Debian-based and Fedora-based distributions. Please submit a PR if you would like to extend the
 script to support other distributions.
 
+##### Arch Linux + Hyprland
+```bash
+sudo pacman -S --needed base-devel cmake ninja boost libva libdrm wayland wayland-protocols libpulse libevdev \
+  avahi libayatana-appindicator libnotify nodejs npm miniupnpc nlohmann-json libcap numactl opus cuda
+git submodule update --init --recursive
+scripts/hyprland/build.sh        # configures build/ with tests, CUDA and the system Boost
+scripts/hyprland/test.sh         # runs unit tests, skipping known baseline failures
+```
+`BOOST_ALLOW_NEWER_SYSTEM=ON` lets CMake use Arch's newer Boost instead of fetching Boost 1.89, whose CMake files
+fail under CMake 4.
+
 ##### CUDA Toolkit
 Sunshine requires CUDA Toolkit for NVFBC capture. There are two caveats to CUDA:
 
