@@ -31,11 +31,15 @@
 #include <boost/process/v1/group.hpp>
 #include <boost/process/v1/handles.hpp>
 #include <boost/process/v1/io.hpp>
+#include <boost/process/v1/args.hpp>
+#include <boost/process/v1/exe.hpp>
+#include <boost/process/v1/search_path.hpp>
 #include <boost/process/v1/start_dir.hpp>
 #include <fcntl.h>
 #include <unistd.h>
 
 // local includes
+#include "command.h"
 #include "graphics.h"
 #include "misc.h"
 #include "src/config.h"
@@ -331,25 +335,93 @@ std::string get_local_ip_for_gateway() {
   return local_ip;
 }
 
+  namespace {
+    /**
+     * @brief The installed apollo-run-elevated helper, or "" to use the `sh -c` fallback (e.g. in a build tree).
+     */
+    std::string elevation_helper() {
+#ifdef SUNSHINE_ELEVATION_HELPER
+      if (::access(SUNSHINE_ELEVATION_HELPER, X_OK) == 0) {
+        return SUNSHINE_ELEVATION_HELPER;
+      }
+#endif
+      return {};
+    }
+
+    template<class... Command>
+    bp::child spawn(boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group, Command &&...command) {
+      // clang-format off
+      if (!group) {
+        if (!file) {
+          return bp::child(std::forward<Command>(command)..., env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec);
+        }
+        else {
+          return bp::child(std::forward<Command>(command)..., env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec);
+        }
+      }
+      else {
+        if (!file) {
+          return bp::child(std::forward<Command>(command)..., env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec, *group);
+        }
+        else {
+          return bp::child(std::forward<Command>(command)..., env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec, *group);
+        }
+      }
+      // clang-format on
+    }
+  }  // namespace
+
+  /**
+   * @details On Linux, `interactive` is not used: every caller passes true (on Windows it gives console programs a
+   *          console window and does nothing for GUI programs), and wrapping every app in a terminal would be wrong.
+   *          A terminal is opened for elevated commands when `elevation_method = terminal`, so sudo can ask for the
+   *          password on the streamed display. See command.h for URLs and elevation.
+   */
   bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {
-    // clang-format off
-    if (!group) {
-      if (!file) {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec);
-      }
-      else {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec);
+    command::options_t options {
+      .elevated = elevated,
+      .elevation = command::parse_elevation(config::sunshine.elevation_method),
+      .working_dir = working_dir.string(),
+    };
+    if (elevated) {
+      options.helper = elevation_helper();
+      if (options.elevation == command::elevation_e::terminal) {
+        options.terminal = command::terminal_prefix(
+          [](const char *name) {
+            return std::getenv(name);
+          },
+          [](const std::string &name) {
+            return !bp::search_path(name).empty();
+          }
+        );
+        if (options.terminal.empty()) {
+          BOOST_LOG(error) << "No terminal found for elevated command ["sv << cmd << "]: install xdg-terminal-exec or set TERMINAL"sv;
+        }
       }
     }
-    else {
-      if (!file) {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec, *group);
-      }
-      else {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec, *group);
+
+    auto plan = command::plan(cmd, options);
+    if (!plan) {
+      BOOST_LOG(error) << "Couldn't prepare command ["sv << cmd << ']';
+      ec = std::make_error_code(std::errc::invalid_argument);
+      return bp::child();
+    }
+    if (plan->argv.empty()) {
+      return spawn(working_dir, env, file, ec, group, cmd);
+    }
+
+    BOOST_LOG(info) << (plan->url ? "Opening URL: "sv : "Running elevated: "sv) << command::to_string(plan->argv);
+    boost::filesystem::path exe = plan->argv.front();
+    if (!exe.has_parent_path()) {
+      exe = bp::search_path(plan->argv.front());
+      if (exe.empty()) {
+        BOOST_LOG(error) << "Couldn't find ["sv << plan->argv.front() << "] in PATH to run ["sv << cmd << ']';
+        ec = std::make_error_code(std::errc::no_such_file_or_directory);
+        return bp::child();
       }
     }
-    // clang-format on
+    std::vector<std::string> args {plan->argv.begin() + 1, plan->argv.end()};
+    return spawn(working_dir, env, file, ec, group, bp::exe = exe, bp::args = args);
   }
 
   /**

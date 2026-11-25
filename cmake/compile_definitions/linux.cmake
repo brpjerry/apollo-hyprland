@@ -269,6 +269,15 @@ if(EXTERNAL_PROJECT_LIBEVDEV_USED)
     add_dependencies(libinputtino libevdev)
 endif()
 
+# Elevated commands (HYP-23): the helper installed by packaging/linux.cmake, also named in the polkit action.
+if(NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK})
+    set(APOLLO_ELEVATION_HELPER "${CMAKE_INSTALL_FULL_LIBEXECDIR}/apollo/apollo-run-elevated")
+    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_ELEVATION_HELPER="${APOLLO_ELEVATION_HELPER}")
+endif()
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/command.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/command.cpp")
+
 # AppImage and Flatpak
 if (${SUNSHINE_BUILD_APPIMAGE})
     list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_APPIMAGE=1)

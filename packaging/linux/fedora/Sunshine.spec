@@ -261,6 +261,10 @@ fi
 # Metainfo
 %{_datadir}/metainfo/*.metainfo.xml
 
+# Elevated commands: helper and its polkit action
+%{_libexecdir}/apollo/apollo-run-elevated
+%{_datadir}/polkit-1/actions/*.run-elevated.policy
+
 # Assets
 %{_datadir}/sunshine/**
 

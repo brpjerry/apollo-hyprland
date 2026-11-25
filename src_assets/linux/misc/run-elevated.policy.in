@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Lets Apollo run commands marked "Elevated" as root through pkexec, with its own prompt.
+  Installed to /usr/share/polkit-1/actions (installing needs root). Without it Apollo falls back to pkexec's generic
+  action for /bin/sh, which asks for the same authorization.
+
+  The helper runs whatever command Apollo passes it. To skip the password for one user, add a polkit rule such as
+  /etc/polkit-1/rules.d/50-apollo.rules (equivalent to a NOPASSWD sudoers entry for that user):
+    polkit.addRule(function(action, subject) {
+      if (action.id == "@PROJECT_FQDN@.run-elevated" && subject.user == "USER" && subject.local && subject.active)
+        return polkit.Result.YES;
+    });
+-->
+<policyconfig>
+  <vendor>Apollo</vendor>
+  <vendor_url>https://github.com/ClassicOldSong/Apollo</vendor_url>
+  <action id="@PROJECT_FQDN@.run-elevated">
+    <description>Run an Apollo command as root</description>
+    <message>Apollo wants to run a command marked "Elevated" as root</message>
+    <icon_name>apollo</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@APOLLO_ELEVATION_HELPER@</annotate>
+  </action>
+</policyconfig>

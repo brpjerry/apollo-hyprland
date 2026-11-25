@@ -71,6 +71,18 @@ namespace proc {
     return std::make_unique<deinit_t>();
   }
 
+  /**
+   * @brief Say why an elevated command failed when its exit code tells: on Linux, 126 is pkexec's status for a
+   *        denied or dismissed authorization. The command is not retried.
+   */
+  void log_if_elevation_denied(bool elevated, int exit_code) {
+#ifdef __linux__
+    if (elevated && exit_code == 126) {
+      BOOST_LOG(error) << "Authorization to run the command as root was denied or dismissed (exit code 126); not retrying"sv;
+    }
+#endif
+  }
+
   void terminate_process_group(boost::process::v1::child &proc, boost::process::v1::group &group, std::chrono::seconds exit_timeout) {
     if (group.valid() && platf::process_group_running((std::uintptr_t) group.native_handle())) {
       if (exit_timeout.count() > 0) {
@@ -465,6 +477,7 @@ namespace proc {
 
       child.wait();
       auto ret = child.exit_code();
+      log_if_elevation_denied(cmd.elevated, ret);
       if (ret != 0 && ec != std::errc::permission_denied) {
         BOOST_LOG(error) << '[' << cmd.do_cmd << "] failed with code ["sv << ret << ']';
         return -1;
@@ -671,6 +684,7 @@ namespace proc {
           child.wait();
 
           auto ret = child.exit_code();
+          log_if_elevation_denied(cmd.elevated, ret);
           if (ret != 0 && ec != std::errc::permission_denied) {
             BOOST_LOG(error) << '[' << cmd.do_cmd << "] failed with code ["sv << ret << ']';
             break;
@@ -725,6 +739,7 @@ namespace proc {
           child.wait();
 
           auto ret = child.exit_code();
+          log_if_elevation_denied(cmd.elevated, ret);
           if (ret != 0 && ec != std::errc::permission_denied) {
             BOOST_LOG(error) << '[' << cmd.undo_cmd << "] failed with code ["sv << ret << ']';
             break;
@@ -772,6 +787,7 @@ namespace proc {
 
       child.wait();
       auto ret = child.exit_code();
+      log_if_elevation_denied(cmd.elevated, ret);
 
       if (ret != 0) {
         BOOST_LOG(warning) << "Return code ["sv << ret << ']';

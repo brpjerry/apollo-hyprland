@@ -288,6 +288,9 @@ namespace config {
     std::vector<prep_cmd_t> prep_cmds;
     std::vector<prep_cmd_t> state_cmds;
     std::vector<server_cmd_t> server_cmds;
+
+    /// Linux: how commands marked elevated run as root: `pkexec`, `sudo` (`sudo -n`) or `terminal` (sudo in a terminal).
+    std::string elevation_method;
   };
 
   extern video_t video;

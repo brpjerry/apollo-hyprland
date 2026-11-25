@@ -1,0 +1,13 @@
+#!/bin/sh
+# Runs a command for Apollo as root: apollo-run-elevated DIR COMMAND [ARGS...]
+#
+# Apollo starts it through pkexec (polkit action dev.lizardbyte.app.Sunshine.run-elevated, which names this file in
+# org.freedesktop.policykit.exec.path) or sudo, for app, prep and server commands marked "Elevated". It changes to
+# the command's working directory first, because pkexec starts programs in root's home directory.
+if [ $# -lt 2 ]; then
+  echo "usage: $0 DIR COMMAND [ARGS...]" >&2
+  exit 2
+fi
+cd -- "$1" 2>/dev/null || cd /
+shift
+exec "$@"
