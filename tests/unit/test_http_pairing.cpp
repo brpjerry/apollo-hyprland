@@ -5,7 +5,9 @@
 
 #include "../tests_common.h"
 
+#include <src/config.h>
 #include <src/nvhttp.h>
+#include <src/utility.h>
 
 using namespace nvhttp;
 
@@ -78,8 +80,18 @@ X4wnh1bwdiidqpcgyuKossLOPxbS786WmsesaAWPnpoY6M8aija+ALwNNuWWmyMg
 
 struct PairingTest: testing::TestWithParam<std::tuple<pairing_input, pairing_output>> {};
 
+// Bugs caught: 1, False positives: 0
+// Segfaulted since before the Hyprland port: a successful clientpairingsecret erased its session from the map
+// (erase(end()) when it was not stored) and then used it again.
 TEST_P(PairingTest, Run) {
   auto [input, expected] = GetParam();
+
+  // A successful pairing saves and reloads the state file unless the state is fresh; keep the test off disk.
+  bool fresh_state = config::sunshine.flags[config::flag::FRESH_STATE];
+  config::sunshine.flags[config::flag::FRESH_STATE] = true;
+  auto restore_flags = util::fail_guard([&]() {
+    config::sunshine.flags[config::flag::FRESH_STATE] = fresh_state;
+  });
 
   boost::property_tree::ptree tree;
 

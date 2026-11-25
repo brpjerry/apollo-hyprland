@@ -224,6 +224,8 @@ namespace proc {
       static_cast<int>(render_width),
       static_cast<int>(render_height),
       vdisplay_refresh_millihz(launch_session.fps, config::video.double_refreshrate),
+      // The same scale factor proc_t::execute() scaled the render size with; it becomes the output scale on Hyprland.
+      app.scale_factor != 100 ? app.scale_factor : static_cast<int>(launch_session.scale_factor),
     };
 
     auto display_name = vdisplay::create(identity.uuid, identity.name, mode, identity.uuid_str);
@@ -250,6 +252,11 @@ namespace proc {
       // Apply the isolated display settings
       vdisplay::set_mode(display_name, mode, true);
     }
+
+#ifndef _WIN32
+    // Focus the display and give it its workspace, so windows open on it rather than on a physical monitor.
+    vdisplay::activate(display_name);
+#endif
 
     return display_name;
   }
@@ -482,6 +489,11 @@ namespace proc {
         BOOST_LOG(warning) << "Couldn't run ["sv << _app.cmd << "]: System: "sv << ec.message();
         return -1;
       }
+#ifndef _WIN32
+      if (this->virtual_display) {
+        platf::vdisplay::track_process_group(this->display_name, static_cast<int>(_process_group.native_handle()));
+      }
+#endif
     }
 
     _app_launch_time = std::chrono::steady_clock::now();

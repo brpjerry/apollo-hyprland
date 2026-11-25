@@ -1061,7 +1061,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Isolates the virtual display.
             @note{Applies to Windows, and to Linux on Hyprland (the headless output is placed apart from the
-            other monitors so the pointer cannot cross over).}
+            other monitors so the pointer cannot cross over, and the pointer is moved onto it when the stream
+            starts).}
         </td>
     </tr>
     <tr>

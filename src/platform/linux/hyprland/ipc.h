@@ -60,6 +60,7 @@ namespace hyprland {
     std::string current_format;  ///< DRM format name, e.g. `XRGB8888` or `XRGB2101010`.
     bool focused = false;
     std::string cm_preset;  ///< `colorManagementPreset`: `srgb`, `wide`, `hdr`, `hdredid`, ... (empty if not reported).
+    std::string active_workspace;  ///< Name of the workspace shown (`activeWorkspace.name`), e.g. `1` or `apollo-1a2b3c4d`.
   };
 
   /**

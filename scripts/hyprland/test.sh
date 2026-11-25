@@ -5,6 +5,6 @@
 set -euo pipefail
 src="$(cd "$(dirname "$0")/../.." && pwd)"
 build="${1:-$src/build}"; shift || true
-baseline_failures='ConfigConsistencyTest.AllConfigOptionsExistInAllFiles:ConfigConsistencyTest.ConfigOptionsInSameOrderWithinSections:MdnsInstanceNameTests/*:DisplayDeviceConfigTest/ParseRefreshRateOption.*:DisplayDeviceConfigTest/DisplayModeRemapping.*:PairingTest.*:TestWorkingPairing/*:TestFailingPairing/*'
+baseline_failures='ConfigConsistencyTest.AllConfigOptionsExistInAllFiles:ConfigConsistencyTest.ConfigOptionsInSameOrderWithinSections:MdnsInstanceNameTests/*:DisplayDeviceConfigTest/ParseRefreshRateOption.*:DisplayDeviceConfigTest/DisplayModeRemapping.*'
 cd "$build/tests"
 exec ./test_sunshine --gtest_brief=1 --gtest_filter="-${baseline_failures}" "$@"

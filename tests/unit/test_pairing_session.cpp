@@ -7,6 +7,8 @@
 
 #include <src/nvhttp.h>
 
+#include <thread>
+
 using namespace nvhttp;
 
 namespace {
@@ -47,4 +49,56 @@ TEST(PairingSessionTest, RestartedPairingReplacesTheUnfinishedSession) {
   EXPECT_EQ(second.async_insert_pin.salt, SALT);
 
   remove_session(second);
+}
+
+// Bugs caught: 1, False positives: 0
+// pin() runs on the web UI thread while pair() runs on the nvhttp server threads; both change the session map.
+// Run under ThreadSanitizer to see races; without the lock this also crashes intermittently.
+TEST(PairingSessionTest, ConcurrentPairingAndPinEntry) {
+  constexpr int rounds = 2000;
+  auto id = [](int i) {
+    return "stress-client-" + std::to_string(i % 8);
+  };
+  std::thread starter([&] {
+    for (int i = 0; i < rounds; ++i) {
+      start_pair_session(make_session(id(i)));
+    }
+  });
+  std::thread remover([&] {
+    for (int i = 0; i < rounds; ++i) {
+      pair_session_t sess {};
+      sess.client.uniqueID = id(i);
+      remove_session(sess);
+    }
+  });
+  std::thread pinner([&] {
+    for (int i = 0; i < rounds; ++i) {
+      pin("1234", "");
+    }
+  });
+  starter.join();
+  remover.join();
+  pinner.join();
+
+  for (int i = 0; i < 8; ++i) {
+    pair_session_t sess {};
+    sess.client.uniqueID = id(i);
+    remove_session(sess);
+  }
+}
+
+// Bugs caught: 0, False positives: 0
+// With two clients waiting for a PIN, the PIN goes to the one that asked last (the one the user just started),
+// not to an arbitrary map entry.
+TEST(PairingSessionTest, PinGoesToTheNewestWaitingSession) {
+  auto &older = start_pair_session(make_session("pin-older-client"));
+  auto &newer = start_pair_session(make_session("pin-newer-client"));
+
+  pin("1234", "");
+
+  EXPECT_EQ(older.last_phase, PAIR_PHASE::NONE);
+  EXPECT_EQ(newer.last_phase, PAIR_PHASE::GETSERVERCERT);
+
+  remove_session(newer);
+  remove_session(older);
 }

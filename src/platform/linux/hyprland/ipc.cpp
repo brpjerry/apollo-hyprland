@@ -433,6 +433,9 @@ namespace hyprland {
       m.current_format = json_get<std::string>(obj, "currentFormat", "");
       m.focused = json_get<bool>(obj, "focused", false);
       m.cm_preset = json_get<std::string>(obj, "colorManagementPreset", "");
+      if (auto ws = obj.find("activeWorkspace"); ws != obj.end() && ws->is_object()) {
+        m.active_workspace = json_get<std::string>(*ws, "name", "");
+      }
       result.push_back(std::move(m));
     }
     return result;

@@ -26,6 +26,13 @@ namespace platf::vdisplay {
     return false;
   }
 
+  bool activate(const std::string &) {
+    return false;
+  }
+
+  void track_process_group(const std::string &, int) {
+  }
+
   bool remove(const uuid_util::uuid_t &) {
     return false;
   }

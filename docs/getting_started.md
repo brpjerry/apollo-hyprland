@@ -479,6 +479,41 @@ socket; the Audio/Video tab of the web UI shows the status. A virtual display is
   whose DPMS is off and captures it as solid black, so such a monitor does not count. Encoders are then probed on a
   temporary 800x600 output, which is removed again right after.
 
+The output name is the same for a client on every session (for apps with *Use App Identity*, the same for the app),
+so a client's virtual display can be told apart from the others.
+
+**Focus and workspace.** When the stream starts, Sunshine shows a workspace named after the output (`apollo-` and the
+same 8 hex digits) on the virtual display and moves focus there, so the windows you open land on the stream rather
+than on a physical monitor. Windows of the app Sunshine launched are moved to that workspace even when they open
+elsewhere (they are recognised by the app's process group). When the app quits, focus goes back to the workspace
+that had it before the stream, if focus is still on the virtual display. Windows left on the stream's workspace move
+to a physical monitor with the workspace, and come back with it on the next session.
+
+**Remembered settings.** Changes you make to a client's virtual display during a stream are saved when the app quits
+and applied again on the next stream for that client: scale, transform, position (unless
+`isolated_virtual_display_option` is on, which places the display itself), and the workspace left showing on it.
+They are kept in `vdisplay_settings.json` next to `sunshine_state.json` (in the config directory by default); delete
+an entry there to forget it, or edit it while no stream runs (keys `scale`, `transform`, `bitdepth`, `position`,
+`workspace`; Hyprland does not report the bit depth of a headless output, so `bitdepth` is only learned on outputs
+that change format). A *Resolution Scale Factor* other than 100% (app settings, or requested by the client)
+becomes the output scale, so a 1920x1080 client at 200% gets a 3840x2160 display at scale 2 and the desktop keeps
+the client's size; a scale you set yourself on top of that is remembered for that scale factor.
+
+**Static monitor rules.** Since the names are stable, you can also configure a client's display in your Hyprland
+config instead, for example in `hyprland.lua`:
+
+```lua
+hl.monitor({ output = "APOLLO-1a2b3c4d", transform = 1, bitdepth = 10, cm = "hdr", sdrbrightness = 1.2 })
+hl.workspace_rule({ workspace = "name:apollo-1a2b3c4d", layout = "master" })
+```
+
+Sunshine always sets the mode (the client's resolution and refresh rate), the position (`auto-right`, or the
+remembered or isolated position) and the scale (1, the scale factor, or the remembered scale), so those three come
+from Sunshine, not from a static rule; change the scale during a stream and it is remembered instead. With the Lua
+config every other field of a static rule applies (Sunshine sets transform and bit depth only when it remembers a
+value for them). With a hyprlang `hyprland.conf`, Sunshine's runtime rule replaces the whole static rule, so use the
+remembered settings there.
+
 ### macOS
 The first time you start Sunshine, you will be asked to grant access to screen recording and your microphone.
 
