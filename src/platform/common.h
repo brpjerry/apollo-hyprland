@@ -777,6 +777,17 @@ namespace platf {
    */
   bool request_process_group_exit(std::uintptr_t native_handle);
 
+#ifdef __linux__
+  /**
+   * @brief Second step of a graceful exit, once the exit timeout has passed.
+   * @details If request_process_group_exit() asked the app's windows to close (Hyprland), this sends SIGTERM to the
+   *          group, so the app gets one more chance to exit cleanly before it is killed.
+   * @param native_handle The native handle of the process group.
+   * @return `true` if SIGTERM was sent now; `false` if the first request already was SIGTERM.
+   */
+  bool escalate_process_group_exit(std::uintptr_t native_handle);
+#endif
+
   /**
    * @brief Check if a process group still has running children.
    * @param native_handle The native handle of the process group.

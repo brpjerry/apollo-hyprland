@@ -238,7 +238,7 @@
           </div>
         </div>
         <!-- elevation -->
-        <Checkbox v-if="platform === 'windows'"
+        <Checkbox v-if="(platform === 'windows' || platform === 'linux')"
                   class="mb-3"
                   id="appElevation"
                   label="_common.run_as"
@@ -294,7 +294,7 @@
                 <tr>
                   <th scope="col"><i class="fas fa-play"></i> {{ $t('_common.do_cmd') }}</th>
                   <th scope="col"><i class="fas fa-undo"></i> {{ $t('_common.undo_cmd') }}</th>
-                  <th scope="col" v-if="platform === 'windows'">
+                  <th scope="col" v-if="(platform === 'windows' || platform === 'linux')">
                     <i class="fas fa-shield-alt"></i> {{ $t('_common.run_as') }}
                   </th>
                   <th scope="col"></th>
@@ -308,7 +308,7 @@
                   <td>
                     <input type="text" class="form-control monospace" v-model="c.undo" />
                   </td>
-                  <td v-if="platform === 'windows'" class="align-middle">
+                  <td v-if="(platform === 'windows' || platform === 'linux')" class="align-middle">
                     <Checkbox :id="type + '-cmd-admin-' + i"
                               label="_common.elevated"
                               desc=""
@@ -802,7 +802,7 @@
           undo: ""
         };
 
-        if (this.platform === 'windows') {
+        if (this.platform === 'windows' || this.platform === 'linux') {
           template.elevated = false;
         }
 

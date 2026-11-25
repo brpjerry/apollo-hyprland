@@ -187,6 +187,13 @@ namespace hyprland {
   std::optional<std::string> lua_device_call(const std::string &device, const std::string &key, const std::string &value);
 
   /**
+   * @brief The Lua dispatcher call switching one output on or off, e.g.
+   * `hl.dsp.dpms({ action = "on", monitor = "APOLLO-1a2b3c4d" })`.
+   * @return nullopt if the output name is empty (that would switch every output).
+   */
+  std::optional<std::string> lua_dpms_call(const std::string &output, bool on);
+
+  /**
    * @brief A client for a Hyprland instance's request socket.
    *
    * Each request opens its own connection, so one ipc_t may be used from several threads.
@@ -243,6 +250,12 @@ namespace hyprland {
      * @param device Device name as listed by `j/devices`.
      */
     bool set_device_option(const std::string &device, const std::string &key, const std::string &value) const;
+
+    /**
+     * @brief Switch one output on or off: `dispatch hl.dsp.dpms({...})` on Lua, `dispatch dpms on|off NAME` on
+     * hyprlang. Never touches other outputs; an empty name is refused.
+     */
+    bool set_dpms(const std::string &output, bool on) const;
 
     /**
      * @brief `dispatch <lua_call>` (Lua dialect only), e.g. `hl.dsp.focus({ workspace = 4 })`.

@@ -33,7 +33,7 @@ const serverCmdTemplate = {
 function addCmd(cmdArr, template, idx) {
   const _tpl = Object.assign({}, template);
 
-  if (props.platform === 'windows') {
+  if (props.platform === 'windows' || props.platform === 'linux') {
     _tpl.elevated = false;
   }
   if (idx < 0) {
@@ -119,7 +119,7 @@ onMounted(() => {
         <tr>
           <th scope="col"><i class="fas fa-play"></i> {{ $t('_common.do_cmd') }}</th>
           <th scope="col"><i class="fas fa-undo"></i> {{ $t('_common.undo_cmd') }}</th>
-          <th scope="col" v-if="platform === 'windows'">
+          <th scope="col" v-if="(platform === 'windows' || platform === 'linux')">
             <i class="fas fa-shield-alt"></i> {{ $t('_common.run_as') }}
           </th>
           <th scope="col"></th>
@@ -133,7 +133,7 @@ onMounted(() => {
           <td>
             <input type="text" class="form-control monospace" v-model="c.undo" />
           </td>
-          <td v-if="platform === 'windows'" class="align-middle">
+          <td v-if="(platform === 'windows' || platform === 'linux')" class="align-middle">
             <Checkbox :id="type + '-cmd-admin-' + i"
                       label="_common.elevated"
                       desc=""
@@ -169,7 +169,7 @@ onMounted(() => {
         <tr>
           <th scope="col"><i class="fas fa-tag"></i> {{ $t('_common.cmd_name') }}</th>
           <th scope="col"><i class="fas fa-terminal"></i> {{ $t('_common.cmd_val') }}</th>
-          <th scope="col" v-if="platform === 'windows'">
+          <th scope="col" v-if="(platform === 'windows' || platform === 'linux')">
             <i class="fas fa-shield-alt"></i> {{ $t('_common.run_as') }}
           </th>
           <th scope="col"></th>
@@ -183,7 +183,7 @@ onMounted(() => {
           <td>
             <input type="text" class="form-control monospace" v-model="c.cmd" />
           </td>
-          <td v-if="platform === 'windows'">
+          <td v-if="(platform === 'windows' || platform === 'linux')">
             <div class="form-check">
               <input type="checkbox" class="form-check-input" :id="'server-cmd-admin-' + i" v-model="c.elevated"/>
               <label :for="'server-cmd-admin-' + i" class="form-check-label">{{ $t('_common.elevated') }}</label>
@@ -203,6 +203,17 @@ onMounted(() => {
       <button class="ms-0 mt-2 btn btn-success" style="margin: 0 auto" @click="addCmd(serverCmd, serverCmdTemplate, -1)">
         &plus; {{ $t('config.add') }}
       </button>
+    </div>
+
+    <!-- Elevation method (Linux) -->
+    <div class="mb-3" v-if="platform === 'linux'">
+      <label for="elevation_method" class="form-label">{{ $t('config.elevation_method') }}</label>
+      <select id="elevation_method" class="form-select" v-model="config.elevation_method">
+        <option value="pkexec">{{ $t('config.elevation_method_pkexec') }}</option>
+        <option value="sudo">{{ $t('config.elevation_method_sudo') }}</option>
+        <option value="terminal">{{ $t('config.elevation_method_terminal') }}</option>
+      </select>
+      <div class="form-text pre-wrap">{{ $t('config.elevation_method_desc') }}</div>
     </div>
 
     <!-- Enable Pairing -->

@@ -11,6 +11,7 @@
 #pragma once
 
 // standard includes
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -174,6 +175,7 @@ namespace hyprland {
   struct proc_stat_t {
     int ppid = 0;
     int pgid = 0;
+    std::uint64_t start_time = 0;  ///< Field 22: clock ticks after boot when the process started; 0 if unknown.
   };
 
   /**

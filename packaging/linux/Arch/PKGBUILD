@@ -57,6 +57,9 @@ makedepends=(
 
 optdepends=(
   'libva-mesa-driver: AMD GPU encoding support'
+  'polkit: run commands marked "Elevated" as root (pkexec)'
+  'xdg-utils: open commands that are URLs (xdg-open)'
+  'xdg-terminal-exec: elevation_method = terminal'
 )
 
 provides=()

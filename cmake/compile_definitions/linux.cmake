@@ -186,7 +186,10 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/display_settings.cpp"
             # display_device: dd_* options for Hyprland outputs (HYP-18)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/settings_manager.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/settings_manager.cpp")
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/settings_manager.cpp"
+            # streaming session helpers: waking the streamed output (HYP-20)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/session.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/session.cpp")
 else()
     # platf::vdisplay: no virtual display support without Wayland
     list(APPEND PLATFORM_TARGET_FILES
@@ -252,6 +255,19 @@ else()
     message(STATUS "Tray icon disabled")
 endif()
 
+# keep the session from idling while streaming (HYP-20): org.freedesktop.ScreenSaver and logind over D-Bus
+pkg_check_modules(GIO gio-2.0 gio-unix-2.0)
+if(GIO_FOUND)
+    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_GIO=1)
+    include_directories(SYSTEM ${GIO_INCLUDE_DIRS})
+    list(APPEND PLATFORM_LIBRARIES ${GIO_LIBRARIES})
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.cpp")
+else()
+    message(WARNING "gio-2.0 not found: Apollo will not keep the session from idling or locking while streaming")
+endif()
+
 # These need to be set before adding the inputtino subdirectory in order for them to be picked up
 set(LIBEVDEV_CUSTOM_INCLUDE_DIR "${EVDEV_INCLUDE_DIR}")
 set(LIBEVDEV_CUSTOM_LIBRARY "${EVDEV_LIBRARY}")
@@ -272,6 +288,15 @@ list(APPEND PLATFORM_TARGET_FILES
 if(EXTERNAL_PROJECT_LIBEVDEV_USED)
     add_dependencies(libinputtino libevdev)
 endif()
+
+# Elevated commands (HYP-23): the helper installed by packaging/linux.cmake, also named in the polkit action.
+if(NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK})
+    set(APOLLO_ELEVATION_HELPER "${CMAKE_INSTALL_FULL_LIBEXECDIR}/apollo/apollo-run-elevated")
+    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_ELEVATION_HELPER="${APOLLO_ELEVATION_HELPER}")
+endif()
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/command.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/command.cpp")
 
 # AppImage and Flatpak
 if (${SUNSHINE_BUILD_APPIMAGE})

@@ -34,6 +34,17 @@ else()
     endif()
 endif()
 
+# Elevated commands (HYP-23): the helper Apollo runs through pkexec or sudo, and the polkit action naming it.
+# Not for AppImage/Flatpak: polkit needs a fixed path, and pkexec cannot run from a sandbox.
+if(NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK})
+    install(PROGRAMS "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/apollo-run-elevated"
+            DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/apollo")
+    configure_file("${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/run-elevated.policy.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_FQDN}.run-elevated.policy" @ONLY)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_FQDN}.run-elevated.policy"
+            DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/polkit-1/actions")
+endif()
+
 # Post install
 set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
 set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
