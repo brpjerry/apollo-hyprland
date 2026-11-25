@@ -9,7 +9,12 @@
 #include <inputtino/input.hpp>
 #include <libevdev/libevdev.h>
 
+// standard includes
+#include <atomic>
+#include <format>
+
 // local includes
+#include "inputtino_abs.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -41,7 +46,9 @@ namespace platf {
           .product_id = 0xDEAD,
           .version = 0x111,
         })),
-        gamepads(MAX_GAMEPADS) {
+        gamepads(MAX_GAMEPADS),
+        mouse_accel("Mouse passthrough", abs_input::hyprland_compositor()),
+        mouse_mapper(abs_input::hyprland_compositor()) {
       if (!mouse) {
         BOOST_LOG(warning) << "Unable to create virtual mouse: " << mouse.getErrorMessage();
       }
@@ -61,22 +68,47 @@ namespace platf {
      * The pointer is shared because that state will be shared with background threads that deal with rumble and LED
      */
     std::vector<std::shared_ptr<joypad_state>> gamepads;
+
+    /// Keeps relative motion of the virtual mouse 1:1 regardless of the user's pointer acceleration.
+    abs_input::flat_accel_t mouse_accel;
+
+    /// Places absolute mouse moves in the live desktop layout (see inputtino_abs.h).
+    abs_input::layout_mapper_t mouse_mapper;
   };
+
+  /**
+   * @brief Name for a per-client device, unique within this process, e.g. "Touch passthrough (client 3)".
+   * @details The compositor binds devices to an output by name, so clients must not share names.
+   */
+  inline std::string client_device_name(std::string_view base, int client_id) {
+    return std::format("{} (client {})", base, client_id);
+  }
+
+  inline int next_client_device_id() {
+    static std::atomic<int> next_id {1};
+    return next_id++;
+  }
 
   struct client_input_raw_t: public client_input_t {
     client_input_raw_t(input_t &input):
+        client_input_raw_t(input, next_client_device_id()) {
+    }
+
+    client_input_raw_t(input_t &input, int client_id):
         touch(inputtino::TouchScreen::create({
-          .name = "Touch passthrough",
+          .name = client_device_name("Touch passthrough", client_id),
           .vendor_id = 0xBEEF,
           .product_id = 0xDEAD,
           .version = 0x111,
         })),
         pen(inputtino::PenTablet::create({
-          .name = "Pen passthrough",
+          .name = client_device_name("Pen passthrough", client_id),
           .vendor_id = 0xBEEF,
           .product_id = 0xDEAD,
           .version = 0x111,
-        })) {
+        })),
+        touch_mapper(client_device_name("Touch passthrough", client_id), abs_input::hyprland_compositor()),
+        pen_mapper(client_device_name("Pen passthrough", client_id), abs_input::hyprland_compositor()) {
       global = (input_raw_t *) input.get();
       if (!touch) {
         BOOST_LOG(warning) << "Unable to create virtual touch screen: " << touch.getErrorMessage();
@@ -94,6 +126,10 @@ namespace platf {
     // for each client.
     inputtino::Result<inputtino::TouchScreen> touch;
     inputtino::Result<inputtino::PenTablet> pen;
+
+    // Keep each device bound to the output being streamed (see inputtino_abs.h).
+    abs_input::output_mapper_t touch_mapper;
+    abs_input::output_mapper_t pen_mapper;
   };
 
   inline float deg2rad(float degree) {
