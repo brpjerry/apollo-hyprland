@@ -42,6 +42,10 @@
 #include "src/platform/common.h"
 #include "vaapi.h"
 
+#ifdef SUNSHINE_BUILD_WAYLAND
+  #include "clipboard.h"
+#endif
+
 #include <linux/rtnetlink.h>
 
 #ifdef __GNUC__
@@ -1083,15 +1087,45 @@ std::string get_local_ip_for_gateway() {
     return std::make_unique<linux_high_precision_timer>();
   }
 
+#ifdef SUNSHINE_BUILD_WAYLAND
+  namespace {
+    std::mutex clipboard_mutex;
+    std::unique_ptr<clipboard::wayland_clipboard_t> clipboard_connection;
+
+    /**
+     * @brief The persistent clipboard connection, (re)connected on demand. Call with clipboard_mutex held.
+     */
+    clipboard::wayland_clipboard_t *wayland_clipboard() {
+      if (clipboard_connection && !clipboard_connection->alive()) {
+        clipboard_connection.reset();
+      }
+      if (!clipboard_connection) {
+        clipboard_connection = clipboard::wayland_clipboard_t::connect(nullptr);
+      }
+      return clipboard_connection.get();
+    }
+  }  // namespace
+#endif
+
   std::string
   get_clipboard() {
-    // Placeholder
+#ifdef SUNSHINE_BUILD_WAYLAND
+    std::lock_guard lock {clipboard_mutex};
+    if (auto clipboard = wayland_clipboard()) {
+      return clipboard->get().value_or(std::string {});
+    }
+#endif
     return "";
   }
 
   bool
   set_clipboard(const std::string& content) {
-    // Placeholder
+#ifdef SUNSHINE_BUILD_WAYLAND
+    std::lock_guard lock {clipboard_mutex};
+    if (auto clipboard = wayland_clipboard()) {
+      return clipboard->set(content);
+    }
+#endif
     return false;
   }
 }  // namespace platf
