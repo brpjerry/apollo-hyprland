@@ -146,7 +146,9 @@ if(WAYLAND_FOUND)
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wlgrab.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.cpp")
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp")
 endif()
 
 # x11
