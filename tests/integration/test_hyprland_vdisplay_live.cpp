@@ -17,6 +17,7 @@
   // local includes
   #include <src/platform/linux/hyprland/ipc.h>
   #include <src/platform/linux/hyprland/vdisplay.h>
+  #include <src/platform/linux/wayland.h>
   #include <src/platform/vdisplay.h>
 
 namespace {
@@ -90,6 +91,54 @@ TEST_F(HyprlandVdisplayLiveTest, CreateStreamableOutputAtClientModeAndRemoveIt) 
 
   EXPECT_TRUE(platf::vdisplay::remove(identity));
   EXPECT_FALSE(find_monitor(*ipc, name)) << name << " still exists after remove()";
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(HyprlandVdisplayLiveTest, HdrFollowsSetHdrAndSurvivesModeChanges) {
+  if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
+    GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";
+  }
+  auto ipc = hyprland::ipc_t::connect();
+  if (!ipc) {
+    GTEST_SKIP() << "no live Hyprland instance found";
+  }
+  ASSERT_EQ(platf::vdisplay::init(), platf::vdisplay::status_e::ok);
+
+  const auto identity = uuid_util::uuid_t::generate();
+  const auto name = hyprland::vdisplay_output_name(identity);
+  vdisplay_guard_t guard {*ipc, identity, name};
+  ASSERT_EQ(platf::vdisplay::create(identity, "Live HDR test", {1920, 1080, 60000}), name);
+
+  // A fresh virtual display is SDR; physical monitors are not ours to read or change.
+  EXPECT_EQ(platf::vdisplay::get_hdr(name), false);
+  EXPECT_EQ(platf::vdisplay::get_hdr("DP-3"), std::nullopt);
+
+  // set_hdr() only returns once Hyprland shows the HDR preset.
+  ASSERT_TRUE(platf::vdisplay::set_hdr(name, true));
+  EXPECT_EQ(platf::vdisplay::get_hdr(name), true);
+  auto monitor = find_monitor(*ipc, name);
+  ASSERT_TRUE(monitor);
+  EXPECT_EQ(monitor->cm_preset, "hdr");
+  std::cout << name << " in HDR: format " << monitor->current_format << std::endl;
+
+  // Wayland clients see a PQ / BT.2020 output with the luminances of the rule.
+  wl::output_color_t color;
+  if (color.open(name)) {
+    EXPECT_TRUE(color.is_hdr()) << wl::describe(*color.description());
+    SS_HDR_METADATA metadata;
+    ASSERT_TRUE(wl::fill_hdr_metadata(*color.description(), metadata));
+    EXPECT_EQ(metadata.maxDisplayLuminance, 1000);
+    EXPECT_EQ(metadata.maxFrameAverageLightLevel, 400);
+  }
+
+  // A mode change keeps HDR.
+  EXPECT_TRUE(platf::vdisplay::set_mode(name, {1280, 720, 60000}, false));
+  EXPECT_EQ(platf::vdisplay::get_hdr(name), true);
+
+  ASSERT_TRUE(platf::vdisplay::set_hdr(name, false));
+  EXPECT_EQ(platf::vdisplay::get_hdr(name), false);
+
+  EXPECT_TRUE(platf::vdisplay::remove(identity));
 }
 
 #endif

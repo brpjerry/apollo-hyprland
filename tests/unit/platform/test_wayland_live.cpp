@@ -16,6 +16,7 @@
   #include <src/input.h>
   #include <src/platform/common.h>
   #include <src/platform/linux/graphics.h>
+  #include <src/platform/linux/hyprland/vdisplay.h>
   #include <src/platform/linux/wayland.h>
   #include <src/video.h>
 
@@ -389,13 +390,11 @@ TEST_P(ExtCaptureLiveTest, ReinitializesWhenTheOutputIsRemoved) {
 }
 
 namespace {
-  /// Switches a headless test output between HDR and SDR. Headless outputs have no EDID, so HDR support is forced.
+  /// Switches a headless test output between HDR and SDR with the rule Apollo uses for its virtual displays.
   bool set_test_output_hdr(test_wl::headless_output_t &output, bool hdr) {
-    auto lua = hdr ? "hl.monitor({ output = " + hyprland::lua_quote(output.name) +
-                       ", cm = \"hdr\", bitdepth = 10, supports_hdr = 1, supports_wide_color = 1,"
-                       " max_luminance = 1000, min_luminance = 0.005, max_avg_luminance = 400 })" :
-                     "hl.monitor({ output = " + hyprland::lua_quote(output.name) + ", cm = \"srgb\", bitdepth = 8 })";
-    return output.ipc->eval(lua).has_value();
+    hyprland::monitor_rule_t rule {.output = output.name};
+    hyprland::apply_hdr_fields(rule, hdr);
+    return output.ipc->set_monitor(rule);
   }
 }  // namespace
 

@@ -59,6 +59,7 @@ namespace hyprland {
     bool dpms_on = true;  ///< `dpmsStatus`: false while the output is switched off (it then captures as black).
     std::string current_format;  ///< DRM format name, e.g. `XRGB8888` or `XRGB2101010`.
     bool focused = false;
+    std::string cm_preset;  ///< `colorManagementPreset`: `srgb`, `wide`, `hdr`, `hdredid`, ... (empty if not reported).
   };
 
   /**
@@ -76,6 +77,19 @@ namespace hyprland {
     std::optional<int> transform;  ///< 0-7.
     std::optional<int> bitdepth;  ///< 8 or 10.
     std::optional<bool> disabled;
+
+    // Color management (Hyprland 0.57 names). The Lua dialect emits all of them; hyprlang's `monitor` keyword only
+    // takes `cm`, `sdrbrightness` and `sdrsaturation` (the others need `monitorv2`), so the rest is left out there.
+    std::optional<std::string> cm;  ///< Preset: `auto`, `srgb`, `wide`, `hdr`, `hdredid`, ...
+    std::optional<int> supports_hdr;  ///< 1 forces HDR support on (e.g. headless outputs, which have no EDID), -1 off.
+    std::optional<int> supports_wide_color;  ///< Same for wide color.
+    std::optional<double> sdr_brightness;  ///< `sdrbrightness`: SDR content brightness in HDR mode.
+    std::optional<double> sdr_saturation;  ///< `sdrsaturation`.
+    std::optional<double> min_luminance;  ///< cd/m², overrides the EDID.
+    std::optional<int> max_luminance;  ///< cd/m², overrides the EDID.
+    std::optional<int> max_avg_luminance;  ///< cd/m², overrides the EDID.
+
+    friend bool operator==(const monitor_rule_t &, const monitor_rule_t &) = default;
   };
 
   /**

@@ -17,6 +17,10 @@
  * - A config reload (`hyprctl reload`, or saving the config) rebuilds the rules from the config file and drops the
  *   runtime rule, so the output would fall back to 1920x1080@60. The backend re-applies its rules on
  *   `configreloaded`.
+ * - HDR (HYP-17): `cm = "hdr"` only takes on a headless output together with `supports_hdr = 1` (there is no EDID);
+ *   `colorManagementPreset` in `j/monitors` then reads `hdr`, and wp-color-management describes the output as PQ /
+ *   BT.2020 with the luminances of the rule (80 cd/m² max without them). `bitdepth = 10` gives an XBGR2101010
+ *   output on the DRM-backed desktop session (and stays XRGB8888 in the test harness's render-node-only instance).
  */
 // this include
 #include "vdisplay.h"
@@ -76,8 +80,7 @@ namespace hyprland {
     }
 
     bool same_rule(const monitor_rule_t &a, const monitor_rule_t &b) {
-      return a.output == b.output && a.mode == b.mode && a.position == b.position && a.scale == b.scale &&
-             a.transform == b.transform && a.bitdepth == b.bitdepth && a.disabled == b.disabled;
+      return a == b;
     }
 
     std::string describe(const monitor_info_t &m) {
@@ -147,6 +150,37 @@ namespace hyprland {
 
   bool any_monitor_active(const std::vector<monitor_info_t> &monitors) {
     return std::ranges::any_of(monitors, monitor_is_active);
+  }
+
+  void apply_hdr_fields(monitor_rule_t &rule, bool hdr) {
+    if (hdr) {
+      rule.cm = "hdr";
+      rule.bitdepth = 10;
+      rule.supports_hdr = 1;
+      rule.supports_wide_color = 1;
+      rule.max_luminance = 1000;
+      rule.min_luminance = 0.005;
+      rule.max_avg_luminance = 400;
+    } else {
+      rule.cm = "srgb";
+      rule.bitdepth = 8;
+    }
+  }
+
+  void copy_color_fields(const monitor_rule_t &from, monitor_rule_t &to) {
+    to.bitdepth = from.bitdepth;
+    to.cm = from.cm;
+    to.supports_hdr = from.supports_hdr;
+    to.supports_wide_color = from.supports_wide_color;
+    to.sdr_brightness = from.sdr_brightness;
+    to.sdr_saturation = from.sdr_saturation;
+    to.min_luminance = from.min_luminance;
+    to.max_luminance = from.max_luminance;
+    to.max_avg_luminance = from.max_avg_luminance;
+  }
+
+  bool monitor_is_hdr(const monitor_info_t &monitor) {
+    return monitor.cm_preset == "hdr"sv || monitor.cm_preset == "hdredid"sv;
   }
 
   vdisplay_t::options_t vdisplay_t::default_options() {
@@ -247,7 +281,9 @@ namespace hyprland {
         // Created by this process and still there (e.g. a second launch for the same identity): reuse it.
         BOOST_LOG(info) << "Hyprland virtual display: reusing "sv << name << " for "sv << client_name;
         it->second.identity = identity;
-        if (!apply_rule_locked(it->second, rule, mode)) {
+        auto reused_rule = rule;
+        copy_color_fields(it->second.rule, reused_rule);
+        if (!apply_rule_locked(it->second, reused_rule, mode)) {
           BOOST_LOG(error) << "Hyprland virtual display: "sv << name << " did not take mode "sv << *rule.mode;
           return {};
         }
@@ -327,6 +363,8 @@ namespace hyprland {
       .position = std::string {default_position},
       .scale = it->second.rule.scale.value_or(1.0),
     };
+    // A new mode keeps the output in HDR (set_hdr()).
+    copy_color_fields(it->second.rule, rule);
 
     if (isolated) {
       // Windows (changeDisplaySettings2 / rearrangeVirtualDisplayForLowerRight) moves the virtual display to the
@@ -354,6 +392,44 @@ namespace hyprland {
       }
     }
     return apply_rule_locked(it->second, rule, mode);
+  }
+
+  std::optional<bool> vdisplay_t::get_hdr(const std::string &name) {
+    std::lock_guard lock {mutex_};
+    if (!owned_.contains(name) || !ensure_connected_locked()) {
+      return std::nullopt;
+    }
+    auto monitor = find_monitor_locked(name);
+    if (!monitor) {
+      return std::nullopt;
+    }
+    return monitor_is_hdr(*monitor);
+  }
+
+  bool vdisplay_t::set_hdr(const std::string &name, bool enable) {
+    std::lock_guard lock {mutex_};
+    auto it = owned_.find(name);
+    if (it == owned_.end()) {
+      BOOST_LOG(warning) << "Hyprland virtual display: set_hdr on "sv << name << ", which Apollo did not create"sv;
+      return false;
+    }
+    if (!ensure_connected_locked()) {
+      return false;
+    }
+
+    auto rule = it->second.rule;
+    rule.output = name;
+    apply_hdr_fields(rule, enable);
+    // Remember the rule before applying it, so a config reload in between re-applies the new one.
+    it->second.rule = rule;
+    if (!ipc_->set_monitor(rule)) {
+      return false;
+    }
+    if (!wait_for_cm_locked(name, enable)) {
+      return false;
+    }
+    BOOST_LOG(info) << "Hyprland virtual display: "sv << name << (enable ? " is in HDR mode"sv : " is in SDR mode"sv);
+    return true;
   }
 
   bool vdisplay_t::remove(const uuid_util::uuid_t &identity) {
@@ -553,6 +629,22 @@ namespace hyprland {
     }
   }
 
+  bool vdisplay_t::wait_for_cm_locked(const std::string &name, bool hdr) {
+    const auto deadline = clock_t_::now() + options_.timeout;
+    while (true) {
+      auto monitor = find_monitor_locked(name);
+      if (monitor && monitor_is_hdr(*monitor) == hdr) {
+        return true;
+      }
+      if (clock_t_::now() >= deadline) {
+        BOOST_LOG(warning) << "Hyprland virtual display: "sv << name << " wanted color management preset "sv << (hdr ? "hdr"sv : "srgb"sv)
+                           << ", has "sv << (monitor ? (monitor->cm_preset.empty() ? "none"s : monitor->cm_preset) : "no monitor"s);
+        return false;
+      }
+      std::this_thread::sleep_for(options_.poll_interval);
+    }
+  }
+
   bool vdisplay_t::remove_output_locked(const std::string &name) {
     const auto seen = removed_count(name);
     if (!ipc_->remove_output(name)) {
@@ -692,15 +784,19 @@ namespace platf::vdisplay {
     return backend().remove(identity);
   }
 
-  std::optional<bool> get_hdr(const std::string &) {
-    // HDR on virtual displays is HYP-17. Returning nullopt also keeps process.cpp from running its HDR off/on
-    // toggle on a display that cannot do HDR yet.
-    return std::nullopt;
+  std::optional<bool> get_hdr(const std::string &display_name) {
+    // Only Apollo's own outputs; physical monitors are handled by the display device code (HYP-18).
+    if (backend().status() != status_e::ok) {
+      return std::nullopt;
+    }
+    return backend().get_hdr(display_name);
   }
 
-  bool set_hdr(const std::string &, bool) {
-    // See get_hdr(): HYP-17.
-    return false;
+  bool set_hdr(const std::string &display_name, bool enable) {
+    if (backend().status() != status_e::ok) {
+      return false;
+    }
+    return backend().set_hdr(display_name, enable);
   }
 
   void set_render_adapter(const std::string &) {

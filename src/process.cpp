@@ -531,6 +531,7 @@ namespace proc {
         if (config::video.dd.hdr_option == config::video_t::dd_t::hdr_option_e::automatic) {
           mode_changed_display = currentDisplay;
 
+    #ifdef _WIN32
           // Try turn off HDR whatever
           // As we always have to apply the workaround by turining off HDR first
           platf::vdisplay::set_hdr(currentDisplay, false);
@@ -542,12 +543,23 @@ namespace proc {
               BOOST_LOG(info) << "HDR enable failed for display " << currentDisplay;
             }
           }
+    #else
+          // Hyprland applies the state as asked (no off/on workaround), and an SDR client gets SDR even when the
+          // output was left in HDR.
+          if (platf::vdisplay::set_hdr(currentDisplay, enable_hdr)) {
+            BOOST_LOG(info) << "HDR " << (enable_hdr ? "enabled" : "disabled") << " for display " << currentDisplay;
+          } else {
+            BOOST_LOG(info) << "Setting HDR " << (enable_hdr ? "on" : "off") << " failed for display " << currentDisplay;
+          }
+    #endif
         } else if (initial_hdr) {
+    #ifdef _WIN32
           if (platf::vdisplay::set_hdr(currentDisplay, false) && platf::vdisplay::set_hdr(currentDisplay, true)) {
             BOOST_LOG(info) << "HDR toggled successfully for display " << currentDisplay;
           } else {
             BOOST_LOG(info) << "HDR toggle failed for display " << currentDisplay;
           }
+    #endif
         }
       });
 

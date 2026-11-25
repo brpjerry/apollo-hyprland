@@ -309,6 +309,7 @@ TEST(HyprlandIpcTest, ParseRecordedMonitors) {
   EXPECT_EQ(headless.x, 4000);
   EXPECT_DOUBLE_EQ(headless.scale, 1.0);
   EXPECT_EQ(headless.current_format, "XRGB8888");
+  EXPECT_EQ(headless.cm_preset, "srgb");
 }
 
 // Bugs caught: 0, False positives: 0
@@ -408,6 +409,33 @@ TEST(HyprlandLuaTest, MonitorCall) {
 
   EXPECT_EQ(hyprland::lua_monitor_call({.output = ""}), std::nullopt);
   EXPECT_EQ(hyprland::lua_monitor_call({.output = "DP-3", .scale = std::numeric_limits<double>::quiet_NaN()}), std::nullopt);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandLuaTest, MonitorCallWithColorManagement) {
+  // Field names as in Hyprland 0.57.2's HL.MonitorSpec (/usr/share/hypr/stubs/hl.meta.lua), checked live.
+  hyprland::monitor_rule_t hdr {
+    .output = "APOLLO-1a2b3c4d",
+    .bitdepth = 10,
+    .cm = "hdr",
+    .supports_hdr = 1,
+    .supports_wide_color = 1,
+    .sdr_brightness = 1.2,
+    .sdr_saturation = 0.98,
+    .min_luminance = 0.005,
+    .max_luminance = 1000,
+    .max_avg_luminance = 400,
+  };
+  EXPECT_EQ(
+    hyprland::lua_monitor_call(hdr),
+    R"(hl.monitor({ output = "APOLLO-1a2b3c4d", bitdepth = 10, cm = "hdr", supports_hdr = 1, supports_wide_color = 1, sdrbrightness = 1.2, sdrsaturation = 0.98, min_luminance = 0.005, max_luminance = 1000, max_avg_luminance = 400 }))"
+  );
+  EXPECT_EQ(hyprland::lua_monitor_call({.output = "X", .cm = R"(hd"r)"}), R"(hl.monitor({ output = "X", cm = "hd\"r" }))");
+  EXPECT_EQ(hyprland::lua_monitor_call({.output = "X", .sdr_brightness = std::numeric_limits<double>::infinity()}), std::nullopt);
+
+  // hyprlang's monitor keyword knows cm, sdrbrightness and sdrsaturation; the rest needs monitorv2.
+  EXPECT_EQ(hyprland::hyprlang_monitor_value(hdr), "APOLLO-1a2b3c4d,preferred,auto,auto,bitdepth,10,cm,hdr,sdrbrightness,1.2,sdrsaturation,0.98");
+  EXPECT_EQ(hyprland::hyprlang_monitor_value({.output = "X", .cm = "hdr,evil"}), std::nullopt);
 }
 
 // Bugs caught: 0, False positives: 0
