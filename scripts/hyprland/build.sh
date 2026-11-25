@@ -14,4 +14,4 @@ if [[ ! -f "$build/build.ninja" ]]; then
     -DCMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
     -DSUNSHINE_ASSETS_DIR=share/apollo
 fi
-ninja -C "$build"
+ninja -C "$build" -j "${JOBS:-$(nproc)}"
