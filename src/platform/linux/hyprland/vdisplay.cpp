@@ -326,6 +326,10 @@ namespace hyprland {
       // the cursor practically stays on it. The cheap Hyprland equivalent: put the output below and to the right
       // of everything else with a gap. Hyprland clamps pointer motion to the closest point on some monitor, so a
       // pointer on the virtual display cannot cross the gap to a physical monitor (or the other way round).
+      // Hyprland re-places outputs whose position is `auto` whenever the layout changes, so they move to the right
+      // of the isolated output while it exists (seen live: two auto-placed test outputs went from x=4000 to
+      // x=10200 and came back after removal). They stay at y=0 and the isolated output starts below the lowest
+      // bottom edge, so they still do not touch it.
       // HYP-11 should improve on this: focus the output and give it a workspace, optionally disable the physical
       // monitors for the session, and move it again when the physical layout changes during the session.
       auto monitors = monitors_locked();
