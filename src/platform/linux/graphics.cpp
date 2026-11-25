@@ -898,14 +898,26 @@ namespace egl {
   }
 
   void sws_t::load_vram(img_descriptor_t &img, int offset_x, int offset_y, int texture) {
-    // When only a sub-part of the image must be encoded...
-    const bool copy = offset_x || offset_y || img.sd.width != in_width || img.sd.height != in_height;
+    // When only a sub-part of the image must be encoded, or the image is upside down...
+    const bool copy = img.y_invert || offset_x || offset_y || img.sd.width != in_width || img.sd.height != in_height;
     if (copy) {
       auto framebuf = gl::frame_buf_t::make(1);
       framebuf.bind(&texture, &texture + 1);
 
       loaded_texture = tex[0];
-      framebuf.copy(0, loaded_texture, offset_x, offset_y, in_width, in_height);
+      if (img.y_invert) {
+        // Blit the requested area with the source rows reversed. Upright row r is stored at row height - 1 - r.
+        auto target = gl::frame_buf_t::make(1);
+        target.bind(&loaded_texture, &loaded_texture + 1);
+
+        const int src_top = img.sd.height - offset_y;
+        gl::ctx.BindFramebuffer(GL_READ_FRAMEBUFFER, framebuf[0]);
+        gl::ctx.BindFramebuffer(GL_DRAW_FRAMEBUFFER, target[0]);
+        gl::ctx.BlitFramebuffer(offset_x, src_top, offset_x + in_width, src_top - in_height, 0, 0, in_width, in_height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        gl::ctx.BindFramebuffer(GL_FRAMEBUFFER, 0);
+      } else {
+        framebuf.copy(0, loaded_texture, offset_x, offset_y, in_width, in_height);
+      }
     } else {
       loaded_texture = texture;
     }
