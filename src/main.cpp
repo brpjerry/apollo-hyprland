@@ -17,6 +17,7 @@
 #include "logging.h"
 #include "main.h"
 #include "nvhttp.h"
+#include "platform/vdisplay.h"
 #include "process.h"
 #include "system_tray.h"
 #include "upnp.h"
@@ -25,7 +26,6 @@
 
 #ifdef _WIN32
   #include "platform/windows/misc.h"
-  #include "platform/windows/virtual_display.h"
 #endif
 
 #define PROBE_DISPLAY_UUID "38F72B96-B00C-4F21-8B6C-E1BFF1602B0E"
@@ -360,28 +360,25 @@ int main(int argc, char *argv[]) {
   }
 
   if (video::probe_encoders()) {
-#ifdef _WIN32
     bool allow_probing = video::allow_encoder_probing();
     // Create a temporary virtual display for encoder capability probing
-    if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-      std::string probe_uuid_str = PROBE_DISPLAY_UUID;
-      auto probe_uuid = uuid_util::uuid_t::parse(probe_uuid_str);
-      auto* probe_guid = (GUID*)(void*)&probe_uuid;
+    if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
+      const std::string probe_uuid_str = PROBE_DISPLAY_UUID;
+      const auto probe_uuid = uuid_util::uuid_t::parse(probe_uuid_str);
+#ifdef _WIN32
+      // SudoVDA has always been given 60 here, not 60000.
+      constexpr int probe_refresh = 60;
+#else
+      constexpr int probe_refresh = 60000;
+#endif
 
       BOOST_LOG(info) << "Creating a temporary virtual display to probe for encoders..."sv;
 
       if (!config::video.adapter_name.empty()) {
-        VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+        platf::vdisplay::set_render_adapter(config::video.adapter_name);
       }
 
-      VDISPLAY::createVirtualDisplay(
-        probe_uuid_str.c_str(),
-        "Probe",
-        800,
-        600,
-        60,
-        *probe_guid
-      );
+      platf::vdisplay::create(probe_uuid, "Probe", {800, 600, probe_refresh}, probe_uuid_str);
 
       std::this_thread::sleep_for(500ms);
 
@@ -394,12 +391,14 @@ int main(int argc, char *argv[]) {
         }
       }
 
-      VDISPLAY::removeVirtualDisplay(*probe_guid);
+      platf::vdisplay::remove(probe_uuid);
     } else if (!allow_probing) {
       BOOST_LOG(error) << "Video failed to find working encoder: probe failed and virtual display driver isn't initialized"sv;
     }
-#else
-    BOOST_LOG(error) << "Video failed to find working encoder: probing failed."sv;
+#ifndef _WIN32
+    else {
+      BOOST_LOG(error) << "Video failed to find working encoder: probing failed."sv;
+    }
 #endif
   }
 

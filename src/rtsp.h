@@ -12,8 +12,10 @@
 // local includes
 #include "crypto.h"
 #include "thread_safe.h"
+#include "uuid.h"
 
 #ifdef _WIN32
+  // No longer needed here; kept because Windows sources may rely on it transitively.
   #include <windows.h>
 #endif
 
@@ -58,9 +60,8 @@ namespace rtsp_stream {
     std::list<crypto::command_entry_t> client_do_cmds;
     std::list<crypto::command_entry_t> client_undo_cmds;
 
-  #ifdef _WIN32
-    GUID display_guid{};
-  #endif
+    // Identity of the virtual display created for this session (see platf::vdisplay::create()).
+    uuid_util::uuid_t display_guid{};
   };
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);

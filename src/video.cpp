@@ -29,11 +29,11 @@ extern "C" {
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
 #include "platform/display_selection.h"
+#include "platform/vdisplay.h"
 #include "sync.h"
 #include "video.h"
 
 #ifdef _WIN32
-  #include "platform/windows/virtual_display.h"
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -59,7 +59,9 @@ namespace video {
     if (devices.empty()) {
       #ifdef _WIN32
       // We'll create a temporary virtual display for probing anyways.
-      if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+      // Only on Windows: elsewhere libdisplaydevice is unsupported and always reports no devices,
+      // which says nothing about whether a display is attached.
+      if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
         return false;
       }
       #endif
