@@ -295,6 +295,7 @@ namespace wl {
       frame_pacer_t pacer {delay};
       auto idle_until = std::chrono::steady_clock::now() + idle_repeat_interval;
       int failures = 0;
+      std::optional<std::chrono::steady_clock::time_point> ready_at;
 
       while (true) {
         if (*cursor != session.paint_cursors) {
@@ -330,6 +331,10 @@ namespace wl {
           if (result == buffer_pool_t::acquire_e::ok) {
             frame_slot = slot;
             session.capture(pool[slot].buffer, pool.slots.damage_for(slot));
+            if (ready_at) {
+              cadence.max_turnaround = std::max<std::chrono::nanoseconds>(cadence.max_turnaround, std::chrono::steady_clock::now() - *ready_at);
+              ready_at.reset();
+            }
           }
         }
 
@@ -346,6 +351,7 @@ namespace wl {
         }
 
         if (now >= idle_until) {
+          ++cadence.repeated;
           if (auto status = repeat(push_captured_image_cb, pull_free_image_cb); status != platf::capture_e::ok) {
             return status == platf::capture_e::timeout ? platf::capture_e::ok : status;
           }
@@ -382,6 +388,19 @@ namespace wl {
         if (session.frame_state == ext_session_t::frame_state_e::ready) {
           failures = 0;
           ++stats.frames_captured;
+          ++cadence.captured;
+          ready_at = std::chrono::steady_clock::now();
+          if (session.frame_time) {
+            if (cadence.last_frame_time) {
+              auto gap = *session.frame_time - *cadence.last_frame_time;
+              cadence.max_gap = std::max<std::chrono::nanoseconds>(cadence.max_gap, gap);
+              if (gap > delay * 3 / 2) {
+                ++cadence.late_gaps;
+              }
+            }
+            cadence.last_frame_time = session.frame_time;
+          }
+          log_cadence(*ready_at);
           if (session.frame_transform != transform_logged) {
             BOOST_LOG(debug) << "ext-image-copy-capture frame transform: "sv << session.frame_transform;
             transform_logged = session.frame_transform;
@@ -396,6 +415,9 @@ namespace wl {
           pool.slots.completed(frame_slot, damage);
 
           now = std::chrono::steady_clock::now();
+          if (!pacer.may_deliver(now)) {
+            ++cadence.held;
+          }
           if (pacer.may_deliver(now)) {
             if (auto status = deliver(frame_slot, push_captured_image_cb, pull_free_image_cb); status != platf::capture_e::ok) {
               return status == platf::capture_e::timeout ? platf::capture_e::ok : status;
@@ -463,6 +485,7 @@ namespace wl {
       last_img = img_out;
 
       ++stats.frames_delivered;
+      ++cadence.delivered;
       if (!push_captured_image_cb(std::move(img_out), true)) {
         return platf::capture_e::timeout;
       }
@@ -534,6 +557,35 @@ namespace wl {
     std::uint64_t sequence {0};
     std::uint32_t transform_logged {0};
     capture_stats_t stats;
+
+    /// Debug-level summary of the capture cadence, logged every few seconds while streaming.
+    struct cadence_t {
+      std::chrono::steady_clock::time_point window_start {};
+      std::size_t captured {}, delivered {}, repeated {}, held {}, late_gaps {};
+      std::chrono::nanoseconds max_gap {}, max_turnaround {};
+      std::optional<std::chrono::steady_clock::time_point> last_frame_time;
+    } cadence;
+
+    void log_cadence(std::chrono::steady_clock::time_point now) {
+      if (cadence.window_start == std::chrono::steady_clock::time_point {}) {
+        cadence.window_start = now;
+        return;
+      }
+      auto elapsed = now - cadence.window_start;
+      if (elapsed < 10s) {
+        return;
+      }
+      auto secs = std::chrono::duration<double>(elapsed).count();
+      BOOST_LOG(debug) << "ext capture cadence: "sv << cadence.captured / secs << " captured/s, "sv << cadence.delivered / secs
+                       << " delivered/s, "sv << cadence.repeated << " repeats, "sv << cadence.held << " held by pacer, "sv
+                       << cadence.late_gaps << " compositor gaps > 1.5 frames (max "sv
+                       << std::chrono::duration<double, std::milli>(cadence.max_gap).count() << " ms), max ready->next request "sv
+                       << std::chrono::duration<double, std::milli>(cadence.max_turnaround).count() << " ms"sv;
+      auto last = cadence.last_frame_time;
+      cadence = {};
+      cadence.window_start = now;
+      cadence.last_frame_time = last;
+    }
 
     // System memory path only.
     egl::display_t egl_display;

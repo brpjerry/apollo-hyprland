@@ -2003,6 +2003,8 @@ namespace video {
 
     encode_frame_limiter_t frame_limiter {encode_frame_threshold};
     bool missing_frame_timestamp_warning_logged = false;
+    std::size_t frames_dropped_by_limiter = 0;
+    auto limiter_log_time = std::chrono::steady_clock::now();
 
     while (true) {
       // Break out of the encoding loop if any of the following are true:
@@ -2050,6 +2052,13 @@ namespace video {
           // If new frame comes in way too fast, just drop
           auto admitted = frame_limiter.admit(*frame_timestamp, img->repeat);
           if (!admitted) {
+            ++frames_dropped_by_limiter;
+            if (auto now = std::chrono::steady_clock::now(); now - limiter_log_time >= 10s) {
+              BOOST_LOG(debug) << "Encoder dropped "sv << frames_dropped_by_limiter << " frames that came in too fast in the last "sv
+                               << std::chrono::duration_cast<std::chrono::seconds>(now - limiter_log_time).count() << " s"sv;
+              frames_dropped_by_limiter = 0;
+              limiter_log_time = now;
+            }
             continue;
           }
 
