@@ -52,6 +52,18 @@ file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_SOURCE_DIR}/tests/*.h
         ${CMAKE_SOURCE_DIR}/tests/*.cpp)
 
+# Protocols only the live Wayland tests use: a layer-shell client that keeps a test output damaged.
+if(WAYLAND_FOUND)
+    set(SUNSHINE_PLATFORM_TARGET_FILES "${PLATFORM_TARGET_FILES}")
+    set(PLATFORM_TARGET_FILES "")
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "stable/xdg-shell" xdg-shell)
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "stable/viewporter" viewporter)
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/single-pixel-buffer" single-pixel-buffer-v1)
+    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-layer-shell-unstable-v1)
+    list(APPEND TEST_SOURCES ${PLATFORM_TARGET_FILES})
+    set(PLATFORM_TARGET_FILES "${SUNSHINE_PLATFORM_TARGET_FILES}")
+endif()
+
 set(SUNSHINE_SOURCES
         ${SUNSHINE_TARGET_FILES})
 

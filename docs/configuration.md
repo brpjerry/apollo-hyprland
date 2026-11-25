@@ -2049,10 +2049,17 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="6">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>nvfbc</td>
         <td>Use NVIDIA Frame Buffer Capture to capture direct to GPU memory. This is usually the fastest method for
             NVIDIA cards. NvFBC does not have native Wayland support and does not work with XWayland.
+            @note{Applies to Linux only.}</td>
+    </tr>
+    <tr>
+        <td>ext</td>
+        <td>Capture Wayland outputs via ext-image-copy-capture-v1 (e.g. Hyprland, and other compositors that
+            implement it). Keeps one capture session open, reuses its capture buffers and only copies frames when the
+            output changes. Tried before `wlr` when the compositor supports it.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>

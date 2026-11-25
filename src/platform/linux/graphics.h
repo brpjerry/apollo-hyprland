@@ -295,6 +295,9 @@ namespace egl {
 
     // Increment sequence when new rgb_t needs to be created
     std::uint64_t sequence;
+
+    // The image is stored bottom row first and must be flipped vertically
+    bool y_invert {false};
   };
 
   class sws_t {
