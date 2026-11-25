@@ -811,6 +811,11 @@ editing the `conf` file in a text editor. Use the examples as reference.
                 or use Steam Remote Play at least once to install the drivers.
             * [Virtual Audio Cable](https://vb-audio.com/Cable) (macOS, Windows)
             }
+            @note{On Linux (PulseAudio or PipeWire), give the sink's name or description. If unset, or if the sink is
+            not found, Sunshine creates its own null sinks (`sink-sunshine-stereo`, `-surround51`, `-surround71`) and
+            removes them after the stream. While host audio is off, streams that are pinned to another sink (for
+            example by WirePlumber's stored targets) are moved to the virtual sink too, and moved back when the
+            stream ends.}
         </td>
     </tr>
     <tr>
