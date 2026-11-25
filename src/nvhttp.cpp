@@ -471,6 +471,13 @@ namespace nvhttp {
     map_id_sess.erase(sess.client.uniqueID);
   }
 
+  pair_session_t &start_pair_session(pair_session_t &&sess) {
+    // A client that starts pairing again (the user retried, or a second host entry for this server) gets a
+    // fresh session. Reusing its unfinished one would make the next PIN an out-of-order getservercert.
+    auto key = sess.client.uniqueID;
+    return map_id_sess.insert_or_assign(std::move(key), std::move(sess)).first->second;
+  }
+
   void fail_pair(pair_session_t &sess, pt::ptree &tree, const std::string status_msg) {
     tree.put("root.paired", 0);
     tree.put("root.<xmlattr>.status_code", 400);
@@ -744,9 +751,8 @@ namespace nvhttp {
         sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
 
         BOOST_LOG(debug) << sess.client.cert;
-        auto ptr = map_id_sess.emplace(sess.client.uniqueID, std::move(sess)).first;
-
-        ptr->second.async_insert_pin.salt = std::move(get_arg(args, "salt"));
+        sess.async_insert_pin.salt = std::move(get_arg(args, "salt"));
+        auto &pair_sess = start_pair_session(std::move(sess));
 
         auto it = args.find("otpauth");
         if (it != std::end(args)) {
@@ -757,15 +763,15 @@ namespace nvhttp {
             tree.put("root.<xmlattr>.status_code", 503);
             tree.put("root.<xmlattr>.status_message", "OTP auth not available.");
           } else {
-            auto hash = util::hex(crypto::hash(one_time_pin + ptr->second.async_insert_pin.salt + otp_passphrase), true);
+            auto hash = util::hex(crypto::hash(one_time_pin + pair_sess.async_insert_pin.salt + otp_passphrase), true);
 
             if (hash.to_string_view() == it->second) {
 
               if (!otp_device_name.empty()) {
-                ptr->second.client.name = std::move(otp_device_name);
+                pair_sess.client.name = std::move(otp_device_name);
               }
 
-              getservercert(ptr->second, tree, one_time_pin);
+              getservercert(pair_sess, tree, one_time_pin);
 
               one_time_pin.clear();
               otp_passphrase.clear();
@@ -775,7 +781,7 @@ namespace nvhttp {
           }
 
           // Always return positive, attackers will fail in the next steps.
-          getservercert(ptr->second, tree, crypto::rand(16));
+          getservercert(pair_sess, tree, crypto::rand(16));
           return;
         }
 
@@ -785,12 +791,12 @@ namespace nvhttp {
           std::cout << "Please insert pin: "sv;
           std::getline(std::cin, pin);
 
-          getservercert(ptr->second, tree, pin);
+          getservercert(pair_sess, tree, pin);
         } else {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
           system_tray::update_tray_require_pin();
 #endif
-          ptr->second.async_insert_pin.response = std::move(response);
+          pair_sess.async_insert_pin.response = std::move(response);
 
           fg.disable();
           return;
@@ -851,17 +857,20 @@ namespace nvhttp {
     }
 
     auto &sess = std::begin(map_id_sess)->second;
-    getservercert(sess, tree, pin);
-
     if (!name.empty()) {
       sess.client.name = name;
     }
+
+    // getservercert() erases the session when it fails, so take the client's pending response out first
+    // and do not touch `sess` afterwards.
+    auto async_response = std::move(sess.async_insert_pin.response);
+    getservercert(sess, tree, pin);
+    const bool cert_sent = tree.get<int>("root.paired", 0) == 1;
 
     // response to the request for pin
     std::ostringstream data;
     pt::write_xml(data, tree);
 
-    auto &async_response = sess.async_insert_pin.response;
     if (async_response.has_left() && async_response.left()) {
       async_response.left()->write(data.str());
     } else if (async_response.has_right() && async_response.right()) {
@@ -870,10 +879,8 @@ namespace nvhttp {
       return false;
     }
 
-    // reset async_response
-    async_response = std::decay_t<decltype(async_response.left())>();
     // response to the current request
-    return true;
+    return cert_sent;
   }
 
   template<class T>

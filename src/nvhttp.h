@@ -134,6 +134,13 @@ namespace nvhttp {
   void remove_session(const pair_session_t &sess);
 
   /**
+   * @brief Store the pairing session a client opened with getservercert.
+   * @param sess The new session; its client.uniqueID is the key.
+   * @return The stored session.
+   */
+  pair_session_t &start_pair_session(pair_session_t &&sess);
+
+  /**
    * @brief Pair, phase 1
    *
    * Moonlight will send a salt and client certificate, we'll also need the user provided pin.
