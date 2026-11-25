@@ -372,6 +372,11 @@ After installation, some initial setup is required.
 > `cap_sys_admin` may as well be root, except you don't need to be root to run the program. This is necessary to
 > allow Sunshine to use KMS capture.
 
+> [!NOTE]
+> The Debian/RPM post-install script and the Arch package no longer set this capability by default, because Wayland
+> capture (used on Hyprland) does not need it and a file capability makes the loader drop `LD_*` variables from
+> Sunshine's environment. Run the command below, or install with `APOLLO_ENABLE_KMS_CAPTURE=1` set, to use KMS capture.
+
 ##### Enable
 ```bash
 sudo setcap cap_sys_admin+p $(readlink -f $(which sunshine))
@@ -391,10 +396,76 @@ sudo setcap -r $(readlink -f $(which sunshine))
 systemctl --user start sunshine
 ```
 
-**Start on boot**
+**Start on login**
 ```bash
 systemctl --user enable sunshine
 ```
+
+The user service is part of `graphical-session.target`: it starts once the desktop session is up and stops when it
+ends. Check what it is doing with `journalctl --user -u sunshine -f`.
+
+#### Running on Hyprland
+Sunshine uses Wayland capture on Hyprland, so it needs neither `cap_sys_admin` nor root. It does need to run inside
+your Hyprland session, with the session's environment, so that it can reach the compositor, Hyprland's IPC sockets,
+PipeWire and the session D-Bus. The systemd user manager does not get that environment by itself, so Hyprland has to
+export it when it starts.
+
+##### Input devices
+Mouse, keyboard and gamepad input go through `/dev/uinput`, and DualSense emulation through `/dev/uhid`. The packages
+install a udev rule (`60-sunshine.rules`) that gives the logged-in user access to both, and load the `uhid` module at
+boot (`60-sunshine.conf`). Check that your user has access:
+
+```bash
+getfacl /dev/uinput /dev/uhid    # should list "user:<you>:rw-"
+```
+
+If not (for example right after installing, before a reboot), reload the rules and load the modules:
+
+```bash
+sudo modprobe -a uinput uhid
+sudo udevadm control --reload-rules
+sudo udevadm trigger --property-match=DEVNAME=/dev/uinput
+sudo udevadm trigger --property-match=DEVNAME=/dev/uhid
+```
+
+##### With uwsm
+If you start Hyprland through [uwsm](https://github.com/Vladimir-csp/uwsm), it already imports the session's
+environment and activates `graphical-session.target`, so enabling the service is enough:
+
+```bash
+systemctl --user enable --now sunshine
+```
+
+##### Without uwsm
+Without uwsm, `graphical-session.target` is usually never reached, so Hyprland has to import the environment and start
+the service itself, and stop it when Hyprland exits. Importing `HYPRLAND_INSTANCE_SIGNATURE` again on each start
+matters: it changes every time Hyprland starts.
+
+For a Lua config (`hyprland.lua`):
+
+```lua
+hl.on("hyprland.start", function()
+    hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE "
+        .. "XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP && systemctl --user restart sunshine")
+end)
+hl.on("hyprland.shutdown", function()
+    hl.exec_cmd("systemctl --user stop sunshine")
+end)
+```
+
+For a hyprlang config (`hyprland.conf`):
+
+```
+exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP && systemctl --user restart sunshine
+exec-shutdown = systemctl --user stop sunshine
+```
+
+`restart` rather than `start` makes sure a copy left over from an earlier Hyprland instance, which still has the old
+environment, is replaced. The service does not need to be enabled in this setup.
+
+##### Check
+After logging in, `journalctl --user -u sunshine` should show `Screencasting with Wayland's protocol`. When you log
+out, the service stops: Sunshine receives `SIGTERM` (or `SIGHUP`), ends the running app and cleans up before exiting.
 
 ### macOS
 The first time you start Sunshine, you will be asked to grant access to screen recording and your microphone.
