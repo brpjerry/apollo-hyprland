@@ -5,7 +5,9 @@
 
 #include "../tests_common.h"
 
+#include <src/config.h>
 #include <src/nvhttp.h>
+#include <src/utility.h>
 
 using namespace nvhttp;
 
@@ -83,6 +85,13 @@ struct PairingTest: testing::TestWithParam<std::tuple<pairing_input, pairing_out
 // (erase(end()) when it was not stored) and then used it again.
 TEST_P(PairingTest, Run) {
   auto [input, expected] = GetParam();
+
+  // A successful pairing saves and reloads the state file unless the state is fresh; keep the test off disk.
+  bool fresh_state = config::sunshine.flags[config::flag::FRESH_STATE];
+  config::sunshine.flags[config::flag::FRESH_STATE] = true;
+  auto restore_flags = util::fail_guard([&]() {
+    config::sunshine.flags[config::flag::FRESH_STATE] = fresh_state;
+  });
 
   boost::property_tree::ptree tree;
 
