@@ -249,6 +249,14 @@ namespace platf::abs_input {
     return layout_target(port, local_x, local_y);
   }
 
+  point_t output_mapper_t::box_size(const touch_port_t &port) const {
+    // Mirrors map(): output_target() while bound (if the port has the output size), else layout_target().
+    if (!bound_output_.empty() && port.output_width > 0 && port.output_height > 0) {
+      return {double(port.output_width), double(port.output_height)};
+    }
+    return {double(std::max(port.width, 1)), double(std::max(port.height, 1))};
+  }
+
   const std::string &output_mapper_t::bound_output() const {
     return bound_output_;
   }

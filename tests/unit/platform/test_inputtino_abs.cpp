@@ -481,6 +481,24 @@ TEST(AbsInputTest, OutputMapperFallsBackToLayout) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(AbsInputTest, OutputMapperBoxSizeFollowsTheMapping) {
+  // Bound: device axes span the streamed output.
+  auto fake = fake_hyprland();
+  output_mapper_t mapper {"Touch passthrough (client 5)", fake};
+  mapper.map(headless, 0, 0);
+  auto box = mapper.box_size(headless);
+  EXPECT_DOUBLE_EQ(box.x, 1920.0);
+  EXPECT_DOUBLE_EQ(box.y, 1080.0);
+
+  // Unbound: they span the layout box.
+  output_mapper_t none {"Touch passthrough (client 6)", nullptr};
+  none.map(headless, 0, 0);
+  box = none.box_size(headless);
+  EXPECT_DOUBLE_EQ(box.x, 5920.0);
+  EXPECT_DOUBLE_EQ(box.y, 2560.0);
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(AbsInputTest, FlatAccelOncePerGeneration) {
   auto fake = fake_hyprland();
   flat_accel_t accel {"Mouse passthrough", fake};

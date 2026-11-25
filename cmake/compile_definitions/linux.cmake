@@ -253,6 +253,11 @@ file(GLOB_RECURSE INPUTTINO_SOURCES
         ${CMAKE_SOURCE_DIR}/src/platform/linux/input/inputtino*.h
         ${CMAKE_SOURCE_DIR}/src/platform/linux/input/inputtino*.cpp)
 list(APPEND PLATFORM_TARGET_FILES ${INPUTTINO_SOURCES})
+# Per-client touch screen and pen tablet (HYP-24) and the input option decisions (HYP-24, HYP-25)
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/input_options.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.cpp")
 
 # build libevdev before the libinputtino target
 if(EXTERNAL_PROJECT_LIBEVDEV_USED)

@@ -118,6 +118,16 @@ target_link_libraries(${PROJECT_NAME}
         ${SUNSHINE_EXTERNAL_LIBRARIES}
         gtest
         ${PLATFORM_LIBRARIES})
+
+# Optional: libinput reads the virtual touch screen and pen in tests/integration/test_touch_pen_uinput.cpp.
+if(UNIX AND NOT APPLE)
+    pkg_check_modules(TEST_LIBINPUT libinput libudev)
+    if(TEST_LIBINPUT_FOUND)
+        target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${TEST_LIBINPUT_INCLUDE_DIRS})
+        target_link_libraries(${PROJECT_NAME} ${TEST_LIBINPUT_LIBRARIES})
+        target_compile_definitions(${PROJECT_NAME} PRIVATE TESTS_HAVE_LIBINPUT)
+    endif()
+endif()
 target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST_DEFINITIONS})
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE)

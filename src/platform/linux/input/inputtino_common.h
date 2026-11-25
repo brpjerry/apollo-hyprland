@@ -20,6 +20,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
+#include "touch_pen.h"
 
 #ifdef SUNSHINE_BUILD_WAYLAND
   #include "virtual_keyboard.h"
@@ -107,26 +108,27 @@ namespace platf {
     }
 
     client_input_raw_t(input_t &input, int client_id):
-        touch(inputtino::TouchScreen::create({
-          .name = client_device_name("Touch passthrough", client_id),
-          .vendor_id = 0xBEEF,
-          .product_id = 0xDEAD,
-          .version = 0x111,
-        })),
-        pen(inputtino::PenTablet::create({
-          .name = client_device_name("Pen passthrough", client_id),
-          .vendor_id = 0xBEEF,
-          .product_id = 0xDEAD,
-          .version = 0x111,
-        })),
         touch_mapper(client_device_name("Touch passthrough", client_id), abs_input::hyprland_compositor()),
         pen_mapper(client_device_name("Pen passthrough", client_id), abs_input::hyprland_compositor()) {
       global = (input_raw_t *) input.get();
+      std::string error;
+      touch = touch_pen::uinput_device_t::touch_screen(client_device_name("Touch passthrough", client_id), error);
       if (!touch) {
-        BOOST_LOG(warning) << "Unable to create virtual touch screen: " << touch.getErrorMessage();
+        BOOST_LOG(warning) << "Unable to create virtual touch screen: " << error;
       }
+      pen = touch_pen::uinput_device_t::pen_tablet(client_device_name("Pen passthrough", client_id), error);
       if (!pen) {
-        BOOST_LOG(warning) << "Unable to create virtual pen tablet: " << pen.getErrorMessage();
+        BOOST_LOG(warning) << "Unable to create virtual pen tablet: " << error;
+      }
+    }
+
+    ~client_input_raw_t() override {
+      // Lift whatever is still down before the devices go away.
+      if (touch) {
+        touch->write(touch_state.handle(LI_TOUCH_EVENT_CANCEL_ALL, 0, {}));
+      }
+      if (pen) {
+        pen->write(pen_state.handle(LI_TOUCH_EVENT_CANCEL_ALL, {}));
       }
     }
 
@@ -136,8 +138,10 @@ namespace platf {
     // input context, because each connected client may be sending their own independent
     // pen/touch events. To maintain separation, we expose separate pen and touch devices
     // for each client.
-    inputtino::Result<inputtino::TouchScreen> touch;
-    inputtino::Result<inputtino::PenTablet> pen;
+    std::unique_ptr<touch_pen::uinput_device_t> touch;
+    std::unique_ptr<touch_pen::uinput_device_t> pen;
+    touch_pen::touch_state_t touch_state;
+    touch_pen::pen_state_t pen_state;
 
     // Keep each device bound to the output being streamed (see inputtino_abs.h).
     abs_input::output_mapper_t touch_mapper;

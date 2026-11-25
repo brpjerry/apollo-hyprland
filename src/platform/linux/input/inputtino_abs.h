@@ -235,6 +235,13 @@ namespace platf::abs_input {
     target_t map(const touch_port_t &port, double local_x, double local_y);
 
     /**
+     * @brief Size, in display-local units, of the box the device's axes span for the last map() with @p port:
+     * the streamed output while the device is bound to it, otherwise the port's layout box. Used to convert
+     * lengths such as the touch contact area to device units.
+     */
+    point_t box_size(const touch_port_t &port) const;
+
+    /**
      * @brief The output the device is bound to, empty if it is not.
      */
     const std::string &bound_output() const;
