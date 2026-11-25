@@ -1548,44 +1548,40 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  SimpleWeb::StatusCode clipboard_access(
+    const crypto::named_cert_t &client,
+    bool write,
+    std::string_view type,
+    const std::list<std::string> &session_uuids
+  ) {
+    auto needed = write ? PERM::clipboard_set : PERM::clipboard_read;
+    if (!(client.perm & PERM::_allow_view) || !(client.perm & needed)) {
+      BOOST_LOG(debug) << "Permission "sv << (write ? "Write"sv : "Read"sv) << " Clipboard denied for ["sv << client.name << "] ("sv << (uint32_t) client.perm << ')';
+      return SimpleWeb::StatusCode::client_error_unauthorized;
+    }
+
+    if (type != "text"sv) {
+      BOOST_LOG(debug) << "Clipboard type ["sv << type << "] is not supported!"sv;
+      return SimpleWeb::StatusCode::client_error_bad_request;
+    }
+
+    if (std::find(session_uuids.begin(), session_uuids.end(), client.uuid) == session_uuids.end()) {
+      BOOST_LOG(debug) << "Client ["sv << client.name << "] trying to "sv << (write ? "set"sv : "get"sv) << " clipboard is not connected to a stream"sv;
+      return SimpleWeb::StatusCode::client_error_forbidden;
+    }
+
+    return SimpleWeb::StatusCode::success_ok;
+  }
+
   void getClipboard(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
     auto named_cert_p = get_verified_cert(request);
 
-    if (
-      !(named_cert_p->perm & PERM::_allow_view)
-      || !(named_cert_p->perm & PERM::clipboard_read)
-    ) {
-      BOOST_LOG(debug) << "Permission Read Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
-
-      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
-      response->close_connection_after_response = true;
-      return;
-    }
-
     auto args = request->parse_query_string();
-    auto clipboard_type = get_arg(args, "type");
-    if (clipboard_type != "text"sv) {
-      BOOST_LOG(debug) << "Clipboard type [" << clipboard_type << "] is not supported!";
-
-      response->write(SimpleWeb::StatusCode::client_error_bad_request);
-      response->close_connection_after_response = true;
-      return;
-    }
-
-    std::list<std::string> connected_uuids = rtsp_stream::get_all_session_uuids();
-
-    bool found = !connected_uuids.empty();
-
-    if (found) {
-      found = (std::find(connected_uuids.begin(), connected_uuids.end(), named_cert_p->uuid) != connected_uuids.end());
-    }
-
-    if (!found) {
-      BOOST_LOG(debug) << "Client ["<< named_cert_p->name << "] trying to get clipboard is not connected to a stream";
-
-      response->write(SimpleWeb::StatusCode::client_error_forbidden);
+    auto status = clipboard_access(*named_cert_p, false, get_arg(args, "type", ""), rtsp_stream::get_all_session_uuids());
+    if (status != SimpleWeb::StatusCode::success_ok) {
+      response->write(status);
       response->close_connection_after_response = true;
       return;
     }
@@ -1601,39 +1597,10 @@ namespace nvhttp {
 
     auto named_cert_p = get_verified_cert(request);
 
-    if (
-      !(named_cert_p->perm & PERM::_allow_view)
-      || !(named_cert_p->perm & PERM::clipboard_set)
-    ) {
-      BOOST_LOG(debug) << "Permission Write Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
-
-      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
-      response->close_connection_after_response = true;
-      return;
-    }
-
     auto args = request->parse_query_string();
-    auto clipboard_type = get_arg(args, "type");
-    if (clipboard_type != "text"sv) {
-      BOOST_LOG(debug) << "Clipboard type [" << clipboard_type << "] is not supported!";
-
-      response->write(SimpleWeb::StatusCode::client_error_bad_request);
-      response->close_connection_after_response = true;
-      return;
-    }
-
-    std::list<std::string> connected_uuids = rtsp_stream::get_all_session_uuids();
-
-    bool found = !connected_uuids.empty();
-
-    if (found) {
-      found = (std::find(connected_uuids.begin(), connected_uuids.end(), named_cert_p->uuid) != connected_uuids.end());
-    }
-
-    if (!found) {
-      BOOST_LOG(debug) << "Client ["<< named_cert_p->name << "] trying to set clipboard is not connected to a stream";
-
-      response->write(SimpleWeb::StatusCode::client_error_forbidden);
+    auto status = clipboard_access(*named_cert_p, true, get_arg(args, "type", ""), rtsp_stream::get_all_session_uuids());
+    if (status != SimpleWeb::StatusCode::success_ok) {
+      response->write(status);
       response->close_connection_after_response = true;
       return;
     }
@@ -1647,6 +1614,7 @@ namespace nvhttp {
 
       response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
       response->close_connection_after_response = true;
+      return;
     }
 
     response->write();
