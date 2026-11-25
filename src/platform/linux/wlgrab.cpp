@@ -9,6 +9,7 @@
 #include "cuda.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/display_selection.h"
 #include "src/video.h"
 #include "vaapi.h"
 #include "wayland.h"
@@ -16,8 +17,28 @@
 using namespace std::literals;
 
 namespace wl {
-  static int env_width;
-  static int env_height;
+  /**
+   * @brief Names used to select outputs: the connector name, or the enumeration index if the compositor
+   *        did not report a name.
+   */
+  static std::vector<std::string> output_names(const interface_t &interface) {
+    std::vector<std::string> names;
+    names.reserve(interface.monitors.size());
+    for (std::size_t x = 0; x < interface.monitors.size(); ++x) {
+      const auto &name = interface.monitors[x]->name;
+      names.emplace_back(name.empty() ? std::to_string(x) : name);
+    }
+    return names;
+  }
+
+  static std::vector<output_geometry_t> output_geometries(const interface_t &interface) {
+    std::vector<output_geometry_t> geometries;
+    geometries.reserve(interface.monitors.size());
+    for (const auto &monitor : interface.monitors) {
+      geometries.emplace_back(monitor->geometry);
+    }
+    return geometries;
+  }
 
   struct img_t: public platf::img_t {
     ~img_t() override {
@@ -50,34 +71,69 @@ namespace wl {
         return -1;
       }
 
-      auto monitor = interface.monitors[0].get();
-
-      if (!display_name.empty()) {
-        auto streamedMonitor = util::from_view(display_name);
-
-        if (streamedMonitor >= 0 && streamedMonitor < interface.monitors.size()) {
-          monitor = interface.monitors[streamedMonitor].get();
-        }
+      if (interface.monitors.empty()) {
+        BOOST_LOG(error) << "The Wayland compositor reported no outputs"sv;
+        return -1;
       }
 
-      monitor->listen(interface.output_manager);
+      // Names and the layout bounding box need every output, not just the one we stream.
+      for (auto &monitor : interface.monitors) {
+        monitor->listen(interface.output_manager);
+      }
 
       display.roundtrip();
 
+      const auto names = output_names(interface);
+
+      std::size_t index = 0;
+      if (!display_name.empty()) {
+        auto found = platf::find_display(names, display_name, true);
+        if (!found) {
+          BOOST_LOG(error) << "Wayland output ["sv << display_name << "] not found; available outputs: "sv << platf::join_display_names(names);
+          return -1;
+        }
+        index = *found;
+
+        if (names[index] != display_name) {
+          BOOST_LOG(warning) << "Selecting Wayland output by index ["sv << display_name << "] is deprecated; use its name ["sv << names[index] << "] instead"sv;
+        }
+      }
+
+      auto monitor = interface.monitors[index].get();
+      const auto &geometry = monitor->geometry;
+
       output = monitor->output;
 
-      offset_x = monitor->viewport.offset_x;
-      offset_y = monitor->viewport.offset_y;
-      width = monitor->viewport.width;
-      height = monitor->viewport.height;
+      // Capture buffers are in hardware pixels, in whatever orientation the compositor's screencopy delivers.
+      const auto upright = transformed_mode_size(geometry);
+      const auto frame = probe_frame_size(display, interface.screencopy_manager, output).value_or(upright);
+      width = frame.width;
+      height = frame.height;
 
-      this->env_width = ::wl::env_width;
-      this->env_height = ::wl::env_height;
+      // Everything handed to input is in the compositor's logical (scaled) layout space.
+      // See input::touch_port_t for how these are used.
+      const auto logical = logical_size(geometry);
+      offset_x = geometry.logical_x;
+      offset_y = geometry.logical_y;
+      logical_width = logical.width;
+      logical_height = logical.height;
 
-      BOOST_LOG(info) << "Selected monitor ["sv << monitor->description << "] for streaming"sv;
-      BOOST_LOG(debug) << "Offset: "sv << offset_x << 'x' << offset_y;
-      BOOST_LOG(debug) << "Resolution: "sv << width << 'x' << height;
-      BOOST_LOG(debug) << "Desktop Resolution: "sv << env_width << 'x' << env_height;
+      const auto bounds = layout_bounds(output_geometries(interface));
+      env_x = bounds.min_x;
+      env_y = bounds.min_y;
+      env_width = bounds.width;
+      env_height = bounds.height;
+
+      BOOST_LOG(info) << "Selected Wayland output ["sv << names[index] << "] ("sv << monitor->description << ") for streaming"sv;
+      BOOST_LOG(debug) << "Mode: "sv << geometry.mode_width << 'x' << geometry.mode_height << ", frame "sv << width << 'x' << height << ", transform "sv << geometry.transform << ", scale "sv << effective_scale(geometry);
+      BOOST_LOG(debug) << "Logical geometry: "sv << logical_width << 'x' << logical_height << " at "sv << offset_x << ',' << offset_y;
+      BOOST_LOG(debug) << "Desktop layout: "sv << env_width << 'x' << env_height << " at "sv << env_x << ',' << env_y;
+
+      if (frame != upright) {
+        BOOST_LOG(warning) << "Wayland output ["sv << names[index] << "] has transform "sv << geometry.transform
+                           << " but the compositor delivers "sv << frame.width << 'x' << frame.height
+                           << " frames; the stream will not be rotated to match"sv;
+      }
 
       return 0;
     }
@@ -416,26 +472,25 @@ namespace platf {
       return {};
     }
 
-    wl::env_width = 0;
-    wl::env_height = 0;
-
     for (auto &monitor : interface.monitors) {
       monitor->listen(interface.output_manager);
     }
 
     display.roundtrip();
 
+    display_names = wl::output_names(interface);
+
     BOOST_LOG(info) << "-------- Start of Wayland monitor list --------"sv;
 
-    for (int x = 0; x < interface.monitors.size(); ++x) {
+    for (std::size_t x = 0; x < interface.monitors.size(); ++x) {
       auto monitor = interface.monitors[x].get();
+      const auto &geometry = monitor->geometry;
+      const auto logical = wl::logical_size(geometry);
 
-      wl::env_width = std::max(wl::env_width, (int) (monitor->viewport.offset_x + monitor->viewport.width));
-      wl::env_height = std::max(wl::env_height, (int) (monitor->viewport.offset_y + monitor->viewport.height));
-
-      BOOST_LOG(info) << "Monitor " << x << " is "sv << monitor->name << ": "sv << monitor->description;
-
-      display_names.emplace_back(std::to_string(x));
+      BOOST_LOG(info) << "Monitor "sv << x << " is "sv << display_names[x] << ": "sv << monitor->description
+                      << " ("sv << geometry.mode_width << 'x' << geometry.mode_height
+                      << ", logical "sv << logical.width << 'x' << logical.height << " at "sv << geometry.logical_x << ',' << geometry.logical_y
+                      << ", scale "sv << wl::effective_scale(geometry) << ", transform "sv << geometry.transform << ')';
     }
 
     BOOST_LOG(info) << "--------- End of Wayland monitor list ---------"sv;

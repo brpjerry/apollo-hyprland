@@ -6,6 +6,7 @@
 
 // standard includes
 #include <bitset>
+#include <optional>
 
 #ifdef SUNSHINE_BUILD_WAYLAND
   #include <linux-dmabuf-unstable-v1.h>
@@ -15,6 +16,7 @@
 
 // local includes
 #include "graphics.h"
+#include "wayland_geometry.h"
 
 /**
  * The classes defined in this macro block should only be used by
@@ -114,20 +116,33 @@ namespace wl {
 
     void xdg_done(zxdg_output_v1 *) {}
 
-    void wl_geometry(wl_output *wl_output, std::int32_t x, std::int32_t y, std::int32_t physical_width, std::int32_t physical_height, std::int32_t subpixel, const char *make, const char *model, std::int32_t transform) {}
+    void wl_geometry(wl_output *wl_output, std::int32_t x, std::int32_t y, std::int32_t physical_width, std::int32_t physical_height, std::int32_t subpixel, const char *make, const char *model, std::int32_t transform);
 
     void wl_mode(wl_output *wl_output, std::uint32_t flags, std::int32_t width, std::int32_t height, std::int32_t refresh);
 
     void wl_done(wl_output *wl_output) {}
 
-    void wl_scale(wl_output *wl_output, std::int32_t factor) {}
+    void wl_scale(wl_output *wl_output, std::int32_t factor);
+
+    void wl_name(wl_output *wl_output, const char *name);
+
+    void wl_description(wl_output *wl_output, const char *description);
 
     wl_output *output;
+
+    /// Connector name (e.g. "DP-3", "HEADLESS-2"), from wl_output.name (v4) or else zxdg_output_v1.name.
+    /// Empty if the compositor supports neither.
     std::string name;
     std::string description;
-    platf::touch_port_t viewport;
+
+    /// Logical position/size, mode size, transform and scale of this output.
+    output_geometry_t geometry;
+
     wl_output_listener wl_listener;
     zxdg_output_v1_listener xdg_listener;
+
+  private:
+    bool has_wl_name {false};
   };
 
   class interface_t {
@@ -199,6 +214,15 @@ namespace wl {
   };
 
   std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name = nullptr);
+
+  /**
+   * @brief Ask the compositor what size screencopy frames of an output will have, without copying a frame.
+   * @details Compositors differ: Hyprland delivers frames of rotated outputs already rotated (e.g. 2160x3840 for a
+   *          3840x2160 mode with transform 1), while others deliver the untransformed mode size.
+   * @return The frame size, or `std::nullopt` if the compositor did not announce a buffer.
+   */
+  std::optional<extent_t> probe_frame_size(display_t &display, zwlr_screencopy_manager_v1 *screencopy_manager, wl_output *output);
+
   int init();
 }  // namespace wl
 #else
@@ -221,7 +245,7 @@ namespace wl {
     wl_output *output;
     std::string name;
     std::string description;
-    platf::touch_port_t viewport;
+    output_geometry_t geometry;
   };
 
   inline std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name = nullptr) {
