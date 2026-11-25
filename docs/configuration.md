@@ -932,11 +932,24 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Select the display number you want to stream.
+            Select the display you want to stream.
             @tip{To find the appropriate values follow these instructions.
             <br>
             <br>
-            **Linux:**
+            **Linux (Wayland capture):**
+            <br>
+            During Sunshine startup, you should see the list of detected outputs:
+            @code{}
+            Info: -------- Start of Wayland monitor list --------
+            Info: Monitor 0 is DP-1: Dell Inc. DELL U2720Q (3840x2160, logical 2560x1440 at 0,0, scale 1.5, transform 0)
+            Info: Monitor 1 is HDMI-A-1: LG Electronics LG TV (1920x1080, logical 1920x1080 at 2560,0, scale 1, transform 0)
+            Info: --------- End of Wayland monitor list ---------
+            @endcode
+            You need to use the connector name, e.g. `HDMI-A-1`. A number from an older config, e.g. `1`,
+            still selects the output at that position in the list.
+            <br>
+            <br>
+            **Linux (X11 and KMS capture):**
             <br>
             During Sunshine startup, you should see the list of detected displays:
             @code{}
@@ -1023,7 +1036,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Example (Linux)</td>
         <td colspan="2">@code{}
-            output_name = 0
+            output_name = DP-1
             @endcode</td>
     </tr>
     <tr>
