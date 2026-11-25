@@ -389,6 +389,13 @@ namespace platf {
 
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
 
+    /**
+     * @brief The content is the same as the previous frame's. Damage-driven capture backends re-send the newest
+     *        frame while the screen does not change; the encoder encodes it but does not count it against the
+     *        frame rate, so the next real frame is not dropped for arriving too soon after it.
+     */
+    bool repeat {};
+
     virtual ~img_t() = default;
   };
 

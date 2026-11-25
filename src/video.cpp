@@ -1964,8 +1964,6 @@ namespace video {
     double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target * 1000 : std::max(config.encodingFramerate / 5, 10000);
     auto max_frametime = std::chrono::nanoseconds(1000ms) * 1000 / minimum_fps_target;
     auto encode_frame_threshold = std::chrono::nanoseconds(1000ms) * 1000 / config.encodingFramerate;
-    auto frame_variation_threshold = encode_frame_threshold / 4;
-    auto min_frame_diff = encode_frame_threshold - frame_variation_threshold;
     BOOST_LOG(info) << "Minimum FPS target set to ~"sv << (minimum_fps_target / 2000) << "fps ("sv << max_frametime * 2 << ")"sv;
     BOOST_LOG(info) << "Encoding Frame threshold: "sv << encode_frame_threshold;
 
@@ -2003,8 +2001,10 @@ namespace video {
       }
     }
 
-    std::chrono::steady_clock::time_point encode_frame_timestamp;
+    encode_frame_limiter_t frame_limiter {encode_frame_threshold};
     bool missing_frame_timestamp_warning_logged = false;
+    std::size_t frames_dropped_by_limiter = 0;
+    auto limiter_log_time = std::chrono::steady_clock::now();
 
     while (true) {
       // Break out of the encoding loop if any of the following are true:
@@ -2049,11 +2049,16 @@ namespace video {
             frame_timestamp = std::chrono::steady_clock::now();
           }
 
-          auto current_timestamp = *frame_timestamp;
-          auto time_diff = current_timestamp - encode_frame_timestamp;
-
           // If new frame comes in way too fast, just drop
-          if (time_diff < -frame_variation_threshold) {
+          auto admitted = frame_limiter.admit(*frame_timestamp, img->repeat);
+          if (!admitted) {
+            ++frames_dropped_by_limiter;
+            if (auto now = std::chrono::steady_clock::now(); now - limiter_log_time >= 10s) {
+              BOOST_LOG(debug) << "Encoder dropped "sv << frames_dropped_by_limiter << " frames that came in too fast in the last "sv
+                               << std::chrono::duration_cast<std::chrono::seconds>(now - limiter_log_time).count() << " s"sv;
+              frames_dropped_by_limiter = 0;
+              limiter_log_time = now;
+            }
             continue;
           }
 
@@ -2062,13 +2067,7 @@ namespace video {
             break;
           }
 
-          if (time_diff < frame_variation_threshold) {
-            *frame_timestamp = encode_frame_timestamp;
-          } else {
-            encode_frame_timestamp = current_timestamp;
-          }
-
-          encode_frame_timestamp += encode_frame_threshold;
+          frame_timestamp = admitted;
         } else if (!images->running()) {
           break;
         }
