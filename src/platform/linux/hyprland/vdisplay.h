@@ -68,6 +68,21 @@ namespace hyprland {
   std::string isolated_position(const std::vector<monitor_info_t> &monitors, const std::string &own_name, int gap);
 
   /**
+   * @brief Whether a monitor shows the desktop, i.e. capturing it gives a picture.
+   *
+   * Disabled monitors are not advertised to Wayland clients at all. DPMS-off monitors still are, but Hyprland
+   * stops rendering them: screencopy returns solid black once the DPMS fade has finished (checked on 0.57.2).
+   * `FALLBACK` is the placeholder Hyprland adds when no monitor is left; it never counts.
+   * Headless outputs, including Apollo's own, count like any other monitor.
+   */
+  bool monitor_is_active(const monitor_info_t &monitor);
+
+  /**
+   * @brief Whether any monitor in the list is active (see monitor_is_active()).
+   */
+  bool any_monitor_active(const std::vector<monitor_info_t> &monitors);
+
+  /**
    * @brief Hyprland headless outputs as virtual displays.
    *
    * All public methods are thread-safe. Output creation, removal and mode changes are serialised by one mutex.
@@ -143,6 +158,12 @@ namespace hyprland {
      * @brief Names of the outputs this backend created and has not removed yet.
      */
     std::vector<std::string> owned_outputs() const;
+
+    /**
+     * @brief Whether Hyprland has any active monitor (see monitor_is_active()).
+     * @return std::nullopt if Hyprland cannot be asked.
+     */
+    std::optional<bool> any_monitor_active();
 
   private:
     struct owned_t {

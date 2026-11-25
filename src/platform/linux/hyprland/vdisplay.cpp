@@ -141,6 +141,14 @@ namespace hyprland {
     return std::format("{}x{}", max_x + gap, max_y + gap);
   }
 
+  bool monitor_is_active(const monitor_info_t &monitor) {
+    return !monitor.disabled && monitor.dpms_on && monitor.name != "FALLBACK"sv;
+  }
+
+  bool any_monitor_active(const std::vector<monitor_info_t> &monitors) {
+    return std::ranges::any_of(monitors, monitor_is_active);
+  }
+
   vdisplay_t::options_t vdisplay_t::default_options() {
     options_t options;
     options.connect = []() {
@@ -371,6 +379,18 @@ namespace hyprland {
       remove_owner_file(name);
     }
     return removed;
+  }
+
+  std::optional<bool> vdisplay_t::any_monitor_active() {
+    std::lock_guard lock {mutex_};
+    if (!ensure_connected_locked()) {
+      return std::nullopt;
+    }
+    auto monitors = monitors_locked();
+    if (!monitors) {
+      return std::nullopt;
+    }
+    return hyprland::any_monitor_active(*monitors);
   }
 
   std::vector<std::string> vdisplay_t::owned_outputs() const {
@@ -690,5 +710,12 @@ namespace platf::vdisplay {
   std::string output_name_for(const std::string &display_name) {
     // Wayland capture selects outputs by connector name (HYP-04).
     return display_name;
+  }
+
+  std::optional<bool> any_display_active() {
+    if (backend().status() != status_e::ok) {
+      return std::nullopt;
+    }
+    return backend().any_monitor_active();
   }
 }  // namespace platf::vdisplay

@@ -378,7 +378,16 @@ int main(int argc, char *argv[]) {
         platf::vdisplay::set_render_adapter(config::video.adapter_name);
       }
 
-      platf::vdisplay::create(probe_uuid, "Probe", {800, 600, probe_refresh}, probe_uuid_str);
+      [[maybe_unused]] const auto probe_display = platf::vdisplay::create(probe_uuid, "Probe", {800, 600, probe_refresh}, probe_uuid_str);
+
+#ifndef _WIN32
+      // Capture picks the output by name: probe on the display just created, not on a configured output that
+      // may be disabled, switched off or missing (which may be why probing failed).
+      const auto saved_output_name = config::video.output_name;
+      if (!probe_display.empty()) {
+        config::video.output_name = platf::vdisplay::output_name_for(probe_display);
+      }
+#endif
 
       std::this_thread::sleep_for(500ms);
 
@@ -390,6 +399,10 @@ int main(int argc, char *argv[]) {
           BOOST_LOG(error) << "Video failed to find working encoder even after attempted with a virtual display"sv;
         }
       }
+
+#ifndef _WIN32
+      config::video.output_name = saved_output_name;
+#endif
 
       platf::vdisplay::remove(probe_uuid);
     } else if (!allow_probing) {

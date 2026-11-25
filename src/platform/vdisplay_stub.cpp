@@ -44,4 +44,8 @@ namespace platf::vdisplay {
   std::string output_name_for(const std::string &display_name) {
     return display_name;
   }
+
+  std::optional<bool> any_display_active() {
+    return std::nullopt;
+  }
 }  // namespace platf::vdisplay

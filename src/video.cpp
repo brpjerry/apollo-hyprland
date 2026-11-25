@@ -64,6 +64,18 @@ namespace video {
       if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
         return false;
       }
+      #else
+      // Ask the virtual display backend instead. With no active output (Hyprland: every monitor disabled or
+      // DPMS-off, which captures as black), probing happens on a temporary virtual display (main.cpp) and every
+      // app gets a virtual display (proc::proc_t::execute()). Without a working backend this cannot be told,
+      // and no virtual display could be created anyway, so probing goes ahead.
+      if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
+        const auto any_active = platf::vdisplay::any_display_active();
+        if (any_active && !*any_active) {
+          BOOST_LOG(info) << "No display is active (all outputs disabled or switched off); a virtual display will be used"sv;
+          return false;
+        }
+      }
       #endif
         return true;
     }
