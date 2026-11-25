@@ -98,6 +98,7 @@ const config = ref(props.config)
         <PlatformLayout :platform="platform">
           <template #linux>
             <option value="nvfbc">NvFBC</option>
+            <option value="ext">ext-image-copy-capture (Wayland)</option>
             <option value="wlr">wlroots</option>
             <option value="kms">KMS</option>
             <option value="x11">X11</option>

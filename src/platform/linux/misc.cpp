@@ -868,7 +868,8 @@ std::string get_local_ip_for_gateway() {
       NVFBC,  ///< NvFBC
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
-      WAYLAND,  ///< Wayland
+      WAYLAND_EXT,  ///< Wayland ext-image-copy-capture
+      WAYLAND,  ///< Wayland wlr-screencopy
 #endif
 #ifdef SUNSHINE_BUILD_DRM
       KMS,  ///< KMS
@@ -898,6 +899,13 @@ std::string get_local_ip_for_gateway() {
   bool verify_wl() {
     return window_system == window_system_e::WAYLAND && !wl_display_names().empty();
   }
+
+  std::vector<std::string> ext_display_names();
+  std::shared_ptr<display_t> ext_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
+
+  bool verify_ext() {
+    return window_system == window_system_e::WAYLAND && !ext_display_names().empty();
+  }
 #endif
 
 #ifdef SUNSHINE_BUILD_DRM
@@ -926,6 +934,9 @@ std::string get_local_ip_for_gateway() {
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
+    if (sources[source::WAYLAND_EXT]) {
+      return ext_display_names();
+    }
     if (sources[source::WAYLAND]) {
       return wl_display_names();
     }
@@ -960,8 +971,12 @@ std::string get_local_ip_for_gateway() {
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
+    if (sources[source::WAYLAND_EXT]) {
+      BOOST_LOG(info) << "Screencasting with Wayland's ext-image-copy-capture protocol"sv;
+      return ext_display(hwdevice_type, display_name, config);
+    }
     if (sources[source::WAYLAND]) {
-      BOOST_LOG(info) << "Screencasting with Wayland's protocol"sv;
+      BOOST_LOG(info) << "Screencasting with Wayland's wlr-screencopy protocol"sv;
       return wl_display(hwdevice_type, display_name, config);
     }
 #endif
@@ -1013,6 +1028,11 @@ std::string get_local_ip_for_gateway() {
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
+    if ((config::video.capture.empty() && sources.none()) || config::video.capture == "ext") {
+      if (verify_ext()) {
+        sources[source::WAYLAND_EXT] = true;
+      }
+    }
     if ((config::video.capture.empty() && sources.none()) || config::video.capture == "wlr") {
       if (verify_wl()) {
         sources[source::WAYLAND] = true;

@@ -150,6 +150,7 @@ if(WAYLAND_FOUND)
     list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES} gbm)
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wlgrab.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/extgrab.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland_capture_logic.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.cpp"

@@ -450,6 +450,19 @@ namespace wl {
    */
   bool hand_over_buffer(buffer_pool_t &pool, std::size_t slot, const std::shared_ptr<platf::img_t> &img, std::uint64_t sequence, bool y_invert);
 
+  /**
+   * @brief Options for the ext-image-copy-capture backend.
+   */
+  struct ext_options_t {
+    /// Use shared memory buffers for system memory capture even when dma-bufs are possible.
+    bool prefer_shm {false};
+  };
+
+  /**
+   * @brief Creates an ext-image-copy-capture display (platf::ext_display() with options).
+   */
+  std::shared_ptr<platf::display_t> make_ext_display(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config, const ext_options_t &options);
+
   int init();
 }  // namespace wl
 #else
