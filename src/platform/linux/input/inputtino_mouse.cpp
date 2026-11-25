@@ -8,6 +8,7 @@
 #include <libevdev/libevdev.h>
 
 // local includes
+#include "inputtino_abs.h"
 #include "inputtino_common.h"
 #include "inputtino_mouse.h"
 #include "src/config.h"
@@ -21,13 +22,19 @@ namespace platf::mouse {
 
   void move(input_raw_t *raw, int deltaX, int deltaY) {
     if (raw->mouse) {
+      raw->mouse_accel.ensure();
       (*raw->mouse).move(deltaX, deltaY);
     }
   }
 
   void move_abs(input_raw_t *raw, const touch_port_t &touch_port, float x, float y) {
     if (raw->mouse) {
-      (*raw->mouse).move_abs(x, y, touch_port.width, touch_port.height);
+      // Compositors map absolute pointers onto the whole desktop; Hyprland ignores a per-device output for them
+      // (see inputtino_abs.h). x/y are relative to the streamed output, so place them in the layout.
+      auto t = raw->mouse_mapper.map(touch_port, x, y);
+      int ux = abs_input::libinput_units(t.at.x, t.min.x, t.max.x, abs_input::mouse_max_x);
+      int uy = abs_input::libinput_units(t.at.y, t.min.y, t.max.y, abs_input::mouse_max_y);
+      (*raw->mouse).move_abs(ux, uy, abs_input::mouse_max_x, abs_input::mouse_max_y);
     }
   }
 

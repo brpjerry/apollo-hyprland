@@ -8,6 +8,7 @@
 #include <libevdev/libevdev.h>
 
 // local includes
+#include "inputtino_abs.h"
 #include "inputtino_common.h"
 #include "inputtino_pen.h"
 #include "src/config.h"
@@ -63,7 +64,11 @@ namespace platf::pen {
 
       bool is_touching = pen.eventType == LI_TOUCH_EVENT_DOWN || pen.eventType == LI_TOUCH_EVENT_MOVE;
 
-      (*raw->pen).place_tool(tool, pen.x, pen.y, is_touching ? pen.pressureOrDistance : -1, is_touching ? -1 : pen.pressureOrDistance, tilt_x, tilt_y);
+      // pen.x/y are display-local positions divided by the layout size (touch_port.width/height).
+      auto t = raw->pen_mapper.map(touch_port, double(pen.x) * touch_port.width, double(pen.y) * touch_port.height);
+      float fx = abs_input::libinput_fraction(t.at.x, t.min.x, t.max.x, abs_input::pen_max_x);
+      float fy = abs_input::libinput_fraction(t.at.y, t.min.y, t.max.y, abs_input::pen_max_y);
+      (*raw->pen).place_tool(tool, fx, fy, is_touching ? pen.pressureOrDistance : -1, is_touching ? -1 : pen.pressureOrDistance, tilt_x, tilt_y);
     }
   }
 }  // namespace platf::pen

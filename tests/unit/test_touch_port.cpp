@@ -60,6 +60,8 @@ TEST(TouchPortTest, BackendWithoutLogicalSizeIsUnchanged) {
   EXPECT_EQ(port.env_x, 0);
   EXPECT_EQ(port.env_y, 0);
   EXPECT_FLOAT_EQ(port.scalar_inv, 1.5f);
+  EXPECT_EQ(port.logical_width, 1920);
+  EXPECT_EQ(port.logical_height, 1080);
 
   const auto [x, y] = to_local(port, 1280, 720);
   EXPECT_FLOAT_EQ(x, 1920);
@@ -87,6 +89,8 @@ TEST(TouchPortTest, WaylandScaledOutputMapsToLogicalPixels) {
   EXPECT_EQ(port.env_y, -560);
   EXPECT_EQ(port.env_width, 4000);
   EXPECT_EQ(port.env_height, 2560);
+  EXPECT_EQ(port.logical_width, 2560);
+  EXPECT_EQ(port.logical_height, 1440);
   EXPECT_FLOAT_EQ(port.client_offsetX, 0);
   EXPECT_FLOAT_EQ(port.client_offsetY, 60);
 

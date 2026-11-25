@@ -8,6 +8,7 @@
 #include <libevdev/libevdev.h>
 
 // local includes
+#include "inputtino_abs.h"
 #include "inputtino_common.h"
 #include "inputtino_touch.h"
 #include "src/config.h"
@@ -39,7 +40,11 @@ namespace platf::touch {
             } else if (adjusted_angle < -90) {
               adjusted_angle += 360;
             }
-            (*raw->touch).place_finger(touch.pointerId, touch.x, touch.y, touch.pressureOrDistance, adjusted_angle);
+            // touch.x/y are display-local positions divided by the layout size (touch_port.width/height).
+            auto t = raw->touch_mapper.map(touch_port, double(touch.x) * touch_port.width, double(touch.y) * touch_port.height);
+            float fx = abs_input::libinput_fraction(t.at.x, t.min.x, t.max.x, abs_input::touch_max_x);
+            float fy = abs_input::libinput_fraction(t.at.y, t.min.y, t.max.y, abs_input::touch_max_y);
+            (*raw->touch).place_finger(touch.pointerId, fx, fy, touch.pressureOrDistance, adjusted_angle);
             break;
           }
         case LI_TOUCH_EVENT_CANCEL:
