@@ -230,6 +230,7 @@
     "dd_mode_remapping_final_resolution": "Final resolution",
     "dd_mode_remapping_requested_fps": "Requested FPS",
     "dd_mode_remapping_requested_resolution": "Requested resolution",
+    "dd_linux_hyprland_desc": "On Hyprland, displays are named by connector (e.g. DP-1) or by description in the \"Display name\" setting; left empty, the display at position 0x0 is used. Wayland has no primary display: \"primary\" moves the display to position 0x0 and focuses it. Changes are undone when the stream ends, also after a crash on the next start; a config reload in Hyprland also undoes them.",
     "dd_options_header": "Advanced display device options",
     "dd_refresh_rate_option": "Refresh rate",
     "dd_refresh_rate_option_auto": "Use FPS value provided by the client (default)",

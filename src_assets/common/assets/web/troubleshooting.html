@@ -95,7 +95,7 @@
       </div>
     </div>
     <!-- Reset persistent display device settings -->
-    <div class="card p-2 my-4" v-if="platform === 'windows'">
+    <div class="card p-2 my-4" v-if="platform === 'windows' || platform === 'linux'">
       <div class="card-body">
         <h2 id="dd_reset">{{ $t('troubleshooting.dd_reset') }}</h2>
         <br>
