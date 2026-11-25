@@ -202,6 +202,22 @@ namespace nvhttp {
    */
   bool pin(std::string pin, std::string name);
 
+  /**
+   * @brief Decide whether a client may use the clipboard endpoint (/actions/clipboard).
+   * @param client The verified client certificate.
+   * @param write `true` to set the host clipboard (needs clipboard_set), `false` to read it (needs clipboard_read).
+   * @param type The requested clipboard type; only "text" is supported.
+   * @param session_uuids UUIDs of the clients that are streaming now.
+   * @return success_ok if allowed, otherwise the status to answer with: 401 without the permission (or without
+   *         view/launch), 400 for an unsupported type, 403 when the client is not streaming.
+   */
+  SimpleWeb::StatusCode clipboard_access(
+    const crypto::named_cert_t &client,
+    bool write,
+    std::string_view type,
+    const std::list<std::string> &session_uuids
+  );
+
   std::string request_otp(const std::string& passphrase, const std::string& deviceName);
 
   /**
