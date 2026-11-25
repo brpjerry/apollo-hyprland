@@ -78,6 +78,9 @@ X4wnh1bwdiidqpcgyuKossLOPxbS786WmsesaAWPnpoY6M8aija+ALwNNuWWmyMg
 
 struct PairingTest: testing::TestWithParam<std::tuple<pairing_input, pairing_output>> {};
 
+// Bugs caught: 1, False positives: 0
+// Segfaulted since before the Hyprland port: a successful clientpairingsecret erased its session from the map
+// (erase(end()) when it was not stored) and then used it again.
 TEST_P(PairingTest, Run) {
   auto [input, expected] = GetParam();
 
