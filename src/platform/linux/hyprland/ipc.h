@@ -59,6 +59,7 @@ namespace hyprland {
     bool dpms_on = true;  ///< `dpmsStatus`: false while the output is switched off (it then captures as black).
     std::string current_format;  ///< DRM format name, e.g. `XRGB8888` or `XRGB2101010`.
     bool focused = false;
+    std::string active_workspace;  ///< Name of the workspace shown (`activeWorkspace.name`), e.g. `1` or `apollo-1a2b3c4d`.
   };
 
   /**

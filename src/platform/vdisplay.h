@@ -41,6 +41,9 @@ namespace platf::vdisplay {
     int width;
     int height;
     int refresh_millihz;  ///< Refresh rate in mHz, e.g. 60000 for 60 Hz.
+    /// Desktop scale in percent (the app/client resolution scale factor, 100 = none). Hyprland uses it as the output
+    /// scale, so the desktop keeps the client's logical size; Windows ignores it.
+    int scale_percent = 100;
   };
 
   /**
@@ -83,8 +86,33 @@ namespace platf::vdisplay {
    */
   bool set_mode(const std::string &display_name, const mode_t &mode, bool isolated);
 
+#ifndef _WIN32
+  /**
+   * @brief Give the display focus and its own workspace for the stream, so new windows open on it.
+   *
+   * Hyprland: shows the display's workspace (`apollo-xxxxxxxx`, or the one the client used last) on it and focuses
+   * it; remove() restores the previous focus. Elsewhere a no-op. Not declared on Windows, where Apollo does not do this.
+   * @param display_name The name returned by create().
+   * @return true on success.
+   */
+  bool activate(const std::string &display_name);
+
+  /**
+   * @brief Keep the windows of a launched app on the display: move them there now and whenever one opens.
+   *
+   * Hyprland: windows whose process (or an ancestor) is in the process group go to the display's workspace. Stops
+   * when the display is removed. Elsewhere a no-op. Not declared on Windows.
+   * @param display_name The name returned by create().
+   * @param process_group_id The app's process group (`boost::process::group::native_handle()`).
+   */
+  void track_process_group(const std::string &display_name, int process_group_id);
+#endif
+
   /**
    * @brief Remove the display created for an identity.
+   *
+   * Hyprland also remembers what the user changed on the display during the session (scale, transform, position,
+   * workspace) and applies it again on the next create() for the same identity.
    * @return true if a display was removed.
    */
   bool remove(const uuid_util::uuid_t &identity);

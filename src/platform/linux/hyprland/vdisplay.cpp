@@ -13,7 +13,7 @@
  * - `hl.monitor({...})` merges into an existing rule for the same output. Rules cannot be deleted short of a config
  *   reload, so the rule for a removed `APOLLO-xxxxxxxx` output stays behind. That is harmless: it only applies to
  *   an output of that exact name, which only Apollo creates, and the next session for that identity overwrites it.
- *   (HYP-12 may turn this into a feature by persisting per-identity settings.)
+ *   HYP-12 builds on this: settings the user changes are remembered per output name (display_settings.h).
  * - A config reload (`hyprctl reload`, or saving the config) rebuilds the rules from the config file and drops the
  *   runtime rule, so the output would fall back to 1920x1080@60. The backend re-applies its rules on
  *   `configreloaded`.
@@ -36,7 +36,9 @@
 #include <unistd.h>
 
 // local includes
+#include "src/config.h"
 #include "src/logging.h"
+#include "src/platform/common.h"
 #include "src/platform/linux/wayland.h"
 
 using namespace std::literals;
@@ -48,11 +50,12 @@ namespace hyprland {
     using clock_t_ = std::chrono::steady_clock;
 
     constexpr std::string_view name_prefix = "APOLLO-"sv;
-    constexpr std::string_view default_position = "auto-right"sv;
     // Hyprland snaps a requested mode to one in the output's mode list when the refresh rate is within about
     // 1 Hz: a headless output lists 1920x1080@60, so `1920x1080@59.940` gives 60 Hz while `2560x1440@59.940`
     // gives 59.94 Hz.
     constexpr double refresh_tolerance_hz = 1.0;
+    // Hyprland rounds a scale to one that divides the mode into whole logical pixels (1.5 on 1280x800 gives 1.6).
+    constexpr double scale_tolerance = 0.25;
 
     bool is_lower_hex(char c) {
       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -170,11 +173,19 @@ namespace hyprland {
       return false;
     };
     options.state_dir = runtime_dir().parent_path() / "apollo-vdisplay";
+    // Apollo's state directory: where sunshine_state.json lives (the config dir unless `file_state` moves it).
+    auto state_parent = std::filesystem::path {config::nvhttp.file_state}.parent_path();
+    options.settings_file = (state_parent.empty() ? platf::appdata() : state_parent) / "vdisplay_settings.json";
+    options.read_stat = read_proc_stat;
     return options;
   }
 
   vdisplay_t::vdisplay_t(options_t options):
-      options_ {std::move(options)} {
+      options_ {std::move(options)},
+      store_ {options_.settings_file} {
+    if (!options_.read_stat) {
+      options_.read_stat = read_proc_stat;
+    }
     reapply_thread_ = std::thread {[this]() {
       reapply_loop();
     }};
@@ -219,19 +230,25 @@ namespace hyprland {
 
   std::string vdisplay_t::create(const uuid_util::uuid_t &identity, const std::string &client_name, const mode_t &mode) {
     const auto name = vdisplay_output_name(identity);
-    const monitor_rule_t rule {
-      .output = name,
-      .mode = vdisplay_mode_string(mode),
-      .position = std::string {default_position},
-      // HYP-12 will remember a per-identity scale; until then every session starts at 1.
-      .scale = 1.0,
-    };
 
     std::lock_guard lock {mutex_};
     if (!ensure_connected_locked()) {
       BOOST_LOG(error) << "Hyprland virtual display: not connected to Hyprland"sv;
       return {};
     }
+
+    // A fresh session state for the entry: remembered settings, this session's scale factor, not isolated yet.
+    const auto start_session = [&](owned_t &entry) {
+      entry.identity = identity;
+      entry.settings = store_.load(name);
+      entry.settings.client_name = client_name;
+      entry.scale_percent = mode.scale_percent > 0 ? mode.scale_percent : 100;
+      entry.isolated = false;
+      entry.baseline.reset();
+      if (!entry.settings.empty()) {
+        BOOST_LOG(info) << "Hyprland virtual display: remembered settings for "sv << name << ": "sv << settings_to_json(entry.settings).dump();
+      }
+    };
 
     auto monitors = monitors_locked();
     if (!monitors) {
@@ -246,7 +263,8 @@ namespace hyprland {
       if (auto it = owned_.find(name); it != owned_.end()) {
         // Created by this process and still there (e.g. a second launch for the same identity): reuse it.
         BOOST_LOG(info) << "Hyprland virtual display: reusing "sv << name << " for "sv << client_name;
-        it->second.identity = identity;
+        start_session(it->second);
+        const auto rule = rule_for_locked(name, it->second, mode, std::nullopt);
         if (!apply_rule_locked(it->second, rule, mode)) {
           BOOST_LOG(error) << "Hyprland virtual display: "sv << name << " did not take mode "sv << *rule.mode;
           return {};
@@ -269,8 +287,9 @@ namespace hyprland {
       return {};
     }
     auto &entry = owned_[name];
-    entry.identity = identity;
-    entry.rule = {};
+    entry = {};
+    start_session(entry);
+    const auto rule = rule_for_locked(name, entry, mode, std::nullopt);
     write_owner_file(name);
 
     const auto fail = [&](std::string_view why) -> std::string {
@@ -321,13 +340,7 @@ namespace hyprland {
       return false;
     }
 
-    monitor_rule_t rule {
-      .output = name,
-      .mode = vdisplay_mode_string(mode),
-      .position = std::string {default_position},
-      .scale = it->second.rule.scale.value_or(1.0),
-    };
-
+    std::optional<std::string> position;
     if (isolated) {
       // Windows (changeDisplaySettings2 / rearrangeVirtualDisplayForLowerRight) moves the virtual display to the
       // lower-right corner of the layout, touching the other displays only at a corner, and makes it primary, so
@@ -338,15 +351,18 @@ namespace hyprland {
       // of the isolated output while it exists (seen live: two auto-placed test outputs went from x=4000 to
       // x=10200 and came back after removal). They stay at y=0 and the isolated output starts below the lowest
       // bottom edge, so they still do not touch it.
-      // HYP-11 should improve on this: focus the output and give it a workspace, optionally disable the physical
-      // monitors for the session, and move it again when the physical layout changes during the session.
+      // activate() (HYP-11) then focuses the output, which also warps the pointer onto it. Disabling the physical
+      // monitors for the session is display_device's job (HYP-18). Not done: moving the output again when the
+      // physical layout changes during the session.
       auto monitors = monitors_locked();
       if (!monitors) {
         return false;
       }
-      rule.position = isolated_position(*monitors, name, options_.isolation_gap);
-      BOOST_LOG(info) << "Hyprland virtual display: isolating "sv << name << " at "sv << *rule.position;
+      position = isolated_position(*monitors, name, options_.isolation_gap);
+      BOOST_LOG(info) << "Hyprland virtual display: isolating "sv << name << " at "sv << *position;
     }
+    it->second.isolated = isolated;
+    const auto rule = rule_for_locked(name, it->second, mode, position);
 
     if (same_rule(rule, it->second.rule)) {
       if (auto m = find_monitor_locked(name); m && monitor_has_mode(*m, mode)) {
@@ -364,9 +380,20 @@ namespace hyprland {
       return false;
     }
 
-    const bool present = find_monitor_locked(name).has_value();
+    const auto current = find_monitor_locked(name);
+    std::optional<focus_t> restore_focus;
+    if (auto it = owned_.find(name); it != owned_.end()) {
+      it->second.pgid = 0;
+      if (current) {
+        learn_locked(name, it->second, *current);
+        if (current->focused) {
+          restore_focus = it->second.previous_focus;
+        }
+      }
+    }
+
     bool removed = false;
-    if (present) {
+    if (current) {
       removed = remove_output_locked(name);
       if (removed) {
         BOOST_LOG(info) << "Hyprland virtual display: removed "sv << name;
@@ -374,11 +401,169 @@ namespace hyprland {
         BOOST_LOG(warning) << "Hyprland virtual display: removing "sv << name << " failed"sv;
       }
     }
-    if (!present || removed) {
+    if (!current || removed) {
       owned_.erase(name);
       remove_owner_file(name);
     }
+    // Hyprland moves focus to some remaining monitor; put it back where it was before the stream.
+    if (removed && restore_focus) {
+      restore_focus_locked(*restore_focus);
+    }
     return removed;
+  }
+
+  bool vdisplay_t::activate(const std::string &name) {
+    std::lock_guard lock {mutex_};
+    auto it = owned_.find(name);
+    if (it == owned_.end()) {
+      BOOST_LOG(warning) << "Hyprland virtual display: activate on "sv << name << ", which Apollo did not create"sv;
+      return false;
+    }
+    if (!ensure_connected_locked()) {
+      return false;
+    }
+    auto monitors = monitors_locked();
+    if (!monitors) {
+      return false;
+    }
+    auto &entry = it->second;
+
+    // Remember where focus was, unless it is already on this display (activated twice in one session).
+    for (const auto &m : *monitors) {
+      if (m.focused && m.name != name) {
+        entry.previous_focus = focus_t {m.name, m.active_workspace};
+      }
+    }
+
+    const auto workspace = entry.settings.workspace.value_or(default_workspace_name(name));
+    bool ok = false;
+    if (ipc_->dialect() == config_dialect_e::lua) {
+      const auto reply = ipc_->eval(lua_show_workspace(name, workspace));
+      ok = reply && *reply == "ok"sv;
+      if (!ok) {
+        BOOST_LOG(warning) << "Hyprland virtual display: cannot show workspace "sv << workspace << " on "sv << name << ": "sv << reply.value_or("error"s);
+      }
+      ok = focus_monitor_locked(name) && ok;
+    } else {
+      // focusworkspaceoncurrentmonitor creates the workspace, or pulls it over from another monitor.
+      ok = focus_monitor_locked(name) && ipc_->dispatch_legacy("focusworkspaceoncurrentmonitor", workspace_selector(workspace));
+    }
+    entry.workspace = workspace;
+    if (ok) {
+      BOOST_LOG(info) << "Hyprland virtual display: focused "sv << name << " on workspace "sv << workspace
+                      << (entry.previous_focus ? std::format(" (was {} on {})", entry.previous_focus->workspace, entry.previous_focus->monitor) : ""s);
+    }
+    return ok;
+  }
+
+  void vdisplay_t::track_process_group(const std::string &name, int pgid) {
+    std::lock_guard lock {mutex_};
+    auto it = owned_.find(name);
+    if (it == owned_.end() || pgid <= 0) {
+      return;
+    }
+    it->second.pgid = pgid;
+    BOOST_LOG(debug) << "Hyprland virtual display: windows of process group "sv << pgid << " go to "sv << name;
+    if (ensure_connected_locked()) {
+      // Windows opened before tracking started (the app may be quick, or already running in this group).
+      adopt_windows_locked({});
+    }
+  }
+
+  monitor_rule_t vdisplay_t::rule_for_locked(const std::string &name, const owned_t &entry, const mode_t &mode, std::optional<std::string> position) {
+    auto session_mode = mode;
+    session_mode.scale_percent = entry.scale_percent;
+    return build_monitor_rule({
+      .output = name,
+      .mode = session_mode,
+      .settings = entry.settings,
+      .isolated_position = std::move(position),
+      .emitted = emitted_[name],
+    });
+  }
+
+  void vdisplay_t::learn_locked(const std::string &name, const owned_t &entry, const monitor_info_t &now) {
+    if (!entry.baseline) {
+      return;
+    }
+    const auto learned = learn_settings(entry.settings, *entry.baseline, now, entry.isolated, entry.scale_percent, entry.workspace);
+    if (learned == entry.settings) {
+      return;
+    }
+    BOOST_LOG(info) << "Hyprland virtual display: remembering "sv << name << " settings "sv << settings_to_json(learned).dump()
+                    << " (was "sv << settings_to_json(entry.settings).dump() << ')';
+    if (!store_.save(name, learned)) {
+      BOOST_LOG(warning) << "Hyprland virtual display: cannot save settings to "sv << store_.path().string();
+    }
+  }
+
+  bool vdisplay_t::focus_monitor_locked(const std::string &monitor) {
+    if (ipc_->dialect() == config_dialect_e::lua) {
+      return ipc_->dispatch_lua(lua_focus_monitor(monitor));
+    }
+    return ipc_->dispatch_legacy("focusmonitor", monitor);
+  }
+
+  void vdisplay_t::restore_focus_locked(const focus_t &focus) {
+    // Focusing the workspace also focuses its monitor (wherever it is now). If the workspace is gone, at least go
+    // back to the monitor.
+    bool workspace_exists = false;
+    if (!focus.workspace.empty()) {
+      if (auto json = ipc_->request_json("workspaces"sv); json && json->is_array()) {
+        workspace_exists = std::ranges::any_of(*json, [&](const nlohmann::json &ws) {
+          return ws.is_object() && ws.value("name", ""s) == focus.workspace;
+        });
+      }
+    }
+    bool ok;
+    if (workspace_exists) {
+      ok = ipc_->dialect() == config_dialect_e::lua ?
+             ipc_->dispatch_lua(lua_focus_workspace(focus.workspace)) :
+             ipc_->dispatch_legacy("workspace", workspace_selector(focus.workspace));
+    } else {
+      ok = focus_monitor_locked(focus.monitor);
+    }
+    if (ok) {
+      BOOST_LOG(info) << "Hyprland virtual display: focus back on "sv << (workspace_exists ? "workspace "s + focus.workspace : focus.monitor);
+    }
+  }
+
+  void vdisplay_t::adopt_windows_locked(const std::vector<std::string> &addresses) {
+    const bool any_tracking = std::ranges::any_of(owned_, [](const auto &kv) {
+      return kv.second.pgid > 0 && !kv.second.workspace.empty();
+    });
+    if (!any_tracking) {
+      return;
+    }
+    auto clients_json = ipc_->request_json("clients"sv);
+    auto monitors = monitors_locked();
+    if (!clients_json || !monitors) {
+      return;
+    }
+    for (const auto &client : parse_clients(*clients_json)) {
+      if (!addresses.empty() && std::ranges::find(addresses, client.address) == addresses.end()) {
+        continue;
+      }
+      for (const auto &[name, entry] : owned_) {
+        if (entry.pgid <= 0 || entry.workspace.empty() || !process_belongs_to_group(client.pid, entry.pgid, options_.read_stat)) {
+          continue;
+        }
+        const auto vd = std::ranges::find_if(*monitors, [&](const monitor_info_t &m) {
+          return m.name == name;
+        });
+        if (vd == monitors->end() || client.monitor == vd->id) {
+          break;  // already on the display (on any of its workspaces)
+        }
+        BOOST_LOG(info) << "Hyprland virtual display: moving window "sv << client.address << " (pid "sv << client.pid
+                        << ") from workspace "sv << client.workspace << " to "sv << entry.workspace << " on "sv << name;
+        if (ipc_->dialect() == config_dialect_e::lua) {
+          ipc_->dispatch_lua(lua_move_window(client.address, entry.workspace));
+        } else {
+          ipc_->dispatch_legacy("movetoworkspacesilent", std::format("{},address:{}", workspace_selector(entry.workspace), client.address));
+        }
+        break;
+      }
+    }
   }
 
   std::optional<bool> vdisplay_t::any_monitor_active() {
@@ -413,6 +598,14 @@ namespace hyprland {
         ++(event == "monitoraddedv2"sv ? added_ : removed_)[parsed->name];
       }
       events_cv_.notify_all();
+    } else if (event == "openwindow"sv) {
+      if (auto address = parse_openwindow_address(data)) {
+        {
+          std::lock_guard lock {events_mutex_};
+          opened_windows_.push_back(std::move(*address));
+        }
+        events_cv_.notify_all();
+      }
     } else if (event == "configreloaded"sv) {
       {
         std::lock_guard lock {events_mutex_};
@@ -424,20 +617,30 @@ namespace hyprland {
 
   void vdisplay_t::reapply_loop() {
     while (true) {
+      bool reload = false;
+      std::vector<std::string> windows;
       {
         std::unique_lock lock {events_mutex_};
         events_cv_.wait(lock, [this]() {
-          return reload_pending_ || stopping_;
+          return reload_pending_ || !opened_windows_.empty() || stopping_;
         });
         if (stopping_) {
           return;
         }
-        reload_pending_ = false;
+        reload = std::exchange(reload_pending_, false);
+        windows.assign(opened_windows_.begin(), opened_windows_.end());
+        opened_windows_.clear();
       }
 
       // events_mutex_ is released before taking mutex_: an operation holding mutex_ may be waiting on events.
       std::lock_guard lock {mutex_};
       if (!ipc_) {
+        continue;
+      }
+      if (!windows.empty()) {
+        adopt_windows_locked(windows);
+      }
+      if (!reload) {
         continue;
       }
       for (auto &[name, entry] : owned_) {
@@ -526,24 +729,47 @@ namespace hyprland {
   }
 
   bool vdisplay_t::apply_rule_locked(owned_t &entry, monitor_rule_t rule, const mode_t &mode) {
-    const auto position = parse_position(rule.position);
+    // Only an isolated position is waited for: Hyprland may adjust a remembered one, which is no reason to fail.
+    const auto position = entry.isolated ? parse_position(rule.position) : std::nullopt;
     // Remember the rule before applying it, so a config reload in between re-applies the new one.
     entry.rule = rule;
     if (!ipc_->set_monitor(rule)) {
       return false;
     }
-    return wait_for_mode_locked(rule.output, mode, position);
+    auto &emitted = emitted_[rule.output];
+    emitted.transform = emitted.transform || rule.transform.has_value();
+    emitted.bitdepth = emitted.bitdepth || rule.bitdepth.has_value();
+    if (!wait_for_mode_locked(rule, mode, position)) {
+      return false;
+    }
+    // What the output looks like with Apollo's rule (and the user's static rules) applied: the user's changes during
+    // the session are the difference to this.
+    entry.baseline = find_monitor_locked(rule.output);
+    return true;
   }
 
-  bool vdisplay_t::wait_for_mode_locked(const std::string &name, const mode_t &mode, const std::optional<std::pair<int, int>> &position) {
+  bool vdisplay_t::wait_for_mode_locked(const monitor_rule_t &rule, const mode_t &mode, const std::optional<std::pair<int, int>> &position) {
+    const auto &name = rule.output;
     const auto deadline = clock_t_::now() + options_.timeout;
     std::optional<monitor_info_t> last;
     while (true) {
       last = find_monitor_locked(name);
-      if (last && monitor_has_mode(*last, mode) && (!position || (last->x == position->first && last->y == position->second))) {
+      const bool core = last && monitor_has_mode(*last, mode) && (!position || (last->x == position->first && last->y == position->second));
+      // The mode may already be right (a re-created output starts with the last rule's mode) while the new scale is
+      // still pending, so wait for the scale too. Hyprland snaps scales it cannot represent (1.5 on 1280x800 is 1.6),
+      // hence the tolerance.
+      const bool extras = last && (!rule.scale || std::abs(last->scale - *rule.scale) <= scale_tolerance) &&
+                          (!rule.transform || last->transform == *rule.transform);
+      if (core && extras) {
         return true;
       }
       if (clock_t_::now() >= deadline) {
+        if (core) {
+          BOOST_LOG(warning) << "Hyprland virtual display: "sv << name << " has scale "sv << last->scale << " and transform "sv
+                             << last->transform << " instead of "sv << rule.scale.value_or(last->scale) << " and "sv
+                             << rule.transform.value_or(last->transform);
+          return true;
+        }
         BOOST_LOG(warning) << "Hyprland virtual display: "sv << name << " wanted "sv << vdisplay_mode_string(mode)
                            << (position ? std::format(" at {},{}", position->first, position->second) : ""s)
                            << ", has "sv << (last ? describe(*last) : "no monitor"s);
@@ -686,6 +912,14 @@ namespace platf::vdisplay {
 
   bool set_mode(const std::string &display_name, const mode_t &mode, bool isolated) {
     return backend().set_mode(display_name, mode, isolated);
+  }
+
+  bool activate(const std::string &display_name) {
+    return backend().activate(display_name);
+  }
+
+  void track_process_group(const std::string &display_name, int process_group_id) {
+    backend().track_process_group(display_name, process_group_id);
   }
 
   bool remove(const uuid_util::uuid_t &identity) {
