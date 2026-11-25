@@ -18,6 +18,7 @@
 #include "cuda.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/vdisplay.h"
 #include "src/video.h"
 #include "vaapi.h"
 #include "wayland.h"
@@ -269,6 +270,9 @@ namespace wl {
       }
       output = interface.monitors[*index]->output;
 
+      // HDR state and metadata of the output. Without wp-color-management the output is treated as SDR.
+      color.open(output_names(interface)[*index]);
+
       // The cursor is painted by default; capture() reopens the session if the stream wants it hidden.
       if (!session.open(display, interface, output, true)) {
         return -1;
@@ -289,6 +293,26 @@ namespace wl {
 
     capture_stats_t capture_stats() const override {
       return stats;
+    }
+
+    bool is_hdr() override {
+      return hdr_frames && color.is_hdr();
+    }
+
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      if (!is_hdr()) {
+        std::memset(&metadata, 0, sizeof(metadata));
+        return false;
+      }
+      return fill_hdr_metadata(*color.description(), metadata);
+    }
+
+    bool hdr_supported() override {
+      if (!hdr_frames) {
+        return false;
+      }
+      // Apollo's Hyprland virtual displays can be put in HDR mode (platf::vdisplay::set_hdr()).
+      return color.is_hdr() || (color.compositor_supports_hdr10() && platf::vdisplay::status() == platf::vdisplay::status_e::ok);
     }
 
     platf::capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
@@ -366,6 +390,14 @@ namespace wl {
         }
         auto timeout = std::chrono::ceil<std::chrono::milliseconds>(wake - now);
         display.dispatch(std::max(timeout, 0ms));
+
+        // The output switched between SDR and HDR (or its HDR metadata changed): the encoder has to be recreated
+        // with the new colorspace. The loop wakes at least every idle_repeat_interval, which bounds the delay.
+        if (color.poll_changed()) {
+          BOOST_LOG(info) << "Output colors changed; reinitializing capture"sv;
+          abandon_frame();
+          return platf::capture_e::reinit;
+        }
 
         if (session.frame_state == ext_session_t::frame_state_e::failed) {
           auto reason = session.failure_reason;
@@ -540,6 +572,12 @@ namespace wl {
     platf::mem_type_e mem_type;
     std::chrono::nanoseconds delay;
     ext_options_t options;
+
+    /// The output's color description (HDR state and metadata).
+    output_color_t color;
+    /// The encode path of this backend turns captured frames into PQ for HDR streams. Until it does, an HDR
+    /// output is streamed as SDR.
+    bool hdr_frames {false};
 
     wl::display_t display;
     interface_t interface;

@@ -2730,6 +2730,14 @@ namespace video {
 
       test_hdr_and_yuv444(encoder.hevc, 1);
       test_hdr_and_yuv444(encoder.av1, 2);
+
+      // The tests above only show that the encoder can produce 10-bit streams; on an SDR display they encode
+      // 10-bit SDR. Advertising Main10 makes clients offer HDR, so only do it when HDR can actually reach them.
+      if (!disp->hdr_supported() && (encoder.hevc[encoder_t::DYNAMIC_RANGE] || encoder.av1[encoder_t::DYNAMIC_RANGE])) {
+        BOOST_LOG(info) << encoder.name << ": the display cannot deliver HDR here; not advertising HDR (10-bit) codec profiles"sv;
+        encoder.hevc[encoder_t::DYNAMIC_RANGE] = false;
+        encoder.av1[encoder_t::DYNAMIC_RANGE] = false;
+      }
     }
 
     encoder.h264[encoder_t::VUI_PARAMETERS] = encoder.h264[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];

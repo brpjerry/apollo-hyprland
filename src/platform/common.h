@@ -538,6 +538,16 @@ namespace platf {
     }
 
     /**
+     * @brief Whether HDR streams can come from this display in this session: now (is_hdr()), or once HDR is
+     *        switched on for it (e.g. a virtual display that is put in HDR mode when the client asks for HDR).
+     * @details Encoder probing advertises 10-bit (HDR) codec profiles to clients only when this is true.
+     *          Backends that cannot tell keep the default, which advertises whatever the encoder supports.
+     */
+    virtual bool hdr_supported() {
+      return true;
+    }
+
+    /**
      * @brief Check that a given codec is supported by the display device.
      * @param name The FFmpeg codec name (or similar for non-FFmpeg codecs).
      * @param config The codec configuration.
