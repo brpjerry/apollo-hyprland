@@ -111,4 +111,14 @@ namespace platf::vdisplay {
    * @param display_name The name returned by create().
    */
   std::string output_name_for(const std::string &display_name);
+
+  /**
+   * @brief Whether any display, physical or virtual, is active, i.e. can be captured.
+   *
+   * Used where libdisplaydevice cannot tell (it only supports Windows): with no active display Apollo probes
+   * encoders on a temporary virtual display and streams every app on a virtual display.
+   * Hyprland: an output is active when it is enabled and DPMS is on (see hyprland::monitor_is_active()).
+   * @return std::nullopt if the backend cannot tell (always on Windows, and whenever status() is not `ok`).
+   */
+  std::optional<bool> any_display_active();
 }  // namespace platf::vdisplay

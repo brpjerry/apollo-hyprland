@@ -382,7 +382,7 @@
         <Checkbox class="mb-3"
                   id="virtualDisplay"
                   label="apps.virtual_display"
-                  desc="apps.virtual_display_desc"
+                  :desc="platform === 'linux' ? 'apps.virtual_display_desc_linux' : 'apps.virtual_display_desc'"
                   v-model="editForm['virtual-display']"
                   default="false"
         ></Checkbox>
@@ -404,7 +404,7 @@
                   default="false"
         ></Checkbox>
         <!-- resolution scale factor -->
-        <div class="mb-3" v-if="platform === 'windows'">
+        <div class="mb-3" v-if="platform === 'windows' || platform === 'linux'">
           <label for="resolutionScaleFactor" class="form-label">{{ $t('apps.resolution_scale_factor') }}: {{editForm['scale-factor']}}%</label>
           <input type="range" step="1" min="20" max="200" class="form-range" id="resolutionScaleFactor" v-model="editForm['scale-factor']"/>
           <div class="form-text">{{ $t('apps.resolution_scale_factor_desc') }}</div>

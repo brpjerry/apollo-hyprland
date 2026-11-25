@@ -323,6 +323,22 @@ TEST(HyprlandIpcTest, ParseMonitorsToleratesOddInput) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(HyprlandIpcTest, ParseMonitorsDpmsStatus) {
+  // The recorded monitors are all switched on.
+  std::ifstream in {SUNSHINE_SOURCE_DIR "/tests/fixtures/hyprland/monitors_all.json"};
+  ASSERT_TRUE(in.is_open());
+  for (const auto &m : hyprland::parse_monitors(nlohmann::json::parse(in))) {
+    EXPECT_TRUE(m.dpms_on) << m.name;
+  }
+
+  auto monitors = hyprland::parse_monitors(nlohmann::json::parse(R"([{"name": "DP-3", "dpmsStatus": false}, {"name": "DP-4"}])"));
+  ASSERT_EQ(monitors.size(), 2);
+  EXPECT_FALSE(monitors[0].dpms_on);
+  // Missing (older Hyprland): assume on, as before the field was read.
+  EXPECT_TRUE(monitors[1].dpms_on);
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(HyprlandIpcTest, ParseDialect) {
   EXPECT_EQ(hyprland::parse_dialect(R"({"configProvider": "lua", "backend": "drm"})"), hyprland::config_dialect_e::lua);
   EXPECT_EQ(hyprland::parse_dialect(R"({"configProvider": "hyprlang", "backend": "drm"})"), hyprland::config_dialect_e::hyprlang);

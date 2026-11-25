@@ -429,6 +429,7 @@ namespace hyprland {
       m.scale = json_get<double>(obj, "scale", 1.0);
       m.transform = json_get<int>(obj, "transform", 0);
       m.disabled = json_get<bool>(obj, "disabled", false);
+      m.dpms_on = json_get<bool>(obj, "dpmsStatus", true);
       m.current_format = json_get<std::string>(obj, "currentFormat", "");
       m.focused = json_get<bool>(obj, "focused", false);
       result.push_back(std::move(m));

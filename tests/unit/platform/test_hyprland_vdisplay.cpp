@@ -43,6 +43,7 @@ namespace {
     double scale = 1.0;
     int transform = 0;
     bool disabled = false;
+    bool dpms = true;
   };
 
   /**
@@ -105,6 +106,16 @@ namespace {
       return std::nullopt;
     }
 
+    /// Change a monitor in place, like `dpms off` or disabling it in the config would.
+    void update_monitor(const std::string &name, const std::function<void(fake_monitor_t &)> &change) {
+      std::lock_guard lock {mutex_};
+      for (auto &m : monitors_) {
+        if (m.name == name) {
+          change(m);
+        }
+      }
+    }
+
     /// Like `hyprctl reload`: runtime rules are dropped and the output falls back to its default mode.
     void reload_config() {
       {
@@ -163,7 +174,7 @@ namespace {
         nlohmann::json arr = nlohmann::json::array();
         int id = 0;
         for (auto &m : monitors_) {
-          arr.push_back({{"id", id++}, {"name", m.name}, {"description", ""}, {"width", m.width}, {"height", m.height}, {"refreshRate", m.refresh}, {"x", m.x}, {"y", m.y}, {"scale", m.scale}, {"transform", m.transform}, {"disabled", m.disabled}});
+          arr.push_back({{"id", id++}, {"name", m.name}, {"description", ""}, {"width", m.width}, {"height", m.height}, {"refreshRate", m.refresh}, {"x", m.x}, {"y", m.y}, {"scale", m.scale}, {"transform", m.transform}, {"disabled", m.disabled}, {"dpmsStatus", m.dpms}});
         }
         return arr.dump();
       }
@@ -321,6 +332,75 @@ TEST(HyprlandVdisplayNamingTest, IsolatedPositionClearsTheLogicalLayout) {
   monitors[3] = {.name = "DP-9", .width = 9999, .height = 9999, .x = 0, .y = 0, .disabled = true};
   // Right edge 2560 + 2160/1.5 = 4000, bottom edge -560 + 3840/1.5 = 2000.
   EXPECT_EQ(hyprland::isolated_position(monitors, "APOLLO-1a2b3c4d", 1000), "5000x3000");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayNamingTest, ActiveMonitorIsEnabledAndSwitchedOn) {
+  auto monitor = [](std::string name, bool disabled, bool dpms_on) {
+    hyprland::monitor_info_t m;
+    m.name = std::move(name);
+    m.width = 3840;
+    m.height = 2160;
+    m.disabled = disabled;
+    m.dpms_on = dpms_on;
+    return m;
+  };
+
+  EXPECT_TRUE(hyprland::monitor_is_active(monitor("DP-3", false, true)));
+  EXPECT_FALSE(hyprland::monitor_is_active(monitor("DP-3", true, true)));
+  // DPMS-off outputs capture as solid black on Hyprland.
+  EXPECT_FALSE(hyprland::monitor_is_active(monitor("DP-3", false, false)));
+  EXPECT_FALSE(hyprland::monitor_is_active(monitor("FALLBACK", false, true)));
+  // Headless outputs show the desktop like physical ones; Apollo's probe display must count, or probing
+  // on it would be refused too.
+  EXPECT_TRUE(hyprland::monitor_is_active(monitor("HEADLESS-2", false, true)));
+  EXPECT_TRUE(hyprland::monitor_is_active(monitor(client_output, false, true)));
+
+  EXPECT_FALSE(hyprland::any_monitor_active({}));
+  EXPECT_FALSE(hyprland::any_monitor_active({monitor("DP-3", true, true), monitor("HDMI-A-1", false, false), monitor("FALLBACK", false, true)}));
+  EXPECT_TRUE(hyprland::any_monitor_active({monitor("DP-3", true, true), monitor("HDMI-A-1", false, true)}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, AnyMonitorActiveFollowsHyprland) {
+  fake_hyprland_t hypr {{{"DP-1", 2560, 1440, 60.0}, {"HDMI-A-1", 1920, 1080, 60.0, 2560, 0}}};
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+
+  EXPECT_EQ(vd.any_monitor_active(), std::optional<bool> {true});
+
+  hypr.update_monitor("DP-1", [](auto &m) {
+    m.disabled = true;
+  });
+  EXPECT_EQ(vd.any_monitor_active(), std::optional<bool> {true});
+
+  hypr.update_monitor("HDMI-A-1", [](auto &m) {
+    m.dpms = false;
+  });
+  EXPECT_EQ(vd.any_monitor_active(), std::optional<bool> {false});
+
+  // The temporary probe display (or a session's virtual display) makes a display active again.
+  ASSERT_EQ(vd.create(client_identity(), "Probe", {800, 600, 60000}), client_output);
+  EXPECT_EQ(vd.any_monitor_active(), std::optional<bool> {true});
+  EXPECT_TRUE(vd.remove(client_identity()));
+  EXPECT_EQ(vd.any_monitor_active(), std::optional<bool> {false});
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, AnyMonitorActiveUnknownWithoutHyprland) {
+  auto options = hyprland::vdisplay_t::default_options();
+  options.connect = []() {
+    return std::unique_ptr<hyprland::ipc_t> {};
+  };
+  options.instance_exists = []() {
+    return false;
+  };
+  options.state_dir.clear();
+  hyprland::vdisplay_t vd {options};
+
+  EXPECT_EQ(vd.init(), status_e::unavailable);
+  EXPECT_EQ(vd.any_monitor_active(), std::nullopt);
 }
 
 // Bugs caught: 0, False positives: 0

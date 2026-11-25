@@ -56,6 +56,7 @@ namespace hyprland {
     double scale = 1.0;
     int transform = 0;  ///< wl_output_transform value (0-7).
     bool disabled = false;
+    bool dpms_on = true;  ///< `dpmsStatus`: false while the output is switched off (it then captures as black).
     std::string current_format;  ///< DRM format name, e.g. `XRGB8888` or `XRGB2101010`.
     bool focused = false;
   };

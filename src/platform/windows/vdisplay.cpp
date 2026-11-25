@@ -112,4 +112,9 @@ namespace platf::vdisplay {
   std::string output_name_for(const std::string &display_name) {
     return display_device::map_display_name(display_name);
   }
+
+  std::optional<bool> any_display_active() {
+    // libdisplaydevice answers this on Windows (video::allow_encoder_probing()).
+    return std::nullopt;
+  }
 }  // namespace platf::vdisplay
