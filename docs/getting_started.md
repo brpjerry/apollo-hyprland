@@ -467,6 +467,18 @@ environment, is replaced. The service does not need to be enabled in this setup.
 After logging in, `journalctl --user -u sunshine` should show `Screencasting with Wayland's protocol`. When you log
 out, the service stops: Sunshine receives `SIGTERM` (or `SIGHUP`), ends the running app and cleans up before exiting.
 
+##### Virtual displays
+On Hyprland, a virtual display is a headless output named `APOLLO-` followed by 8 hex digits, created for the
+session and removed when the app quits. Clients see virtual display support once Sunshine reaches Hyprland's IPC
+socket; the Audio/Video tab of the web UI shows the status. A virtual display is created when:
+
+- the client asks for one, the app has *Always create Virtual Display* set, or the client has *Always create virtual
+  display* set (PIN page);
+- `headless_mode` is enabled: every app then streams a virtual display, even when monitors are connected;
+- no monitor is active, i.e. every monitor is disabled or switched off with DPMS. Hyprland stops drawing a monitor
+  whose DPMS is off and captures it as solid black, so such a monitor does not count. Encoders are then probed on a
+  temporary 800x600 output, which is removed again right after.
+
 ### macOS
 The first time you start Sunshine, you will be asked to grant access to screen recording and your microphone.
 

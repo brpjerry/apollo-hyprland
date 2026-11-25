@@ -1060,7 +1060,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             Isolates the virtual display.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland (the headless output is placed apart from the
+            other monitors so the pointer cannot cross over).}
         </td>
     </tr>
     <tr>
