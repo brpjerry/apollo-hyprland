@@ -1067,6 +1067,16 @@ namespace wl {
     return true;
   }
 
+  float output_color_t::sdr_white_nits() const {
+    if (!is_hdr()) {
+      return 0;
+    }
+    // BT.2408 reference white, also Hyprland's default for HDR outputs.
+    constexpr std::uint32_t default_reference = 203;
+    const auto reference = desc->reference_lum.value_or(default_reference);
+    return (float) (reference ? reference : default_reference);
+  }
+
   bool output_color_t::compositor_supports_hdr10() const {
     if (!interface || !interface->color_manager) {
       return false;

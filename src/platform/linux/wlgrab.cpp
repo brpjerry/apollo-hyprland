@@ -312,6 +312,8 @@ namespace wl {
     // One buffer being captured into plus up to two the encoder may still read.
     wlr_vram_t():
         wlr_t {3} {
+      // The GL converter turns the SDR frames of an HDR output into PQ (output_color_t::sdr_white_nits()).
+      hdr_frames = true;
     }
 
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
@@ -338,6 +340,7 @@ namespace wl {
       if (!hand_over_buffer(screencopy.pool, slot, img_out, ++sequence, screencopy.y_invert)) {
         return platf::capture_e::reinit;
       }
+      static_cast<egl::img_descriptor_t *>(img_out.get())->sdr_white_nits = color.sdr_white_nits();
       img_out->frame_timestamp = frame_timestamp;
 
       return platf::capture_e::ok;

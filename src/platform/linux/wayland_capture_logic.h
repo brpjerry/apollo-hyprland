@@ -26,6 +26,10 @@ namespace wl {
     constexpr std::uint32_t ARGB8888 = code('A', 'R', '2', '4');
     constexpr std::uint32_t XBGR8888 = code('X', 'B', '2', '4');
     constexpr std::uint32_t ABGR8888 = code('A', 'B', '2', '4');
+    constexpr std::uint32_t XRGB2101010 = code('X', 'R', '3', '0');
+    constexpr std::uint32_t ARGB2101010 = code('A', 'R', '3', '0');
+    constexpr std::uint32_t XBGR2101010 = code('X', 'B', '3', '0');
+    constexpr std::uint32_t ABGR2101010 = code('A', 'B', '3', '0');
 
     /// DRM_FORMAT_MOD_INVALID: "implicit modifier" when it appears in a list of supported modifiers.
     constexpr std::uint64_t MOD_INVALID = 0x00ffffffffffffffULL;
@@ -82,12 +86,14 @@ namespace wl {
    * @param allow_dmabuf Whether dma-bufs can be allocated (a GBM device and linux-dmabuf are available).
    * @param allow_shm Whether shared memory buffers are acceptable (only the system memory path can use them).
    * @param prefer_shm Pick shm over dma-buf when both are possible.
-   * @return The spec, or std::nullopt if no supported 8-bit RGB format is offered.
-   * @details Only 8-bit RGB formats are supported. Opaque formats are preferred over formats with alpha, and
-   *          BGRA byte order (XRGB8888/ARGB8888) over RGBA. For shm only XRGB8888/ARGB8888 are accepted, since
-   *          the system memory path hands frames to the encoder as BGR0.
+   * @param prefer_10bit Pick a 10-bit dma-buf format when one is offered (HDR streams: less banding once the frames
+   *        are converted to PQ). Hyprland only offers them for 10-bit outputs with `misc.screencopy_force_8b = false`.
+   * @return The spec, or std::nullopt if no supported RGB format is offered.
+   * @details dma-bufs may be 8-bit or 10-bit RGB (they are imported into GL, which reads either); shm is 8-bit only:
+   *          XRGB8888/ARGB8888, since the system memory path hands frames to the encoder as BGR0. Opaque formats are
+   *          preferred over formats with alpha, and BGRA byte order (XRGB) over RGBA (XBGR).
    */
-  inline std::optional<buffer_spec_t> choose_buffer_spec(const buffer_constraints_t &constraints, bool allow_dmabuf, bool allow_shm, bool prefer_shm = false) {
+  inline std::optional<buffer_spec_t> choose_buffer_spec(const buffer_constraints_t &constraints, bool allow_dmabuf, bool allow_shm, bool prefer_shm = false, bool prefer_10bit = false) {
     if (!constraints.width || !constraints.height) {
       return std::nullopt;
     }
@@ -96,7 +102,12 @@ namespace wl {
       if (!allow_dmabuf) {
         return std::nullopt;
       }
-      for (auto preferred : {fourcc::XRGB8888, fourcc::ARGB8888, fourcc::XBGR8888, fourcc::ABGR8888}) {
+      const std::vector<std::uint32_t> formats_8bit {fourcc::XRGB8888, fourcc::ARGB8888, fourcc::XBGR8888, fourcc::ABGR8888};
+      const std::vector<std::uint32_t> formats_10bit {fourcc::XRGB2101010, fourcc::ARGB2101010, fourcc::XBGR2101010, fourcc::ABGR2101010};
+      auto order = prefer_10bit ? formats_10bit : formats_8bit;
+      const auto &fallback = prefer_10bit ? formats_8bit : formats_10bit;
+      order.insert(order.end(), fallback.begin(), fallback.end());
+      for (auto preferred : order) {
         for (const auto &format : constraints.dmabuf_formats) {
           if (format.format != preferred) {
             continue;

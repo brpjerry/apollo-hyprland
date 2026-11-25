@@ -443,6 +443,20 @@ namespace wl {
     /// The compositor can describe outputs as PQ / BT.2020, i.e. it supports HDR outputs at all.
     bool compositor_supports_hdr10() const;
 
+    /**
+     * @brief For an HDR output: where white of the captured frames belongs in the HDR stream, in cd/m².
+     * @details Capture clients do not get the PQ framebuffer of an HDR output. Hyprland (0.57.2 and its main branch
+     *          as of 2026-11) copies frames out of a mirror buffer whose image description is sRGB whenever the output
+     *          uses PQ (CMonitorResources::getMirrorTexImageDescription()), converting and tone mapping the HDR
+     *          content to SDR, for color-management aware clients as well. Measured on a headless HDR output with
+     *          a PQ test pattern: 974, 102 and 5 cd/m² patches came back as sRGB 235, 186 and 71 (PQ would be 191,
+     *          130 and 64), and SDR content came back exactly as on an SDR output. The frames are therefore SDR with
+     *          white at the output's reference luminance (203 cd/m², from the image description), which is where
+     *          Hyprland puts SDR white on the HDR output.
+     * @return 0 for SDR outputs.
+     */
+    float sdr_white_nits() const;
+
   private:
     std::optional<image_description_t> fetch(std::chrono::milliseconds timeout);
     void reset();

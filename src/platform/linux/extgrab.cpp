@@ -244,6 +244,9 @@ namespace wl {
     ext_t(std::size_t max_buffers, bool vram):
         pool {max_buffers},
         vram {vram} {
+      // The GL converter of the video memory path turns the SDR frames of an HDR output into PQ
+      // (output_color_t::sdr_white_nits()). System memory frames stay 8-bit BGRA, so HDR outputs stream as SDR there.
+      hdr_frames = vram;
     }
 
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config, const ext_options_t &options) {
@@ -470,9 +473,9 @@ namespace wl {
       const auto &constraints = session.constraints;
 
       const bool allow_dmabuf = interface.dmabuf_interface && !constraints.dmabuf_formats.empty() && gbm.open(constraints.dmabuf_device);
-      auto spec = choose_buffer_spec(constraints, allow_dmabuf, !vram, options.prefer_shm);
+      auto spec = choose_buffer_spec(constraints, allow_dmabuf, !vram, options.prefer_shm, vram && color.is_hdr());
       if (!spec) {
-        BOOST_LOG(error) << "No usable ext-image-copy-capture buffer type ("sv << (vram ? "dma-buf"sv : "dma-buf or shm"sv) << " with an 8-bit RGB format)"sv;
+        BOOST_LOG(error) << "No usable ext-image-copy-capture buffer type ("sv << (vram ? "dma-buf"sv : "dma-buf or shm"sv) << " with an RGB format)"sv;
         return false;
       }
 
@@ -501,6 +504,7 @@ namespace wl {
         if (!hand_over_buffer(pool, slot, img_out, ++sequence, false)) {
           return platf::capture_e::reinit;
         }
+        static_cast<egl::img_descriptor_t *>(img_out.get())->sdr_white_nits = color.sdr_white_nits();
         last_slot = slot;
       } else {
         if (!read_buffer(egl_display.get(), pool[slot], *img_out, false)) {
@@ -544,6 +548,7 @@ namespace wl {
         if (!hand_over_buffer(pool, last_slot, img_out, ++sequence, false)) {
           return platf::capture_e::reinit;
         }
+        static_cast<egl::img_descriptor_t *>(img_out.get())->sdr_white_nits = color.sdr_white_nits();
       } else {
         copy_rows(last_img->data, last_img->row_pitch, img_out->data, img_out->row_pitch, (std::size_t) width * 4, (std::size_t) height, false);
       }
