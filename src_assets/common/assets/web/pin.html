@@ -121,7 +121,7 @@
                       desc="pin.always_use_virtual_display_desc"
                       v-model="client.editAlwaysUseVirtualDisplay"
                       default="false"
-                      v-if="platform === 'windows'"
+                      v-if="platform === 'windows' || platform === 'linux'"
             ></Checkbox>
             <!-- Display Mode Override -->
             <div class="mb-3 mt-2">

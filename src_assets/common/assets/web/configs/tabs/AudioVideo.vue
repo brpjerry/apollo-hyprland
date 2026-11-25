@@ -27,6 +27,23 @@ const sudovdaStatus = {
 
 const currentDriverStatus = computed(() => sudovdaStatus[props.vdisplay])
 
+// Platforms with a virtual display backend: the SudoVDA driver on Windows, Hyprland headless outputs on Linux.
+const vdisplaySupported = computed(() => props.platform === 'windows' || props.platform === 'linux')
+
+// Linux: the server sends no vdisplayStatus when Apollo does not run under Hyprland (backend unavailable).
+const hyprlandStatusKeys = {
+  '0': 'config.vdisplay_status_ready',
+  '1': 'config.vdisplay_status_unknown',
+  '-1': 'config.vdisplay_status_failed_linux',
+}
+const hyprlandReady = computed(() => String(props.vdisplay) === '0')
+const hyprlandStatusKey = computed(() => {
+  if (props.vdisplay === undefined || props.vdisplay === null) {
+    return 'config.vdisplay_status_unavailable_linux'
+  }
+  return hyprlandStatusKeys[String(props.vdisplay)] ?? 'config.vdisplay_status_unknown'
+})
+
 const config = ref(props.config)
 
 const validateFallbackMode = (event) => {
@@ -149,7 +166,7 @@ const validateFallbackMode = (event) => {
               locale-prefix="config"
               v-model="config.headless_mode"
               default="false"
-              v-if="platform === 'windows'"
+              v-if="vdisplaySupported"
     ></Checkbox>
 
     <!-- Double Refreshrate -->
@@ -158,7 +175,7 @@ const validateFallbackMode = (event) => {
               locale-prefix="config"
               v-model="config.double_refreshrate"
               default="false"
-              v-if="platform === 'windows'"
+              v-if="vdisplaySupported"
     ></Checkbox>
 
     <!-- Isolated Virtual Display -->
@@ -167,7 +184,7 @@ const validateFallbackMode = (event) => {
               locale-prefix="config"
               v-model="config.isolated_virtual_display_option"
               default="false"
-              v-if="platform === 'windows'"
+              v-if="vdisplaySupported"
     ></Checkbox>
 
     <!-- SudoVDA Driver Status -->
@@ -175,6 +192,14 @@ const validateFallbackMode = (event) => {
       <i class="fa-solid fa-xl fa-circle-info"></i> SudoVDA Driver status: {{currentDriverStatus}}
     </div>
     <div class="form-text" v-if="platform === 'windows' && vdisplay">Please ensure SudoVDA driver is installed to the latest version and enabled properly.</div>
+
+    <!-- Hyprland headless output status -->
+    <template v-if="platform === 'linux'">
+      <div class="alert" :class="[hyprlandReady ? 'alert-success' : 'alert-warning']">
+        <i class="fa-solid fa-xl fa-circle-info"></i> {{ $t('config.vdisplay_status_linux', { status: $t(hyprlandStatusKey) }) }}
+      </div>
+      <div class="form-text" v-if="!hyprlandReady">{{ $t('config.vdisplay_status_hint_linux') }}</div>
+    </template>
 
   </div>
 </template>
