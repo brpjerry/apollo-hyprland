@@ -616,6 +616,13 @@ namespace hyprland {
     return std::format("hl.device({{ name = {}, {} = {} }})", lua_quote(device), field, lua_value(value));
   }
 
+  std::optional<std::string> lua_dpms_call(const std::string &output, bool on) {
+    if (output.empty()) {
+      return std::nullopt;
+    }
+    return std::format("hl.dsp.dpms({{ action = {}, monitor = {} }})", on ? "\"on\""sv : "\"off\""sv, lua_quote(output));
+  }
+
   ipc_t::ipc_t(std::filesystem::path instance_dir, std::string signature, config_dialect_e dialect):
       instance_dir_ {std::move(instance_dir)},
       signature_ {std::move(signature)},
@@ -743,6 +750,17 @@ namespace hyprland {
       return false;
     }
     return keyword(std::format("device[{}]:{}", device, key), value);
+  }
+
+  bool ipc_t::set_dpms(const std::string &output, bool on) const {
+    if (dialect_ == config_dialect_e::lua) {
+      auto call = lua_dpms_call(output, on);
+      return call && dispatch_lua(*call);
+    }
+    if (output.empty() || has_any(output, " \t\n\r"sv)) {
+      return false;
+    }
+    return dispatch_legacy("dpms", std::format("{} {}", on ? "on" : "off", output));
   }
 
   bool ipc_t::dispatch_lua(const std::string &lua_call) const {

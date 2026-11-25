@@ -171,7 +171,10 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/vdisplay.cpp"
             # per-client virtual display settings, workspace and window placement (HYP-11, HYP-12)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/display_settings.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/display_settings.cpp")
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/display_settings.cpp"
+            # streaming session helpers: waking the streamed output (HYP-20)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/session.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/session.cpp")
 else()
     # platf::vdisplay: no virtual display support without Wayland
     list(APPEND PLATFORM_TARGET_FILES
@@ -235,6 +238,19 @@ if(${SUNSHINE_ENABLE_TRAY})
 else()
     set(SUNSHINE_TRAY 0)
     message(STATUS "Tray icon disabled")
+endif()
+
+# keep the session from idling while streaming (HYP-20): org.freedesktop.ScreenSaver and logind over D-Bus
+pkg_check_modules(GIO gio-2.0 gio-unix-2.0)
+if(GIO_FOUND)
+    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_GIO=1)
+    include_directories(SYSTEM ${GIO_INCLUDE_DIRS})
+    list(APPEND PLATFORM_LIBRARIES ${GIO_LIBRARIES})
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.cpp")
+else()
+    message(WARNING "gio-2.0 not found: Apollo will not keep the session from idling or locking while streaming")
 endif()
 
 # These need to be set before adding the inputtino subdirectory in order for them to be picked up

@@ -44,6 +44,12 @@
 
 #ifdef SUNSHINE_BUILD_WAYLAND
   #include "clipboard.h"
+  #include "hyprland/ipc.h"
+  #include "hyprland/session.h"
+#endif
+
+#ifdef SUNSHINE_BUILD_GIO
+  #include "idle_inhibit.h"
 #endif
 
 #include <linux/rtnetlink.h>
@@ -367,12 +373,52 @@ std::string get_local_ip_for_gateway() {
     // Unimplemented
   }
 
+  namespace {
+#ifdef SUNSHINE_BUILD_GIO
+    /**
+     * @brief The inhibitor held while any client streams. Never destroyed: its fds and bus connection close
+     *        with the process, and logging is gone by the time static destructors run.
+     */
+    idle::inhibitor_t &idle_inhibitor() {
+      static auto *inhibitor = new idle::inhibitor_t {};
+      return *inhibitor;
+    }
+#endif
+
+    /**
+     * @brief Switch on the streamed output if it is DPMS-off (it would capture as black). Only that output.
+     */
+    void wake_stream_output() {
+#ifdef SUNSHINE_BUILD_WAYLAND
+      const auto output = config::video.output_name;
+      if (output.empty()) {
+        BOOST_LOG(debug) << "No output configured by name; not checking DPMS"sv;
+        return;
+      }
+      auto ipc = hyprland::ipc_t::connect();
+      if (!ipc) {
+        return;
+      }
+      hyprland::wake_output(*ipc, output);
+#endif
+    }
+  }  // namespace
+
   void streaming_will_start() {
-    // Nothing to do
+    // Keep hypridle (or another idle daemon) from blanking, locking or suspending the session mid-stream, like
+    // ES_DISPLAY_REQUIRED on Windows.
+#ifdef SUNSHINE_BUILD_GIO
+    if (!idle_inhibitor().acquire()) {
+      BOOST_LOG(warning) << "Could not inhibit idle: the session may blank or lock during the stream"sv;
+    }
+#endif
+    wake_stream_output();
   }
 
   void streaming_will_stop() {
-    // Nothing to do
+#ifdef SUNSHINE_BUILD_GIO
+    idle_inhibitor().release();
+#endif
   }
 
   void restart_on_exit() {
