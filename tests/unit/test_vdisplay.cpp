@@ -126,7 +126,9 @@ TEST(VdisplayStatusTest, KeepsWebUiStatusCodes) {
   EXPECT_EQ(static_cast<int>(status_e::watchdog_failed), -3);
 }
 
-#ifndef _WIN32
+// The stub is only built where no real backend exists (macOS, Linux without Wayland). Linux with Wayland uses the
+// Hyprland backend, tested in tests/unit/platform/test_hyprland_vdisplay.cpp.
+#if !defined(_WIN32) && !defined(SUNSHINE_BUILD_WAYLAND)
 // Bugs caught: 0, False positives: 0
 TEST(VdisplayStubTest, ReportsUnavailable) {
   EXPECT_EQ(platf::vdisplay::init(), platf::vdisplay::status_e::unavailable);
