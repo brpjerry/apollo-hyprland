@@ -1083,7 +1083,12 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             Perform mandatory verification and additional configuration for the display device.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
+            @note{On Hyprland, displays are outputs named by connector (e.g. `DP-1`) or description. Wayland has no
+            primary display: `ensure_primary` moves the display to position 0x0 (shifting the rest of the layout with it)
+            and focuses it, and an empty [output_name](#output_name) means the display at 0x0. The original layout is
+            saved in `display_device.state` and restored when the stream ends, or on the next start after a crash.
+            Reloading the Hyprland config also undoes the changes.}
         </td>
     </tr>
     <tr>
@@ -1129,7 +1134,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Perform additional resolution configuration for the display device.
             @note{"Optimize game settings" must be enabled in Moonlight for this option to work.}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1165,7 +1170,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Specify manual resolution to be used.
             @note{[dd_resolution_option](#dd_resolution_option) must be set to `manual`}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1187,7 +1192,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             Perform additional refresh rate configuration for the display device.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1223,7 +1228,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Specify manual refresh rate to be used.
             @note{[dd_refresh_rate_option](#dd_refresh_rate_option) must be set to `manual`}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1246,7 +1251,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             Perform additional HDR configuration for the display device.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1305,7 +1310,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Additional delay in milliseconds to wait before reverting configuration when the app has been closed or the last session terminated.
             Main purpose is to provide a smoother transition when quickly switching between apps.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1330,7 +1335,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             When enabled, display configuration is reverted upon disconnect of all clients instead of app close or last session termination.
             This can be useful for returning to physical usage of the host machine without closing the active app.
             @warning{Some applications may not function properly when display configuration is changed while active.}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1382,7 +1387,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @note{First entry to be matched in the list is the one that will be used.}
             @tip{`requested_resolution` and `final_resolution` can be omitted for `refresh_rate_only` group.}
             @tip{`requested_fps` and `final_refresh_rate` can be omitted for `resolution_only` group.}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>

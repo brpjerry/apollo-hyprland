@@ -340,11 +340,16 @@ namespace proc {
 
     display_device::configure_display(config::video, *launch_session);
 
+#ifdef _WIN32
     // We should not preserve display state when using virtual display.
     // It is already handled by Windows properly.
     if (this->virtual_display) {
       display_device::reset_persistence();
     }
+#else
+    // Hyprland does not bring back monitors that were disabled (ensure_only_display) when the virtual display goes
+    // away, so the saved state stays and terminate() reverts it.
+#endif
 
     // Probe encoders again before streaming to ensure our chosen
     // encoder matches the active GPU (which could have changed
@@ -781,6 +786,14 @@ namespace proc {
       }
     }
 
+#ifndef _WIN32
+    // Revert before removing the virtual display: monitors disabled for the stream come back while it still exists,
+    // so their workspaces return to them and remove() can give focus back to the monitor that had it.
+    if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
+      display_device::revert_configuration();
+    }
+#endif
+
     bool used_virtual_display = platf::vdisplay::status() == platf::vdisplay::status_e::ok && _launch_session && _launch_session->virtual_display;
     if (used_virtual_display) {
       if (platf::vdisplay::remove(_launch_session->display_guid)) {
@@ -795,11 +808,13 @@ namespace proc {
     // Only show the Stopped notification if we actually have an app to stop
     // Since terminate() is always run when a new app has started
     if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
+#ifdef _WIN32
       if (used_virtual_display) {
         display_device::reset_persistence();
       } else {
         display_device::revert_configuration();
       }
+#endif
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
       system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());

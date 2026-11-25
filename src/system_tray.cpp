@@ -128,8 +128,8 @@ namespace system_tray {
         //       { .text = nullptr } } },
         // { .text = "-" },
         { .text = TRAY_MSG_NO_APP_RUNNING, .cb = tray_force_stop_cb },
-  // Currently display device settings are only supported on Windows
-  #ifdef _WIN32
+  // Display device settings are supported on Windows and on Hyprland (Wayland builds)
+  #if defined(_WIN32) || defined(SUNSHINE_BUILD_WAYLAND)
         {.text = "Reset Display Device Config", .cb = tray_reset_display_device_config_cb},
   #endif
         {.text = "Restart", .cb = tray_restart_cb},

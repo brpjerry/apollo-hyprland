@@ -171,7 +171,10 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/vdisplay.cpp"
             # per-client virtual display settings, workspace and window placement (HYP-11, HYP-12)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/display_settings.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/display_settings.cpp")
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/display_settings.cpp"
+            # display_device: dd_* options for Hyprland outputs (HYP-18)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/settings_manager.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/settings_manager.cpp")
 else()
     # platf::vdisplay: no virtual display support without Wayland
     list(APPEND PLATFORM_TARGET_FILES

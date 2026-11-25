@@ -597,6 +597,9 @@ namespace hyprland {
       value += std::format(",bitdepth,{}", *rule.bitdepth);
     }
     if (rule.cm) {
+      if (has_any(*rule.cm, separators)) {
+        return std::nullopt;
+      }
       value += ",cm," + *rule.cm;
     }
     if (rule.sdr_brightness) {
