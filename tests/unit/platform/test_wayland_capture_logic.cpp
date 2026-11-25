@@ -85,9 +85,14 @@ TEST(WaylandCaptureLogic, FallsBackToShmOnlyWhenAllowed) {
 // Bugs caught: 0, False positives: 0
 TEST(WaylandCaptureLogic, RejectsUnsupportedFormatsAndMissingSize) {
   auto c = hyprland_constraints();
-  // 10-bit formats only (XR30) and an RGB565 shm format.
-  c.dmabuf_formats = {{wl::fourcc::code('X', 'R', '3', '0'), nvidia_modifiers}};
+  // FP16 only (AB4H) and an RGB565 shm format.
+  c.dmabuf_formats = {{wl::fourcc::code('A', 'B', '4', 'H'), nvidia_modifiers}};
   c.shm_formats = {wl::fourcc::code('R', 'G', '1', '6')};
+  EXPECT_FALSE(wl::choose_buffer_spec(c, true, true));
+
+  // 10-bit shm is not accepted: the system memory path hands frames on as BGR0.
+  c.dmabuf_formats.clear();
+  c.shm_formats = {wl::fourcc::XRGB2101010};
   EXPECT_FALSE(wl::choose_buffer_spec(c, true, true));
 
   c = hyprland_constraints();
@@ -360,4 +365,30 @@ TEST(WaylandCaptureLogic, CopyRowsFlipsVertically) {
   EXPECT_EQ(std::vector<std::uint8_t>(dst, dst + 6), (std::vector<std::uint8_t> {1, 2, 3, 4, 5, 6}));
   wl::copy_rows(src, 4, dst, 2, 2, 3, true);
   EXPECT_EQ(std::vector<std::uint8_t>(dst, dst + 6), (std::vector<std::uint8_t> {5, 6, 3, 4, 1, 2}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandCaptureLogic, PrefersTenBitDmabufsOnlyWhenAsked) {
+  // A 10-bit output with misc.screencopy_force_8b = false: Hyprland offers its 10-bit format.
+  auto c = hyprland_constraints();
+  c.dmabuf_formats.insert(c.dmabuf_formats.begin(), {wl::fourcc::XBGR2101010, nvidia_modifiers});
+
+  auto spec = wl::choose_buffer_spec(c, true, false, false, true);
+  ASSERT_TRUE(spec);
+  EXPECT_EQ(spec->format, wl::fourcc::XBGR2101010);
+
+  spec = wl::choose_buffer_spec(c, true, false, false, false);
+  ASSERT_TRUE(spec);
+  EXPECT_EQ(spec->format, wl::fourcc::XRGB8888) << "SDR keeps 8-bit buffers";
+
+  // Only 10-bit offered: used either way.
+  c.dmabuf_formats = {{wl::fourcc::XRGB2101010, nvidia_modifiers}};
+  spec = wl::choose_buffer_spec(c, true, false);
+  ASSERT_TRUE(spec);
+  EXPECT_EQ(spec->format, wl::fourcc::XRGB2101010);
+
+  // Only 8-bit offered (Hyprland's default misc.screencopy_force_8b = true): 8-bit it is.
+  spec = wl::choose_buffer_spec(hyprland_constraints(), true, false, false, true);
+  ASSERT_TRUE(spec);
+  EXPECT_EQ(spec->format, wl::fourcc::XRGB8888);
 }

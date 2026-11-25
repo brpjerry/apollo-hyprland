@@ -18,6 +18,7 @@
 #include "cuda.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/vdisplay.h"
 #include "src/video.h"
 #include "vaapi.h"
 #include "wayland.h"
@@ -243,6 +244,9 @@ namespace wl {
     ext_t(std::size_t max_buffers, bool vram):
         pool {max_buffers},
         vram {vram} {
+      // The GL converter of the video memory path turns the SDR frames of an HDR output into PQ
+      // (output_color_t::sdr_white_nits()). System memory frames stay 8-bit BGRA, so HDR outputs stream as SDR there.
+      hdr_frames = vram;
     }
 
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config, const ext_options_t &options) {
@@ -269,6 +273,9 @@ namespace wl {
       }
       output = interface.monitors[*index]->output;
 
+      // HDR state and metadata of the output. Without wp-color-management the output is treated as SDR.
+      color.open(output_names(interface)[*index]);
+
       // The cursor is painted by default; capture() reopens the session if the stream wants it hidden.
       if (!session.open(display, interface, output, true)) {
         return -1;
@@ -289,6 +296,26 @@ namespace wl {
 
     capture_stats_t capture_stats() const override {
       return stats;
+    }
+
+    bool is_hdr() override {
+      return hdr_frames && color.is_hdr();
+    }
+
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      if (!is_hdr()) {
+        std::memset(&metadata, 0, sizeof(metadata));
+        return false;
+      }
+      return fill_hdr_metadata(*color.description(), metadata);
+    }
+
+    bool hdr_supported() override {
+      if (!hdr_frames) {
+        return false;
+      }
+      // Apollo's Hyprland virtual displays can be put in HDR mode (platf::vdisplay::set_hdr()).
+      return color.is_hdr() || (color.compositor_supports_hdr10() && platf::vdisplay::status() == platf::vdisplay::status_e::ok);
     }
 
     platf::capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
@@ -367,6 +394,14 @@ namespace wl {
         auto timeout = std::chrono::ceil<std::chrono::milliseconds>(wake - now);
         display.dispatch(std::max(timeout, 0ms));
 
+        // The output switched between SDR and HDR (or its HDR metadata changed): the encoder has to be recreated
+        // with the new colorspace. The loop wakes at least every idle_repeat_interval, which bounds the delay.
+        if (color.poll_changed()) {
+          BOOST_LOG(info) << "Output colors changed; reinitializing capture"sv;
+          abandon_frame();
+          return platf::capture_e::reinit;
+        }
+
         if (session.frame_state == ext_session_t::frame_state_e::failed) {
           auto reason = session.failure_reason;
           abandon_frame();
@@ -438,9 +473,9 @@ namespace wl {
       const auto &constraints = session.constraints;
 
       const bool allow_dmabuf = interface.dmabuf_interface && !constraints.dmabuf_formats.empty() && gbm.open(constraints.dmabuf_device);
-      auto spec = choose_buffer_spec(constraints, allow_dmabuf, !vram, options.prefer_shm);
+      auto spec = choose_buffer_spec(constraints, allow_dmabuf, !vram, options.prefer_shm, vram && color.is_hdr());
       if (!spec) {
-        BOOST_LOG(error) << "No usable ext-image-copy-capture buffer type ("sv << (vram ? "dma-buf"sv : "dma-buf or shm"sv) << " with an 8-bit RGB format)"sv;
+        BOOST_LOG(error) << "No usable ext-image-copy-capture buffer type ("sv << (vram ? "dma-buf"sv : "dma-buf or shm"sv) << " with an RGB format)"sv;
         return false;
       }
 
@@ -469,6 +504,7 @@ namespace wl {
         if (!hand_over_buffer(pool, slot, img_out, ++sequence, false)) {
           return platf::capture_e::reinit;
         }
+        static_cast<egl::img_descriptor_t *>(img_out.get())->sdr_white_nits = color.sdr_white_nits();
         last_slot = slot;
       } else {
         if (!read_buffer(egl_display.get(), pool[slot], *img_out, false)) {
@@ -512,6 +548,7 @@ namespace wl {
         if (!hand_over_buffer(pool, last_slot, img_out, ++sequence, false)) {
           return platf::capture_e::reinit;
         }
+        static_cast<egl::img_descriptor_t *>(img_out.get())->sdr_white_nits = color.sdr_white_nits();
       } else {
         copy_rows(last_img->data, last_img->row_pitch, img_out->data, img_out->row_pitch, (std::size_t) width * 4, (std::size_t) height, false);
       }
@@ -540,6 +577,12 @@ namespace wl {
     platf::mem_type_e mem_type;
     std::chrono::nanoseconds delay;
     ext_options_t options;
+
+    /// The output's color description (HDR state and metadata).
+    output_color_t color;
+    /// The encode path of this backend turns captured frames into PQ for HDR streams. Until it does, an HDR
+    /// output is streamed as SDR.
+    bool hdr_frames {false};
 
     wl::display_t display;
     interface_t interface;

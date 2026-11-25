@@ -3,12 +3,14 @@
  * @brief Definitions for wlr-screencopy capture.
  */
 // standard includes
+#include <cstring>
 #include <thread>
 
 // local includes
 #include "cuda.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/vdisplay.h"
 #include "src/video.h"
 #include "vaapi.h"
 #include "wayland.h"
@@ -53,6 +55,9 @@ namespace wl {
 
       output = interface.monitors[*index]->output;
 
+      // HDR state and metadata of the output. Without wp-color-management the output is treated as SDR.
+      color.open(output_names(interface)[*index]);
+
       // Capture buffers are in hardware pixels, in whatever orientation the compositor's screencopy delivers.
       auto constraints = probe_screencopy(display, interface.screencopy_manager, output);
       if (!constraints) {
@@ -77,6 +82,26 @@ namespace wl {
       return stats;
     }
 
+    bool is_hdr() override {
+      return hdr_frames && color.is_hdr();
+    }
+
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      if (!is_hdr()) {
+        std::memset(&metadata, 0, sizeof(metadata));
+        return false;
+      }
+      return fill_hdr_metadata(*color.description(), metadata);
+    }
+
+    bool hdr_supported() override {
+      if (!hdr_frames) {
+        return false;
+      }
+      // Apollo's Hyprland virtual displays can be put in HDR mode (platf::vdisplay::set_hdr()).
+      return color.is_hdr() || (color.compositor_supports_hdr10() && platf::vdisplay::status() == platf::vdisplay::status_e::ok);
+    }
+
     int dummy_img(platf::img_t *img) override {
       return 0;
     }
@@ -98,6 +123,13 @@ namespace wl {
         next_frame += delay;
         if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
           next_frame = now + delay;
+        }
+
+        // The output switched between SDR and HDR (or its HDR metadata changed): the encoder has to be recreated
+        // with the new colorspace.
+        if (color.poll_changed()) {
+          BOOST_LOG(info) << "Output colors changed; reinitializing capture"sv;
+          return platf::capture_e::reinit;
         }
 
         std::shared_ptr<platf::img_t> img_out;
@@ -180,6 +212,12 @@ namespace wl {
     gbm_device_t gbm;
     screencopy_t screencopy;
     capture_stats_t stats;
+
+    /// The output's color description (HDR state and metadata).
+    output_color_t color;
+    /// The encode path of this backend turns captured frames into PQ for HDR streams. Until it does, an HDR
+    /// output is streamed as SDR.
+    bool hdr_frames {false};
 
     wl_output *output;
   };
@@ -274,6 +312,8 @@ namespace wl {
     // One buffer being captured into plus up to two the encoder may still read.
     wlr_vram_t():
         wlr_t {3} {
+      // The GL converter turns the SDR frames of an HDR output into PQ (output_color_t::sdr_white_nits()).
+      hdr_frames = true;
     }
 
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
@@ -300,6 +340,7 @@ namespace wl {
       if (!hand_over_buffer(screencopy.pool, slot, img_out, ++sequence, screencopy.y_invert)) {
         return platf::capture_e::reinit;
       }
+      static_cast<egl::img_descriptor_t *>(img_out.get())->sdr_white_nits = color.sdr_white_nits();
       img_out->frame_timestamp = frame_timestamp;
 
       return platf::capture_e::ok;

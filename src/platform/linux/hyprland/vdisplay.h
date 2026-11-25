@@ -85,6 +85,19 @@ namespace hyprland {
   bool any_monitor_active(const std::vector<monitor_info_t> &monitors);
 
   /**
+   * @brief The color management fields of a virtual display rule in HDR or SDR mode (see vdisplay_t::set_hdr()).
+   * @details SDR only sets `cm = "srgb"`; the bit depth stays what the rule otherwise has.
+   *          HDR advertises a 1000 cd/m² mastering display (0.005 cd/m² black, 400 cd/m² frame average) since a
+   *          headless output has no EDID to take them from; clients receive them as HDR metadata.
+   */
+  void apply_hdr_fields(monitor_rule_t &rule, bool hdr);
+
+  /**
+   * @brief Whether a monitor shows HDR: its color management preset is `hdr` or `hdredid`.
+   */
+  bool monitor_is_hdr(const monitor_info_t &monitor);
+
+  /**
    * @brief Hyprland headless outputs as virtual displays.
    *
    * All public methods are thread-safe. Output creation, removal and mode changes are serialised by one mutex.
@@ -180,6 +193,22 @@ namespace hyprland {
     void track_process_group(const std::string &name, int pgid);
 
     /**
+     * @brief Whether an output this backend created is in HDR mode (color management preset `hdr`).
+     * @return std::nullopt for outputs Apollo did not create (physical monitors belong to the display device code),
+     *         or if Hyprland cannot be asked.
+     */
+    std::optional<bool> get_hdr(const std::string &name);
+
+    /**
+     * @brief Switch an output this backend created to HDR (or back to SDR) and wait until Hyprland applied it.
+     * @details HDR: `cm = "hdr"`, `bitdepth = 10`, HDR and wide color support forced on (headless outputs have no
+     *          EDID) and the luminances of apply_hdr_fields(). SDR: `cm = "srgb"` and the bit depth the output would have
+     *          anyway. The state is part of the output's rule from then on, so set_mode(), config reloads and the
+     *          baseline remove() learns user changes against include it.
+     */
+    bool set_hdr(const std::string &name, bool enable);
+
+    /**
      * @brief Remove the output for an identity.
      *
      * Before removing it, what the user changed on the output during the session (scale, transform, bit depth,
@@ -216,6 +245,8 @@ namespace hyprland {
       std::string workspace;  ///< Workspace shown by activate(); empty before.
       std::optional<focus_t> previous_focus;  ///< Focus before activate().
       int pgid = 0;  ///< Process group whose windows go to `workspace`; 0: none.
+      platf::vdisplay::mode_t mode {};  ///< The mode of the rule last applied.
+      std::optional<bool> hdr;  ///< HDR state set by set_hdr(); nullopt: never set, the rule leaves it alone.
     };
 
     void on_event(std::string_view event, std::string_view data);
@@ -235,6 +266,7 @@ namespace hyprland {
     /// Wait until the output has the mode (and position, if given). Also waits for the rule's scale and transform,
     /// which Hyprland applies together with the mode, but only fails on the mode and position.
     bool wait_for_mode_locked(const monitor_rule_t &rule, const platf::vdisplay::mode_t &mode, const std::optional<std::pair<int, int>> &position);
+    bool wait_for_cm_locked(const std::string &name, bool hdr);
     bool remove_output_locked(const std::string &name);
     void cleanup_stale_locked();
     /// Wait until more than `seen` monitoraddedv2 (added) or monitorremovedv2 events arrived for `name`.

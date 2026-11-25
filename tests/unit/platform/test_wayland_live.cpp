@@ -16,6 +16,7 @@
   #include <src/input.h>
   #include <src/platform/common.h>
   #include <src/platform/linux/graphics.h>
+  #include <src/platform/linux/hyprland/vdisplay.h>
   #include <src/platform/linux/wayland.h>
   #include <src/video.h>
 
@@ -388,7 +389,112 @@ TEST_P(ExtCaptureLiveTest, ReinitializesWhenTheOutputIsRemoved) {
   EXPECT_FALSE(make(output->name));
 }
 
+namespace {
+  /// Switches a headless test output between HDR and SDR with the rule Apollo uses for its virtual displays.
+  bool set_test_output_hdr(test_wl::headless_output_t &output, bool hdr) {
+    hyprland::monitor_rule_t rule {.output = output.name};
+    hyprland::apply_hdr_fields(rule, hdr);
+    return output.ipc->set_monitor(rule);
+  }
+}  // namespace
+
+// Bugs caught: 0, False positives: 0
+TEST_P(ExtCaptureLiveTest, ReinitializesWhenTheOutputSwitchesToHdr) {
+  if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
+    GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";
+  }
+  auto output = headless("1280x720@60");
+  ASSERT_TRUE(output);
+  test_wl::damage_source_t damage {output->name};
+  ASSERT_TRUE(damage.ok());
+
+  auto disp = make(output->name, 60);
+  ASSERT_TRUE(disp);
+  EXPECT_FALSE(disp->is_hdr());
+
+  std::optional<std::chrono::steady_clock::time_point> switched_at;
+  auto run = run_capture(*disp, GetParam().mem_type, 100000, 10s, true, false, [&](int frames) {
+    if (frames == 10 && !switched_at) {
+      ASSERT_TRUE(set_test_output_hdr(*output, true));
+      switched_at = std::chrono::steady_clock::now();
+    }
+  });
+
+  ASSERT_TRUE(switched_at);
+  auto reaction = std::chrono::steady_clock::now() - *switched_at;
+  std::cout << GetParam().name << ": capture returned " << (int) run.status << " "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(reaction).count() << " ms after HDR was switched on" << std::endl;
+  EXPECT_EQ(run.status, platf::capture_e::reinit);
+  EXPECT_LT(reaction, 2s);
+
+  // The new display reports HDR (and metadata) exactly when its encode path can produce PQ frames.
+  disp = make(output->name, 60);
+  ASSERT_TRUE(disp);
+  SS_HDR_METADATA metadata;
+  EXPECT_EQ(disp->get_hdr_metadata(metadata), disp->is_hdr());
+  if (disp->is_hdr()) {
+    EXPECT_EQ(metadata.maxDisplayLuminance, 1000);
+    EXPECT_EQ(metadata.minDisplayLuminance, 50);
+    EXPECT_EQ(metadata.maxContentLightLevel, 1000);
+    EXPECT_EQ(metadata.maxFrameAverageLightLevel, 400);
+  }
+  EXPECT_EQ(disp->hdr_supported(), disp->is_hdr());
+}
+
 INSTANTIATE_TEST_SUITE_P(Wayland, ExtCaptureLiveTest, testing::ValuesIn(ext_cases), ext_case_name);
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandColorLiveTest, ReadsHdrStateAndMetadataOfAnOutput) {
+  if (!std::getenv("WAYLAND_DISPLAY")) {
+    GTEST_SKIP() << "WAYLAND_DISPLAY is not set";
+  }
+  if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
+    GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";
+  }
+  auto output = test_wl::headless_output_t::create("1280x720@60");
+  if (!output) {
+    GTEST_SKIP() << "Couldn't create a headless output (is this Hyprland?)";
+  }
+
+  wl::output_color_t color;
+  if (!color.open(output->name)) {
+    GTEST_SKIP() << "The compositor does not describe output colors (no wp-color-management-v1)";
+  }
+  ASSERT_TRUE(color.description());
+  std::cout << output->name << " (SDR): " << wl::describe(*color.description()) << std::endl;
+  EXPECT_FALSE(color.is_hdr());
+  EXPECT_TRUE(color.compositor_supports_hdr10());
+  EXPECT_FALSE(color.poll_changed());
+
+  auto wait_for_change = [&]() {
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (color.poll_changed()) {
+        return true;
+      }
+      std::this_thread::sleep_for(10ms);
+    }
+    return false;
+  };
+
+  ASSERT_TRUE(set_test_output_hdr(*output, true));
+  ASSERT_TRUE(wait_for_change());
+  ASSERT_TRUE(color.description());
+  std::cout << output->name << " (HDR): " << wl::describe(*color.description()) << std::endl;
+  EXPECT_TRUE(color.is_hdr());
+  SS_HDR_METADATA metadata;
+  ASSERT_TRUE(wl::fill_hdr_metadata(*color.description(), metadata));
+  EXPECT_EQ(metadata.displayPrimaries[0].x, 35400);
+  EXPECT_EQ(metadata.whitePoint.x, 15635);
+  EXPECT_EQ(metadata.maxDisplayLuminance, 1000);
+  EXPECT_EQ(metadata.minDisplayLuminance, 50);
+  EXPECT_EQ(metadata.maxContentLightLevel, 1000);
+  EXPECT_EQ(metadata.maxFrameAverageLightLevel, 400);
+
+  ASSERT_TRUE(set_test_output_hdr(*output, false));
+  ASSERT_TRUE(wait_for_change());
+  EXPECT_FALSE(color.is_hdr());
+}
 
 // Bugs caught: 0, False positives: 0
 TEST_F(WaylandLiveTest, ExtAndWlrReportTheSameGeometry) {

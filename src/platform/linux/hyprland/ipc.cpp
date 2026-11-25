@@ -432,6 +432,7 @@ namespace hyprland {
       m.dpms_on = json_get<bool>(obj, "dpmsStatus", true);
       m.current_format = json_get<std::string>(obj, "currentFormat", "");
       m.focused = json_get<bool>(obj, "focused", false);
+      m.cm_preset = json_get<std::string>(obj, "colorManagementPreset", "");
       if (auto ws = obj.find("activeWorkspace"); ws != obj.end() && ws->is_object()) {
         m.active_workspace = json_get<std::string>(*ws, "name", "");
       }
@@ -513,8 +514,19 @@ namespace hyprland {
     return lua_quote(value);
   }
 
+  namespace {
+    bool finite_fields(const monitor_rule_t &rule) {
+      for (const auto &value : {rule.scale, rule.sdr_brightness, rule.sdr_saturation, rule.min_luminance}) {
+        if (value && !std::isfinite(*value)) {
+          return false;
+        }
+      }
+      return true;
+    }
+  }  // namespace
+
   std::optional<std::string> lua_monitor_call(const monitor_rule_t &rule) {
-    if (rule.output.empty() || (rule.scale && !std::isfinite(*rule.scale))) {
+    if (rule.output.empty() || !finite_fields(rule)) {
       return std::nullopt;
     }
     std::string call = "hl.monitor({ output = " + lua_quote(rule.output);
@@ -536,13 +548,37 @@ namespace hyprland {
     if (rule.disabled) {
       call += *rule.disabled ? ", disabled = true" : ", disabled = false";
     }
+    if (rule.cm) {
+      call += ", cm = " + lua_quote(*rule.cm);
+    }
+    if (rule.supports_hdr) {
+      call += std::format(", supports_hdr = {}", *rule.supports_hdr);
+    }
+    if (rule.supports_wide_color) {
+      call += std::format(", supports_wide_color = {}", *rule.supports_wide_color);
+    }
+    if (rule.sdr_brightness) {
+      call += ", sdrbrightness = " + format_number(*rule.sdr_brightness);
+    }
+    if (rule.sdr_saturation) {
+      call += ", sdrsaturation = " + format_number(*rule.sdr_saturation);
+    }
+    if (rule.min_luminance) {
+      call += ", min_luminance = " + format_number(*rule.min_luminance);
+    }
+    if (rule.max_luminance) {
+      call += std::format(", max_luminance = {}", *rule.max_luminance);
+    }
+    if (rule.max_avg_luminance) {
+      call += std::format(", max_avg_luminance = {}", *rule.max_avg_luminance);
+    }
     call += " })";
     return call;
   }
 
   std::optional<std::string> hyprlang_monitor_value(const monitor_rule_t &rule) {
     constexpr auto separators = ",\n\r"sv;
-    if (rule.output.empty() || has_any(rule.output, separators) || (rule.scale && !std::isfinite(*rule.scale))) {
+    if (rule.output.empty() || has_any(rule.output, separators) || !finite_fields(rule) || (rule.cm && has_any(*rule.cm, separators))) {
       return std::nullopt;
     }
     if (rule.disabled.value_or(false)) {
@@ -559,6 +595,15 @@ namespace hyprland {
     }
     if (rule.bitdepth) {
       value += std::format(",bitdepth,{}", *rule.bitdepth);
+    }
+    if (rule.cm) {
+      value += ",cm," + *rule.cm;
+    }
+    if (rule.sdr_brightness) {
+      value += ",sdrbrightness," + format_number(*rule.sdr_brightness);
+    }
+    if (rule.sdr_saturation) {
+      value += ",sdrsaturation," + format_number(*rule.sdr_saturation);
     }
     return value;
   }

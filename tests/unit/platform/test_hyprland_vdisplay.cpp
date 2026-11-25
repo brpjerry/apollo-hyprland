@@ -44,6 +44,9 @@ namespace {
     int transform = 0;
     bool disabled = false;
     bool dpms = true;
+    std::string cm = "srgb";  ///< colorManagementPreset
+    bool supports_hdr = false;  ///< A rule forced HDR support on (headless outputs have no EDID).
+    std::string format = "XRGB8888";  ///< currentFormat, follows `bitdepth` like on a DRM-backed session.
   };
 
   /**
@@ -166,6 +169,9 @@ namespace {
       static const std::regex output_re {"output = \"([^\"]+)\""};
       static const std::regex mode_re {"mode = \"(\\d+)x(\\d+)@([0-9.]+)\""};
       static const std::regex position_re {"position = \"([^\"]+)\""};
+      static const std::regex cm_re {"cm = \"([^\"]+)\""};
+      static const std::regex supports_hdr_re {"supports_hdr = (-?\\d+)"};
+      static const std::regex bitdepth_re {"bitdepth = (\\d+)"};
       static const std::regex scale_re {"scale = ([0-9.]+)"};
       static const std::regex transform_re {"transform = ([0-7])"};
       std::smatch match;
@@ -181,7 +187,7 @@ namespace {
         nlohmann::json arr = nlohmann::json::array();
         int id = 0;
         for (auto &m : monitors_) {
-          arr.push_back({{"id", id++}, {"name", m.name}, {"description", ""}, {"width", m.width}, {"height", m.height}, {"refreshRate", m.refresh}, {"x", m.x}, {"y", m.y}, {"scale", m.scale}, {"transform", m.transform}, {"disabled", m.disabled}, {"dpmsStatus", m.dpms}});
+          arr.push_back({{"id", id++}, {"name", m.name}, {"description", ""}, {"width", m.width}, {"height", m.height}, {"refreshRate", m.refresh}, {"x", m.x}, {"y", m.y}, {"scale", m.scale}, {"transform", m.transform}, {"disabled", m.disabled}, {"dpmsStatus", m.dpms}, {"colorManagementPreset", m.cm}, {"currentFormat", m.format}});
         }
         return arr.dump();
       }
@@ -255,6 +261,16 @@ namespace {
             it->x = x;
             it->y = y;
           }
+        }
+        if (std::regex_search(req, match, bitdepth_re)) {
+          it->format = match[1] == "10" ? "XBGR2101010" : "XRGB8888";
+        }
+        if (std::regex_search(req, match, supports_hdr_re)) {
+          it->supports_hdr = std::stoi(match[1]) == 1;
+        }
+        if (std::regex_search(req, match, cm_re)) {
+          // Like Hyprland 0.57: an output that does not support HDR stays SDR.
+          it->cm = match[1] == "hdr" && !it->supports_hdr ? "srgb" : std::string {match[1]};
         }
         return "ok";
       }
@@ -760,3 +776,88 @@ TEST(HyprlandVdisplayTest, RemembersPositionOnlyWhenNotIsolated) {
 }
 
 #endif
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, SetHdrSwitchesTheColorPresetAndKeepsItAcrossModeChanges) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {2560, 1600, 120000}), client_output);
+  EXPECT_EQ(vd.get_hdr(client_output), false);
+
+  ASSERT_TRUE(vd.set_hdr(client_output, true));
+  EXPECT_EQ(hypr.count_requests(R"(/eval hl.monitor({ output = "APOLLO-1a2b3c4d", mode = "2560x1600@120.000", position = "auto-right", scale = 1, bitdepth = 10, cm = "hdr", supports_hdr = 1, supports_wide_color = 1, min_luminance = 0.005, max_luminance = 1000, max_avg_luminance = 400 }))"), 1u);
+  EXPECT_EQ(hypr.monitor(client_output)->cm, "hdr");
+  EXPECT_EQ(vd.get_hdr(client_output), true);
+
+  // A new mode keeps HDR, and so does a config reload.
+  ASSERT_TRUE(vd.set_mode(client_output, {1920, 1080, 60000}, false));
+  EXPECT_EQ(hypr.count_requests(R"(/eval hl.monitor({ output = "APOLLO-1a2b3c4d", mode = "1920x1080@60.000", position = "auto-right", scale = 1, bitdepth = 10, cm = "hdr")"), 1u);
+  hypr.update_monitor(client_output, [](fake_monitor_t &m) {
+    m.cm = "srgb";
+  });
+  hypr.reload_config();
+  EXPECT_TRUE(eventually([&]() {
+    return hypr.monitor(client_output)->cm == "hdr";
+  })) << "HDR was not re-applied after configreloaded";
+
+  ASSERT_TRUE(vd.set_hdr(client_output, false));
+  EXPECT_EQ(hypr.monitor(client_output)->cm, "srgb");
+  EXPECT_EQ(vd.get_hdr(client_output), false);
+  EXPECT_EQ(hypr.count_requests(R"(/eval hl.monitor({ output = "APOLLO-1a2b3c4d", mode = "1920x1080@60.000", position = "auto-right", scale = 1, bitdepth = 8, cm = "srgb")"), 1u);
+
+  EXPECT_TRUE(vd.remove(client_identity()));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, HdrOnlyForOwnOutputs) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+
+  // Physical monitors are the display device code's business.
+  EXPECT_EQ(vd.get_hdr("DP-1"), std::nullopt);
+  EXPECT_FALSE(vd.set_hdr("DP-1", true));
+  EXPECT_EQ(hypr.count_requests("/eval hl.monitor("), 0u);
+  EXPECT_EQ(hypr.monitor("DP-1")->cm, "srgb");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, SetHdrFailsWhenHyprlandKeepsSdr) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1920, 1080, 60000}), client_output);
+
+  hypr.apply_rules = false;
+  EXPECT_FALSE(vd.set_hdr(client_output, true));
+  EXPECT_EQ(vd.get_hdr(client_output), false);
+  hypr.apply_rules = true;
+
+  EXPECT_TRUE(vd.remove(client_identity()));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, HdrIsNotRememberedAsAUserSetting) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1920, 1080, 60000}), client_output);
+
+  // An HDR client: the output goes to 10 bits for the session.
+  ASSERT_TRUE(vd.set_hdr(client_output, true));
+  EXPECT_EQ(hypr.monitor(client_output)->format, "XBGR2101010");
+  EXPECT_TRUE(vd.remove(client_identity()));
+  EXPECT_FALSE(fs::exists(hypr.settings_file())) << "HDR's bit depth is Apollo's, not the user's";
+
+  // The same with process.cpp's restore to SDR before removal.
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1920, 1080, 60000}), client_output);
+  ASSERT_TRUE(vd.set_hdr(client_output, true));
+  ASSERT_TRUE(vd.set_hdr(client_output, false));
+  EXPECT_EQ(hypr.monitor(client_output)->format, "XRGB8888");
+  EXPECT_TRUE(vd.remove(client_identity()));
+  EXPECT_FALSE(fs::exists(hypr.settings_file()));
+}

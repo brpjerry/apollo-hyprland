@@ -143,6 +143,8 @@ if(WAYLAND_FOUND)
     # Clipboard sync: ext-data-control-v1 (wayland-protocols >= 1.39), falling back to wlr-data-control.
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-data-control" ext-data-control-v1)
     GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-data-control-unstable-v1)
+    # wp-color-management-v1: HDR state and metadata of the captured output (wayland-protocols >= 1.41).
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/color-management" color-management-v1)
 
     include_directories(
             SYSTEM
@@ -155,6 +157,7 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wlgrab.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/extgrab.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland_capture_logic.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland_color.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.cpp"
             # platf::get_clipboard / set_clipboard (HYP-13)

@@ -13,6 +13,7 @@
 #include <vector>
 
 #ifdef SUNSHINE_BUILD_WAYLAND
+  #include <color-management-v1.h>
   #include <ext-image-capture-source-v1.h>
   #include <ext-image-copy-capture-v1.h>
   #include <linux-dmabuf-unstable-v1.h>
@@ -24,6 +25,7 @@
 #include "graphics.h"
 #include "src/platform/common.h"
 #include "wayland_capture_logic.h"
+#include "wayland_color.h"
 #include "wayland_geometry.h"
 
 /**
@@ -327,6 +329,7 @@ namespace wl {
       EXT_IMAGE_COPY_CAPTURE,  ///< ext-image-copy-capture manager
       EXT_OUTPUT_CAPTURE_SOURCE,  ///< ext-image-capture-source output source manager
       SHM,  ///< wl_shm
+      COLOR_MANAGER,  ///< wp_color_manager_v1 (only bound when bind_color_manager is set)
       MAX_INTERFACES,  ///< Maximum number of interfaces
     };
 
@@ -350,6 +353,18 @@ namespace wl {
     ext_image_copy_capture_manager_v1 *ext_copy_manager {nullptr};
     ext_output_image_capture_source_manager_v1 *ext_output_source_manager {nullptr};
     wl_shm *shm {nullptr};
+
+    /**
+     * @brief Bind wp_color_manager_v1. Set before listen().
+     * @details Off by default: Hyprland treats every client that bound the color manager as color-management aware
+     *          and then hands it captured frames in the output's own color space instead of converting them to sRGB
+     *          (ScreenshareFrame.cpp, `cmBackToSRGB`). Capture connections therefore leave it unbound; output_color_t
+     *          uses a connection of its own.
+     */
+    bool bind_color_manager {false};
+    wp_color_manager_v1 *color_manager {nullptr};
+    /// What the color manager advertised (supported_tf_named, supported_primaries_named, supported_feature).
+    std::vector<std::uint32_t> color_tfs, color_primaries, color_features;
 
   private:
     void add_interface(wl_registry *registry, std::uint32_t id, const char *interface, std::uint32_t version);
@@ -388,6 +403,75 @@ namespace wl {
   };
 
   std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name = nullptr);
+
+  /**
+   * @brief The color description of one output, from wp-color-management-v1.
+   * @details Uses a Wayland connection of its own (see interface_t::bind_color_manager), so it can live next to a
+   *          capture connection without changing what that one receives. Events are only read in open() and
+   *          poll_changed(); there is no thread.
+   */
+  class output_color_t {
+  public:
+    output_color_t() = default;
+    ~output_color_t();
+
+    output_color_t(const output_color_t &) = delete;
+    output_color_t &operator=(const output_color_t &) = delete;
+
+    /**
+     * @brief Connects, finds the output by connector name and fetches its image description.
+     * @return false if the compositor has no wp_color_manager_v1, the output does not exist, or the description
+     *         could not be read. description() is empty then.
+     */
+    bool open(const std::string &output_name, std::chrono::milliseconds timeout = std::chrono::seconds {1});
+
+    /**
+     * @brief Reads pending events without blocking. On image_description_changed the description is fetched again.
+     * @return true if the description is now different from before.
+     */
+    bool poll_changed();
+
+    const std::optional<image_description_t> &description() const {
+      return desc;
+    }
+
+    /// The output's description is HDR10 (ST 2084 PQ with BT.2020 primaries).
+    bool is_hdr() const {
+      return desc && is_hdr10(*desc);
+    }
+
+    /// The compositor can describe outputs as PQ / BT.2020, i.e. it supports HDR outputs at all.
+    bool compositor_supports_hdr10() const;
+
+    /**
+     * @brief For an HDR output: where white of the captured frames belongs in the HDR stream, in cd/m².
+     * @details Capture clients do not get the PQ framebuffer of an HDR output. Hyprland (0.57.2 and its main branch
+     *          as of 2026-11) copies frames out of a mirror buffer whose image description is sRGB whenever the output
+     *          uses PQ (CMonitorResources::getMirrorTexImageDescription()), converting and tone mapping the HDR
+     *          content to SDR, for color-management aware clients as well. Measured on a headless HDR output with
+     *          a PQ test pattern: 974, 102 and 5 cd/m² patches came back as sRGB 235, 186 and 71 (PQ would be 191,
+     *          130 and 64), and SDR content came back exactly as on an SDR output. The frames are therefore SDR with
+     *          white at the output's reference luminance (203 cd/m², from the image description), which is where
+     *          Hyprland puts SDR white on the HDR output.
+     * @return 0 for SDR outputs.
+     */
+    float sdr_white_nits() const;
+
+  private:
+    std::optional<image_description_t> fetch(std::chrono::milliseconds timeout);
+    void reset();
+
+    display_t display;
+    std::unique_ptr<interface_t> interface;
+    wp_color_management_output_v1 *cm_output {nullptr};
+    std::optional<image_description_t> desc;
+    bool changed {false};
+  };
+
+  /**
+   * @brief Logs an image description in one line.
+   */
+  std::string describe(const image_description_t &desc);
 
   /**
    * @brief Ask the compositor what size screencopy frames of an output will have, without copying a frame.

@@ -225,6 +225,32 @@ namespace wl {
     wl_output_add_listener(output, &wl_listener, this);
   }
 
+  namespace {
+    void cm_supported_intent(void *, wp_color_manager_v1 *, std::uint32_t) {}
+
+    void cm_supported_feature(void *data, wp_color_manager_v1 *, std::uint32_t feature) {
+      static_cast<interface_t *>(data)->color_features.push_back(feature);
+    }
+
+    void cm_supported_tf_named(void *data, wp_color_manager_v1 *, std::uint32_t tf) {
+      static_cast<interface_t *>(data)->color_tfs.push_back(tf);
+    }
+
+    void cm_supported_primaries_named(void *data, wp_color_manager_v1 *, std::uint32_t primaries) {
+      static_cast<interface_t *>(data)->color_primaries.push_back(primaries);
+    }
+
+    void cm_done(void *, wp_color_manager_v1 *) {}
+
+    const wp_color_manager_v1_listener color_manager_listener {
+      .supported_intent = cm_supported_intent,
+      .supported_feature = cm_supported_feature,
+      .supported_tf_named = cm_supported_tf_named,
+      .supported_primaries_named = cm_supported_primaries_named,
+      .done = cm_done,
+    };
+  }  // namespace
+
   interface_t::interface_t() noexcept
       :
       screencopy_manager {nullptr},
@@ -287,6 +313,12 @@ namespace wl {
       shm = (wl_shm *) wl_registry_bind(registry, id, &wl_shm_interface, 1);
 
       this->interface[SHM] = true;
+    } else if (bind_color_manager && !std::strcmp(interface, wp_color_manager_v1_interface.name)) {
+      BOOST_LOG(debug) << "Found interface: "sv << interface << '(' << id << ") version "sv << version;
+      color_manager = (wp_color_manager_v1 *) wl_registry_bind(registry, id, &wp_color_manager_v1_interface, 1);
+      wp_color_manager_v1_add_listener(color_manager, &color_manager_listener, this);
+
+      this->interface[COLOR_MANAGER] = true;
     }
   }
 
@@ -771,6 +803,288 @@ namespace wl {
       return std::nullopt;
     }
     return probe.constraints;
+  }
+
+  namespace {
+    /// Collects one wp_image_description_v1 and its information.
+    struct description_fetch_t {
+      enum class state_e {
+        pending,
+        ready,
+        failed,
+      } state {state_e::pending};
+      bool info_done {false};
+      image_description_t desc;
+
+      static void failed(void *data, wp_image_description_v1 *, std::uint32_t cause, const char *msg) {
+        BOOST_LOG(warning) << "The compositor cannot describe the output's colors (cause "sv << cause << "): "sv << msg;
+        static_cast<description_fetch_t *>(data)->state = state_e::failed;
+      }
+
+      static void ready(void *data, wp_image_description_v1 *, std::uint32_t) {
+        static_cast<description_fetch_t *>(data)->state = state_e::ready;
+      }
+
+      static void done(void *data, wp_image_description_info_v1 *) {
+        static_cast<description_fetch_t *>(data)->info_done = true;
+      }
+
+      static void icc_file(void *data, wp_image_description_info_v1 *, std::int32_t fd, std::uint32_t) {
+        close(fd);
+        static_cast<description_fetch_t *>(data)->desc.icc = true;
+      }
+
+      static chromaticities_t xy(std::int32_t r_x, std::int32_t r_y, std::int32_t g_x, std::int32_t g_y, std::int32_t b_x, std::int32_t b_y, std::int32_t w_x, std::int32_t w_y) {
+        return chromaticities_t {{r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y}};
+      }
+
+      static void primaries(void *data, wp_image_description_info_v1 *, std::int32_t r_x, std::int32_t r_y, std::int32_t g_x, std::int32_t g_y, std::int32_t b_x, std::int32_t b_y, std::int32_t w_x, std::int32_t w_y) {
+        static_cast<description_fetch_t *>(data)->desc.primaries = xy(r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y);
+      }
+
+      static void primaries_named(void *data, wp_image_description_info_v1 *, std::uint32_t primaries) {
+        static_cast<description_fetch_t *>(data)->desc.primaries_named = primaries;
+      }
+
+      static void tf_power(void *data, wp_image_description_info_v1 *, std::uint32_t eexp) {
+        static_cast<description_fetch_t *>(data)->desc.tf_power = eexp;
+      }
+
+      static void tf_named(void *data, wp_image_description_info_v1 *, std::uint32_t tf) {
+        static_cast<description_fetch_t *>(data)->desc.tf_named = tf;
+      }
+
+      static void luminances(void *data, wp_image_description_info_v1 *, std::uint32_t min_lum, std::uint32_t max_lum, std::uint32_t reference_lum) {
+        auto &desc = static_cast<description_fetch_t *>(data)->desc;
+        desc.min_lum = min_lum;
+        desc.max_lum = max_lum;
+        desc.reference_lum = reference_lum;
+      }
+
+      static void target_primaries(void *data, wp_image_description_info_v1 *, std::int32_t r_x, std::int32_t r_y, std::int32_t g_x, std::int32_t g_y, std::int32_t b_x, std::int32_t b_y, std::int32_t w_x, std::int32_t w_y) {
+        static_cast<description_fetch_t *>(data)->desc.target_primaries = xy(r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y);
+      }
+
+      static void target_luminance(void *data, wp_image_description_info_v1 *, std::uint32_t min_lum, std::uint32_t max_lum) {
+        auto &desc = static_cast<description_fetch_t *>(data)->desc;
+        desc.target_min_lum = min_lum;
+        desc.target_max_lum = max_lum;
+      }
+
+      static void target_max_cll(void *data, wp_image_description_info_v1 *, std::uint32_t max_cll) {
+        static_cast<description_fetch_t *>(data)->desc.target_max_cll = max_cll;
+      }
+
+      static void target_max_fall(void *data, wp_image_description_info_v1 *, std::uint32_t max_fall) {
+        static_cast<description_fetch_t *>(data)->desc.target_max_fall = max_fall;
+      }
+    };
+
+    const wp_image_description_v1_listener description_listener {
+      .failed = description_fetch_t::failed,
+      .ready = description_fetch_t::ready,
+    };
+
+    const wp_image_description_info_v1_listener description_info_listener {
+      .done = description_fetch_t::done,
+      .icc_file = description_fetch_t::icc_file,
+      .primaries = description_fetch_t::primaries,
+      .primaries_named = description_fetch_t::primaries_named,
+      .tf_power = description_fetch_t::tf_power,
+      .tf_named = description_fetch_t::tf_named,
+      .luminances = description_fetch_t::luminances,
+      .target_primaries = description_fetch_t::target_primaries,
+      .target_luminance = description_fetch_t::target_luminance,
+      .target_max_cll = description_fetch_t::target_max_cll,
+      .target_max_fall = description_fetch_t::target_max_fall,
+    };
+
+    void on_image_description_changed(void *data, wp_color_management_output_v1 *) {
+      *static_cast<bool *>(data) = true;
+    }
+
+    const wp_color_management_output_v1_listener cm_output_listener {
+      .image_description_changed = on_image_description_changed,
+    };
+
+    /// Dispatches until `done()` or the deadline; false on timeout or a broken connection.
+    template<class F>
+    bool dispatch_until(display_t &display, std::chrono::steady_clock::time_point deadline, F done) {
+      while (!done()) {
+        auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0 || wl_display_get_error(display.get())) {
+          return false;
+        }
+        display.dispatch(remaining);
+      }
+      return true;
+    }
+  }  // namespace
+
+  std::string describe(const image_description_t &desc) {
+    std::string out;
+    auto add = [&](std::string_view name, auto value) {
+      if (!out.empty()) {
+        out += ", ";
+      }
+      out += name;
+      out += '=';
+      out += std::to_string(value);
+    };
+    if (desc.icc) {
+      out = "ICC profile";
+    }
+    if (desc.tf_named) {
+      add("tf", *desc.tf_named);
+    }
+    if (desc.tf_power) {
+      add("tf_power", *desc.tf_power);
+    }
+    if (desc.primaries_named) {
+      add("primaries", *desc.primaries_named);
+    }
+    if (desc.max_lum) {
+      add("min_lum_x10000", desc.min_lum.value_or(0));
+      add("max_lum", *desc.max_lum);
+      add("reference_lum", desc.reference_lum.value_or(0));
+    }
+    if (desc.target_max_lum) {
+      add("target_min_lum_x10000", desc.target_min_lum.value_or(0));
+      add("target_max_lum", *desc.target_max_lum);
+    }
+    if (desc.target_max_cll) {
+      add("max_cll", *desc.target_max_cll);
+    }
+    if (desc.target_max_fall) {
+      add("max_fall", *desc.target_max_fall);
+    }
+    return out + (is_hdr10(desc) ? " (HDR10)" : "");
+  }
+
+  output_color_t::~output_color_t() {
+    reset();
+  }
+
+  void output_color_t::reset() {
+    if (cm_output) {
+      wp_color_management_output_v1_destroy(cm_output);
+      cm_output = nullptr;
+    }
+    if (interface && interface->color_manager) {
+      wp_color_manager_v1_destroy(interface->color_manager);
+      interface->color_manager = nullptr;
+    }
+    desc.reset();
+    changed = false;
+  }
+
+  bool output_color_t::open(const std::string &output_name, std::chrono::milliseconds timeout) {
+    reset();
+
+    if (display.init()) {
+      return false;
+    }
+
+    interface = std::make_unique<interface_t>();
+    interface->bind_color_manager = true;
+    if (!enumerate_outputs(display, *interface)) {
+      return false;
+    }
+    // The manager's supported_* events arrive in the roundtrips above.
+    if (!interface->color_manager) {
+      BOOST_LOG(info) << "The compositor does not support wp-color-management-v1; output colors are assumed to be SDR"sv;
+      return false;
+    }
+
+    auto index = select_output(*interface, output_name);
+    if (!index) {
+      return false;
+    }
+
+    cm_output = wp_color_manager_v1_get_output(interface->color_manager, interface->monitors[*index]->output);
+    wp_color_management_output_v1_add_listener(cm_output, &cm_output_listener, &changed);
+
+    desc = fetch(timeout);
+    if (!desc) {
+      return false;
+    }
+    BOOST_LOG(info) << "Output ["sv << output_name << "] colors: "sv << describe(*desc);
+    return true;
+  }
+
+  std::optional<image_description_t> output_color_t::fetch(std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    changed = false;
+
+    description_fetch_t fetch;
+    auto description = wp_color_management_output_v1_get_image_description(cm_output);
+    wp_image_description_v1_add_listener(description, &description_listener, &fetch);
+    if (!dispatch_until(display, deadline, [&]() {
+          return fetch.state != description_fetch_t::state_e::pending;
+        })) {
+      BOOST_LOG(warning) << "The compositor did not describe the output's colors in time"sv;
+      wp_image_description_v1_destroy(description);
+      return std::nullopt;
+    }
+    if (fetch.state == description_fetch_t::state_e::failed) {
+      wp_image_description_v1_destroy(description);
+      return std::nullopt;
+    }
+
+    auto info = wp_image_description_v1_get_information(description);
+    wp_image_description_info_v1_add_listener(info, &description_info_listener, &fetch);
+    const bool complete = dispatch_until(display, deadline, [&]() {
+      return fetch.info_done;
+    });
+    // `done` is a destructor event: the compositor has destroyed its side, only the proxy is left.
+    wl_proxy_destroy((wl_proxy *) info);
+    wp_image_description_v1_destroy(description);
+
+    if (!complete) {
+      BOOST_LOG(warning) << "The compositor did not send the output's color information in time"sv;
+      return std::nullopt;
+    }
+    return fetch.desc;
+  }
+
+  bool output_color_t::poll_changed() {
+    if (!cm_output) {
+      return false;
+    }
+    display.dispatch(0ms);
+    if (!changed) {
+      return false;
+    }
+
+    auto fresh = fetch(1s);
+    if (fresh == desc) {
+      return false;
+    }
+    if (fresh) {
+      BOOST_LOG(info) << "Output colors changed: "sv << describe(*fresh);
+    }
+    desc = std::move(fresh);
+    return true;
+  }
+
+  float output_color_t::sdr_white_nits() const {
+    if (!is_hdr()) {
+      return 0;
+    }
+    // BT.2408 reference white, also Hyprland's default for HDR outputs.
+    constexpr std::uint32_t default_reference = 203;
+    const auto reference = desc->reference_lum.value_or(default_reference);
+    return (float) (reference ? reference : default_reference);
+  }
+
+  bool output_color_t::compositor_supports_hdr10() const {
+    if (!interface || !interface->color_manager) {
+      return false;
+    }
+    auto has = [](const std::vector<std::uint32_t> &list, std::uint32_t value) {
+      return std::find(list.begin(), list.end(), value) != list.end();
+    };
+    return has(interface->color_tfs, color::tf::st2084_pq) && has(interface->color_primaries, color::primaries::bt2020);
   }
 
   std::optional<extent_t> probe_frame_size(display_t &display, zwlr_screencopy_manager_v1 *screencopy_manager, wl_output *output) {
