@@ -272,6 +272,14 @@ namespace platf {
   struct touch_port_t {
     int offset_x, offset_y;
     int width, height;
+
+    /**
+     * Only set for absolute mouse, touch and pen input, where width/height is the bounding box of all displays:
+     * the top-left of that box (non-zero when a display has negative coordinates) and the size of the streamed
+     * display, both in the same space as offset_x/offset_y. 0 when unknown. Used by the Linux backend.
+     */
+    int layout_x {0}, layout_y {0};
+    int output_width {0}, output_height {0};
   };
 
   // These values must match Limelight-internal.h's SS_FF_* constants!

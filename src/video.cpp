@@ -2107,6 +2107,8 @@ namespace video {
     };
     port.env_x = display->env_x;
     port.env_y = display->env_y;
+    port.logical_width = display->logical_width > 0 ? display->logical_width : display->width;
+    port.logical_height = display->logical_height > 0 ? display->logical_height : display->height;
     return port;
   }
 

@@ -484,6 +484,25 @@ namespace input {
   }
 
   /**
+   * @brief The port handed to the platform's absolute mouse, touch and pen functions.
+   * @details width/height is the desktop bounding box, as the Windows backend expects; layout_x/layout_y and
+   * output_width/output_height carry the rest of the geometry for backends that need it (Linux).
+   */
+  platf::touch_port_t make_abs_port(const input::touch_port_t &touch_port) {
+    platf::touch_port_t abs_port {
+      touch_port.offset_x,
+      touch_port.offset_y,
+      touch_port.env_width,
+      touch_port.env_height
+    };
+    abs_port.layout_x = touch_port.env_x;
+    abs_port.layout_y = touch_port.env_y;
+    abs_port.output_width = touch_port.logical_width;
+    abs_port.output_height = touch_port.logical_height;
+    return abs_port;
+  }
+
+  /**
    * @brief Multiply a polar coordinate pair by a cartesian scaling factor.
    * @param r The radial coordinate.
    * @param angle The angular coordinate (radians).
@@ -544,13 +563,7 @@ namespace input {
       return;
     }
 
-    auto &touch_port = input->touch_port;
-    platf::touch_port_t abs_port {
-      touch_port.offset_x,
-      touch_port.offset_y,
-      touch_port.env_width,
-      touch_port.env_height
-    };
+    auto abs_port = make_abs_port(input->touch_port);
 
     platf::abs_mouse(platf_input, abs_port, tpcoords->first, tpcoords->second);
   }
@@ -885,13 +898,7 @@ namespace input {
       return;
     }
 
-    auto &touch_port = input->touch_port;
-    platf::touch_port_t abs_port {
-      touch_port.offset_x,
-      touch_port.offset_y,
-      touch_port.env_width,
-      touch_port.env_height
-    };
+    auto abs_port = make_abs_port(input->touch_port);
 
     // Renormalize the coordinates
     coords->first /= abs_port.width;
@@ -941,13 +948,7 @@ namespace input {
       return;
     }
 
-    auto &touch_port = input->touch_port;
-    platf::touch_port_t abs_port {
-      touch_port.offset_x,
-      touch_port.offset_y,
-      touch_port.env_width,
-      touch_port.env_height
-    };
+    auto abs_port = make_abs_port(input->touch_port);
 
     // Renormalize the coordinates
     coords->first /= abs_port.width;
