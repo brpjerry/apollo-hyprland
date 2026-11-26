@@ -3,6 +3,7 @@
  * @brief Definitions for the main entry point for Sunshine.
  */
 // standard includes
+#include <atomic>
 #include <codecvt>
 #include <csignal>
 #include <fstream>
@@ -91,10 +92,19 @@ namespace {
       return true;
     }
     // The write end never blocks the signal handler; a full pipe already holds a pending shutdown.
+  #ifdef __APPLE__
+    // Darwin has no pipe2().
+    if (pipe(signal_pipe) < 0) {
+      return false;
+    }
+    const bool cloexec = fcntl(signal_pipe[0], F_SETFD, FD_CLOEXEC) == 0 && fcntl(signal_pipe[1], F_SETFD, FD_CLOEXEC) == 0;
+  #else
     if (pipe2(signal_pipe, O_CLOEXEC) < 0) {
       return false;
     }
-    if (fcntl(signal_pipe[1], F_SETFL, O_NONBLOCK) < 0) {
+    constexpr bool cloexec = true;
+  #endif
+    if (!cloexec || fcntl(signal_pipe[1], F_SETFL, O_NONBLOCK) < 0) {
       close(signal_pipe[0]);
       close(signal_pipe[1]);
       signal_pipe[0] = signal_pipe[1] = -1;
@@ -398,9 +408,15 @@ int main(int argc, char *argv[]) {
   auto shutdown_event = mail::man->event<bool>(mail::shutdown);
   // Returns a handler that starts the normal shutdown: optionally stop the running app (undo its prep commands and
   // remove its display) while everything is still initialised, then raise the shutdown event and arm a watchdog.
-  auto make_shutdown_handler = [&force_shutdown, &display_device_deinit_guard, shutdown_event](std::string_view message, bool terminate_app) {
-    return [&force_shutdown, &display_device_deinit_guard, shutdown_event, message, terminate_app]() {
+  // Only the first signal shuts down; later ones (a second Ctrl+C, SIGTERM after SIGHUP) are only logged.
+  std::atomic_bool shutdown_started {false};
+  auto make_shutdown_handler = [&force_shutdown, &display_device_deinit_guard, &shutdown_started, shutdown_event](std::string_view message, bool terminate_app) {
+    return [&force_shutdown, &display_device_deinit_guard, &shutdown_started, shutdown_event, message, terminate_app]() {
       BOOST_LOG(info) << message;
+      if (shutdown_started.exchange(true)) {
+        BOOST_LOG(info) << "Shutdown already in progress"sv;
+        return;
+      }
 
       auto task = []() {
         BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
@@ -431,8 +447,6 @@ int main(int argc, char *argv[]) {
   on_signal(SIGHUP, make_shutdown_handler("Hangup handler called"sv, true));
 #endif
   start_signal_thread();
-  // Declared after the locals the handlers refer to, so it runs before they are destroyed.
-  auto signal_thread_guard = util::fail_guard(stop_signal_thread);
 
 #ifdef _WIN32
   // Terminate gracefully on Windows when console window is closed
@@ -517,6 +531,11 @@ int main(int argc, char *argv[]) {
 #endif
   }
 
+  // Declared after every deinit guard above and the locals the handlers refer to, so on any return the signal
+  // thread is stopped (and a handler in progress has finished) before they are torn down. Signals arriving after
+  // that get their default action.
+  auto signal_thread_guard = util::fail_guard(stop_signal_thread);
+
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
 
@@ -575,6 +594,11 @@ int main(int argc, char *argv[]) {
 
   // Wait for shutdown, this is not necessary when we're using the main event loop
   shutdown_event->view();
+
+  // The handler that raised the shutdown event may still be releasing the display device: let it finish before
+  // tearing anything down.
+  signal_thread_guard.disable();
+  stop_signal_thread();
 
   httpThread.join();
   configThread.join();
