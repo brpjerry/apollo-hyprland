@@ -3,6 +3,7 @@
  * @brief Definitions for the main entry point for Sunshine.
  */
 // standard includes
+#include <atomic>
 #include <cerrno>
 #include <codecvt>
 #include <csignal>
@@ -10,6 +11,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+
+#ifndef _WIN32
+  #include <fcntl.h>
+  #include <thread>
+  #include <unistd.h>
+#endif
 
 // platform includes
 #ifdef __APPLE__
@@ -40,6 +47,7 @@
 #include "logging.h"
 #include "main.h"
 #include "nvhttp.h"
+#include "platform/vdisplay.h"
 #include "platform/permissions.h"
 #include "process.h"
 #include "system_tray.h"
@@ -47,18 +55,113 @@
 #include "uuid.h"
 #include "video.h"
 
+#ifdef _WIN32
+  #include "platform/windows/misc.h"
+#endif
+
+#define PROBE_DISPLAY_UUID "38F72B96-B00C-4F21-8B6C-E1BFF1602B0E"
+
 using namespace std::literals;
 
 std::map<int, std::function<void()>> signal_handlers;  ///< Signal handlers.
 
-/**
- * @brief Forward a POSIX signal to the registered Sunshine handler.
- *
- * @param sig Native signal number being handled.
- */
+#ifdef _WIN32
+// Windows runs signal handlers on a thread of their own, not on the thread that was interrupted.
 void on_signal_forwarder(int sig) {
   signal_handlers.at(sig)();
 }
+
+void start_signal_thread() {}
+
+void stop_signal_thread() {}
+#else
+namespace {
+  // POSIX signal handlers interrupt whatever thread receives the signal, maybe while it holds a lock the shutdown
+  // handlers need (logging, the running app, the tray). So the handler only writes the signal number to a pipe,
+  // and signal_thread runs the registered handler. A 0 byte stops the thread.
+  int signal_pipe[2] {-1, -1};
+  std::thread signal_thread;
+
+  void on_signal_forwarder(int sig) {
+    const int saved_errno = errno;
+    const auto byte = static_cast<unsigned char>(sig);
+    [[maybe_unused]] auto written = write(signal_pipe[1], &byte, 1);
+    errno = saved_errno;
+  }
+
+  void run_signal_handlers() {
+    while (true) {
+      unsigned char sig;
+      auto n = read(signal_pipe[0], &sig, 1);
+      if (n < 0 && errno == EINTR) {
+        continue;
+      }
+      if (n != 1 || sig == 0) {
+        return;
+      }
+      if (auto handler = signal_handlers.find(sig); handler != signal_handlers.end()) {
+        handler->second();
+      }
+    }
+  }
+
+  bool open_signal_pipe() {
+    if (signal_pipe[0] >= 0) {
+      return true;
+    }
+    // The write end never blocks the signal handler; a full pipe already holds a pending shutdown.
+  #ifdef __APPLE__
+    // Darwin has no pipe2().
+    if (pipe(signal_pipe) < 0) {
+      return false;
+    }
+    const bool cloexec = fcntl(signal_pipe[0], F_SETFD, FD_CLOEXEC) == 0 && fcntl(signal_pipe[1], F_SETFD, FD_CLOEXEC) == 0;
+  #else
+    if (pipe2(signal_pipe, O_CLOEXEC) < 0) {
+      return false;
+    }
+    constexpr bool cloexec = true;
+  #endif
+    if (!cloexec || fcntl(signal_pipe[1], F_SETFL, O_NONBLOCK) < 0) {
+      close(signal_pipe[0]);
+      close(signal_pipe[1]);
+      signal_pipe[0] = signal_pipe[1] = -1;
+      return false;
+    }
+    return true;
+  }
+}  // namespace
+
+/**
+ * @brief Starts running the handlers of signals received so far and from now on. Call it once every handler is
+ *        registered: the thread reads signal_handlers without a lock.
+ */
+void start_signal_thread() {
+  if (signal_pipe[0] >= 0 && !signal_thread.joinable()) {
+    signal_thread = std::thread {run_signal_handlers};
+  }
+}
+
+/**
+ * @brief Restores the default action of the registered signals and stops the thread running their handlers, after
+ *        any handler in progress has finished. The handlers refer to main()'s locals, so main() calls this first
+ *        when it returns.
+ */
+void stop_signal_thread() {
+  for (const auto &[sig, handler] : signal_handlers) {
+    std::signal(sig, SIG_DFL);
+  }
+  if (!signal_thread.joinable()) {
+    return;
+  }
+  // The pipe stays open: a handler started just before SIG_DFL took effect may still write to it.
+  const unsigned char stop = 0;
+  while (write(signal_pipe[1], &stop, 1) < 0 && (errno == EINTR || errno == EAGAIN)) {
+    std::this_thread::yield();
+  }
+  signal_thread.join();
+}
+#endif
 
 /**
  * @brief Register the handler invoked for a POSIX signal.
@@ -421,40 +524,29 @@ int main(int argc, char *argv[]) {
 
       force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
 
+      // Break out of the main loop
       shutdown_event->raise(true);
+
+      if (tray_is_enabled && config::sunshine.system_tray) {
+        system_tray::end_tray();
+      }
+
       display_device_deinit_guard = nullptr;
     };
   };
 
-    // Break out of the main loop
-    shutdown_event->raise(true);
+  on_signal(SIGINT, make_shutdown_handler("Interrupt handler called"sv, true));
 
-    if (tray_is_enabled && config::sunshine.system_tray) {
-      system_tray::end_tray();
-    }
-
-    display_device_deinit_guard = nullptr;
-  });
-
-  on_signal(SIGTERM, [&force_shutdown, &display_device_deinit_guard, shutdown_event]() {
-    BOOST_LOG(info) << "Terminate handler called"sv;
-
-    auto task = []() {
-      BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
-      logging::log_flush();
-      lifetime::debug_trap();
-    };
-    force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
-
-    // Break out of the main loop
-    shutdown_event->raise(true);
-
-    if (tray_is_enabled && config::sunshine.system_tray) {
-      system_tray::end_tray();
-    }
-
-    display_device_deinit_guard = nullptr;
-  });
+#ifdef _WIN32
+  on_signal(SIGTERM, make_shutdown_handler("Terminate handler called"sv, false));
+#else
+  // systemd stops the user service with SIGTERM when the graphical session ends, and the session leader's
+  // terminal or compositor going away delivers SIGHUP. Both must clean up like SIGINT so no app, virtual
+  // display or input device is left behind.
+  on_signal(SIGTERM, make_shutdown_handler("Terminate handler called"sv, true));
+  on_signal(SIGHUP, make_shutdown_handler("Hangup handler called"sv, true));
+#endif
+  start_signal_thread();
 
 #ifdef _WIN32
   // Terminate gracefully on Windows when console window is closed

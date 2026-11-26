@@ -35,7 +35,6 @@
     "vue3-simple-icons": "16.10.0"
   },
   "devDependencies": {
-    "@codecov/vite-plugin": "2.0.1",
     "@vitejs/plugin-vue": "6.0.11",
     "@vitest/coverage-v8": "5.1.0",
     "@vue/test-utils": "2.6.0",
@@ -43,10 +42,5 @@
     "serve": "14.2.8",
     "vite": "8.3.8",
     "vitest": "5.1.0"
-  },
-  "overrides": {
-    "@codecov/vite-plugin": {
-      "vite": "$vite"
-    }
   }
 }

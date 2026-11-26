@@ -91,6 +91,11 @@ CPMDeclarePackage(moonlight-common-c
         GIT_REPOSITORY https://github.com/moonlight-stream/moonlight-common-c.git
         GIT_TAG ${MOONLIGHT_COMMON_C_COMMIT}
         GIT_SUBMODULES enet nanors
+        # Apollo protocol extensions (ClassicOldSong/moonlight-common-c), rebased onto the pin above.
+        # Regenerate these if the pin moves and they stop applying.
+        PATCHES
+            "${PATCH_DIRECTORY}/moonlight-common-c-0001-server-cmd-over-control-stream.patch"
+            "${PATCH_DIRECTORY}/moonlight-common-c-0002-send-empty-payload.patch"
         DOWNLOAD_ONLY YES
 )
 
@@ -124,6 +129,8 @@ CPMDeclarePackage(simple_web_server
         NAME simple_web_server
         GIT_REPOSITORY https://github.com/LizardByte-infrastructure/Simple-Web-Server.git
         GIT_TAG ${SIMPLE_WEB_SERVER_COMMIT}
+        # Apollo adds a per-request user pointer (ClassicOldSong/Simple-Web-Server), rebased onto the pin above.
+        PATCHES "${PATCH_DIRECTORY}/simple-web-server-0001-request-userp.patch"
 )
 
 # TPCircularBuffer

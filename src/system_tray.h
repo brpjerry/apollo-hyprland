@@ -119,6 +119,10 @@ namespace system_tray {
    */
   void update_tray_require_pin();
 
+  void update_tray_paired(std::string device_name);
+
+  void update_tray_client_connected(std::string client_name);
+
 #if defined(_WIN32) || defined(__APPLE__)
   /**
    * @brief Update the Virtual HID Broker license submenu and optional notification.

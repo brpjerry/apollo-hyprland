@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <list>
 
 // lib includes
 #include <boost/property_tree/ptree.hpp>
@@ -24,6 +25,7 @@
 
 // local includes
 #include "crypto.h"
+#include "rtsp.h"
 
 using namespace std::chrono_literals;
 
@@ -275,17 +277,10 @@ namespace nvhttp {
   /**
    * @brief removes the temporary pairing session
    * @param sess
-   * @note Takes the pairing lock (recursive), like every function that touches the pairing sessions. The web UI
+   * @note Takes the pairing-session lock, like every function that touches the pairing sessions. The web UI
    *       thread (pin) and the nvhttp server threads (pair) both change them.
    */
   void remove_session(const pair_session_t &sess);
-
-  /**
-   * @brief Store the pairing session a client opened with getservercert.
-   * @param sess The new session; its client.uniqueID is the key.
-   * @return The stored session. It stays valid only while the caller holds the pairing lock (pair() does).
-   */
-  pair_session_t &start_pair_session(pair_session_t &&sess);
 
   /**
    * @brief Pair, phase 1
@@ -379,7 +374,13 @@ namespace nvhttp {
     const std::list<std::string> &session_uuids
   );
 
-  std::string request_otp(const std::string& passphrase, const std::string& deviceName);
+  /**
+   * @brief Create a one-time PIN for pairing without entering a PIN in the Web UI (Apollo).
+   * @param passphrase Passphrase the client must use together with the PIN; at least 4 characters.
+   * @param deviceName Name given to the client that pairs with the PIN, or empty to keep the client's own name.
+   * @return The 4-digit PIN, valid for OTP_EXPIRE_DURATION, or an empty string when the passphrase is too short.
+   */
+  std::string request_otp(const std::string &passphrase, const std::string &deviceName);
 
   /**
    * @brief Remove single client.
@@ -425,6 +426,64 @@ namespace nvhttp {
   void erase_all_clients();
 
   /**
+   * @brief      Stops a session.
+   *
+   * @param      session   The session
+   * @param[in]  graceful  Whether to stop gracefully
+   */
+  void stop_session(stream::session_t& session, bool graceful);
+
+  /**
+   * @brief      Finds and stop session.
+   *
+   * @param[in]  uuid      The uuid string
+   * @param[in]  graceful  Whether to stop gracefully
+   */
+  bool find_and_stop_session(const std::string& uuid, bool graceful);
+
+  /**
+   * @brief      Update device info associated to the session
+   *
+   * @param      session  The session
+   * @param[in]  name     New name
+   * @param[in]  newPerm  New permission
+   */
+  void update_session_info(stream::session_t& session, const std::string& name, const crypto::PERM newPerm);
+
+  /**
+   * @brief      Finds and udpate session information.
+   *
+   * @param[in]  uuid     The uuid string
+   * @param[in]  name     New name
+   * @param[in]  newPerm  New permission
+   */
+  bool find_and_udpate_session_info(const std::string& uuid, const std::string& name, const crypto::PERM newPerm);
+
+  /**
+   * @brief      Update device info
+   *
+   * @param[in]  uuid       The uuid string
+   * @param[in]  name       New name
+   * @param[in]  do_cmds    The do commands
+   * @param[in]  undo_cmds  The undo commands
+   * @param[in]  newPerm    New permission
+   * @param[in]  enable_legacy_ordering  Enable legacy ordering
+   * @param[in]  allow_client_commands  Allow client commands
+   * @param[in]  always_use_virtual_display  Always use virtual display
+   * 
+   * @return     Whether the update is successful
+   */
+  bool update_device_info(
+    const std::string& uuid,
+    const std::string& name,
+    const std::string& display_mode,
+    const cmd_list_t& do_cmds,
+    const cmd_list_t& undo_cmds,
+    const crypto::PERM newPerm,
+    const bool enable_legacy_ordering,
+    const bool allow_client_commands,
+    const bool always_use_virtual_display
+  );
    * @brief Get codec mode flags.
    *
    * @return Moonlight codec capability bitmask for the currently probed encoders.

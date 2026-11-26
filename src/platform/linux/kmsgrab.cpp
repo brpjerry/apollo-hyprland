@@ -2113,14 +2113,14 @@ namespace platf {
 
             // A sanity check, it's guesswork after all.
             if (
-              monitor_descriptor.viewport.width != monitor->geometry.mode_width ||
-              monitor_descriptor.viewport.height != monitor->geometry.mode_height
+              monitor_descriptor.viewport.width != monitor->viewport.width ||
+              monitor_descriptor.viewport.height != monitor->viewport.height
             ) {
               BOOST_LOG(warning)
                 << "Mismatch on expected Resolution compared to actual resolution: "sv
                 << monitor_descriptor.viewport.width << 'x' << monitor_descriptor.viewport.height
                 << " vs "sv
-                << monitor->geometry.mode_width << 'x' << monitor->geometry.mode_height;
+                << monitor->viewport.width << 'x' << monitor->viewport.height;
             }
 
             BOOST_LOG(info) << "Monitor " << monitor_descriptor.monitor_index << " is "sv << name << ": "sv << monitor->description;

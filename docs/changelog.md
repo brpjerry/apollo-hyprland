@@ -7,3 +7,16 @@
   src="https://raw.githubusercontent.com/SunshineStream/Sunshine/changelog/CHANGELOG.md">
 </md-block>
 @endhtmlonly
+
+<div class="section_buttons">
+
+| Previous                              |                                            Next |
+|:--------------------------------------|------------------------------------------------:|
+| [Getting Started](getting_started.md) | [Third-Party Packages](third_party_packages.md) |
+
+</div>
+
+<details style="display: none;">
+  <summary></summary>
+  [TOC]
+</details>

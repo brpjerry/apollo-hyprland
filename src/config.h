@@ -251,6 +251,8 @@ namespace config {
     bool stream;  ///< Enable audio streaming to clients
     bool install_steam_drivers;  ///< Install Steam audio drivers for enhanced compatibility
     bool external_audio;  ///< Windows capture-only mode; an external router owns endpoint defaults and formats.
+    bool keep_default;  ///< Apollo: keep the host's default sink instead of switching to the virtual sink.
+    bool auto_capture;  ///< Apollo: reinitialize audio capture when the default sink changes.
   };
 
   /**
@@ -330,6 +332,9 @@ namespace config {
 
     bool high_resolution_scrolling;  ///< Enable high-resolution mouse-wheel events.
     bool native_pen_touch;  ///< Enable native pen and touch injection.
+
+    bool enable_input_only_mode;  ///< Apollo: offer the input-only ("Remote Input") app.
+    bool forward_rumble;  ///< Apollo: forward controller rumble to the client.
   };
 
   namespace flag {
@@ -380,9 +385,28 @@ namespace config {
   };
 
   /**
+   * @brief A command the client may run on the host (Apollo server commands).
+   */
+  struct server_cmd_t {
+    server_cmd_t(std::string &&cmd_name, std::string &&cmd_val, bool &&elevated):
+        cmd_name(std::move(cmd_name)),
+        cmd_val(std::move(cmd_val)),
+        elevated(std::move(elevated)) {
+    }
+
+    std::string cmd_name;  ///< Name shown to the client.
+    std::string cmd_val;  ///< Command line to run.
+    bool elevated;  ///< Run the command elevated.
+  };
+
+  /**
    * @brief Top-level Sunshine configuration and credential state.
    */
   struct sunshine_t {
+    bool hide_tray_controls;  ///< Apollo: hide the tray menu's app controls.
+    bool enable_pairing;  ///< Apollo: accept new pairing requests.
+    bool enable_discovery;  ///< Apollo: advertise the host over mDNS.
+    bool envvar_compatibility_mode;  ///< Apollo: also set Sunshine's environment variable names for app commands.
     std::string locale;  ///< Locale selected for Sunshine UI and log messages.
     int min_log_level;  ///< Minimum severity level written to the configured log sink.
     std::bitset<flag::FLAG_SIZE> flags;  ///< Runtime flags parsed from command-line options.
@@ -411,8 +435,14 @@ namespace config {
 
     std::string log_file;  ///< Path to the configured log file.
     bool notify_pre_releases;  ///< Notify users about pre-release updates.
+    bool legacy_ordering;  ///< Apollo: order the app list for clients that sort apps by name.
     bool system_tray;  ///< Enable the system tray integration.
     std::vector<prep_cmd_t> prep_cmds;  ///< Preparation commands executed around application launch.
+    std::vector<prep_cmd_t> state_cmds;  ///< Apollo: commands run when the stream state changes.
+    std::vector<server_cmd_t> server_cmds;  ///< Apollo: commands clients may run on the host.
+
+    /// Linux: how commands marked elevated run as root: `pkexec`, `sudo` (`sudo -n`) or `terminal` (sudo in a terminal).
+    std::string elevation_method;
 
     // List of allowed origins for CSRF protection (e.g., "https://example.com,https://app.example.com")
     // Comma-separated list of additional origins. Default includes localhost variants and web UI port.

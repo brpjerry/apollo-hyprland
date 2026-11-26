@@ -51,8 +51,12 @@ namespace input {
 
   /**
    * @brief Queue a raw input message for platform passthrough.
+   *
+   * @param input Shared stream input state.
+   * @param input_data Raw input packet.
+   * @param permission Apollo: the client's permissions; input it may not send is dropped.
    */
-  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data);
+  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM &permission = crypto::PERM::_all);
 
   /**
    * @brief Initialize global input resources and platform backends.
@@ -245,13 +249,6 @@ namespace input {
       return width != 0 && height != 0 && env_width != 0 && env_height != 0;
     }
   };
-
-  /**
-   * @brief The port handed to platf::abs_mouse(), platf::touch_update() and platf::pen_update().
-   * @details offset_x/offset_y as above, width/height = env_width/env_height, layout_x/layout_y = env_x/env_y,
-   * output_width/output_height = logical_width/logical_height.
-   */
-  platf::touch_port_t make_abs_port(const touch_port_t &touch_port);
 
   /**
    * @brief Scale the ellipse axes according to the provided size.

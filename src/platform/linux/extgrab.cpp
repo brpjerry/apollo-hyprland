@@ -250,7 +250,8 @@ namespace wl {
     }
 
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config, const ext_options_t &options) {
-      delay = std::chrono::nanoseconds {1s} / config.framerate;
+      // Exact intervals for fractional (NTSC) rates too.
+      delay = ::video::capture_frame_interval(config);
       mem_type = hwdevice_type;
       this->options = options;
 
@@ -350,7 +351,7 @@ namespace wl {
         // Keep a capture in flight.
         if (!session.frame) {
           std::size_t slot;
-          auto result = pool.acquire(display, interface.dmabuf_interface, interface.shm, gbm.get(), slot);
+          auto result = pool.acquire(display, interface.dmabuf_interface, interface.shm_interface, gbm.get(), slot);
           stats.buffers_allocated = pool.allocations;
           if (result == buffer_pool_t::acquire_e::failed) {
             return platf::capture_e::reinit;
@@ -723,7 +724,7 @@ namespace wl {
       img->data = nullptr;
 
       // File descriptors aren't open
-      std::fill_n(img->sd.fds, 4, -1);
+      img->sd.fds.fill(-1);
 
       return img;
     }
@@ -751,7 +752,9 @@ namespace wl {
       return nullptr;
     }
 
-    if (hwdevice_type == platf::mem_type_e::vaapi || hwdevice_type == platf::mem_type_e::cuda) {
+    // Like wlr-screencopy: NVENC takes the dma-bufs directly only when the capture node is the CUDA device;
+    // otherwise frames go GPU -> RAM -> GPU.
+    if (hwdevice_type == platf::mem_type_e::vaapi || (hwdevice_type == platf::mem_type_e::cuda && use_vram_capture(hwdevice_type))) {
       auto disp = std::make_shared<ext_vram_t>();
       if (disp->init(hwdevice_type, display_name, config, options)) {
         return nullptr;

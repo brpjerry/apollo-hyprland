@@ -2159,10 +2159,15 @@ TEST_F(ConfigHttpTest, SaveAppNormalizesOptionalImagePath) {
       EXPECT_TRUE(json::parse(response->content.string()).at("status").get<bool>());
 
       std::ifstream file(config::stream.file_apps);
-      const auto saved = json::parse(file);
+      auto saved = json::parse(file);
       json expected {{"name", "Image test"}};
       if (!expected_path.empty()) {
         expected["image-path"] = expected_path;
+      }
+      // Apollo gives every saved application a UUID.
+      for (auto &app : saved.at("apps")) {
+        EXPECT_FALSE(app.value("uuid", "").empty());
+        app.erase("uuid");
       }
       EXPECT_EQ(saved.at("apps"), json::array({expected}));
       EXPECT_EQ(saved.at("env"), initial.at("env"));
@@ -2198,8 +2203,9 @@ TEST_F(ConfigHttpTest, SaveAppOmitsNullOptionalFieldsAndPreservesConfiguredValue
   ASSERT_EQ(null_response->status_code, "200 OK");
   {
     std::ifstream file(config::stream.file_apps);
-    const auto saved = json::parse(file);
+    auto saved = json::parse(file);
     ASSERT_EQ(saved.at("apps").size(), 1U);
+    saved.at("apps").at(0).erase("uuid");  // Apollo gives every saved application a UUID.
     EXPECT_EQ(saved.at("apps").at(0), (json {{"name", "Null optional"}}));
   }
 
@@ -2222,11 +2228,14 @@ TEST_F(ConfigHttpTest, SaveAppOmitsNullOptionalFieldsAndPreservesConfiguredValue
   ASSERT_EQ(configured_response->status_code, "200 OK");
   {
     std::ifstream file(config::stream.file_apps);
-    const auto saved = json::parse(file);
+    auto saved = json::parse(file);
     ASSERT_EQ(saved.at("apps").size(), 2U);
     json expected = configured;
     expected.erase("index");
-    EXPECT_EQ(saved.at("apps").at(0), expected);
+    // Apollo keeps the saved order (no sorting by name) and gives every application a UUID.
+    auto &saved_app = saved.at("apps").at(1);
+    saved_app.erase("uuid");
+    EXPECT_EQ(saved_app, expected);
   }
 
   json nested_null_prep {

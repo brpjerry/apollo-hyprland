@@ -203,7 +203,7 @@ TEST_F(PulseAudioLiveTest, MuteMovesPinnedStreamsAndKeepsTheDefault) {
   EXPECT_TRUE(eventually([&] { return default_sink() == null_sink; }));
 
   // Capture reads the virtual sink's monitor.
-  auto mic = control->microphone(platf::speaker::map_stereo, 2, 48000, 240);
+  auto mic = control->microphone(platf::speaker::map_stereo.data(), 2, 48000, 240, false, true);
   ASSERT_TRUE(mic);
   std::vector<float> samples(480);
   EXPECT_EQ(mic->sample(samples), platf::capture_e::ok);
@@ -230,7 +230,7 @@ TEST_F(PulseAudioLiveTest, AutoCaptureReinitialisesWhenTheDefaultChanges) {
   ASSERT_TRUE(control);
   ASSERT_TRUE(control->sink_info());
 
-  auto mic = control->microphone(platf::speaker::map_stereo, 2, 48000, 240);
+  auto mic = control->microphone(platf::speaker::map_stereo.data(), 2, 48000, 240, false, true);
   ASSERT_TRUE(mic);
   std::vector<float> samples(480);
   ASSERT_EQ(mic->sample(samples), platf::capture_e::ok);
@@ -241,7 +241,7 @@ TEST_F(PulseAudioLiveTest, AutoCaptureReinitialisesWhenTheDefaultChanges) {
 
   // Nothing was assigned with host audio on, so the new default is kept and captured.
   EXPECT_EQ(default_sink(), "apollo-test-headset");
-  mic = control->microphone(platf::speaker::map_stereo, 2, 48000, 240);
+  mic = control->microphone(platf::speaker::map_stereo.data(), 2, 48000, 240, false, true);
   ASSERT_TRUE(mic);
   EXPECT_EQ(mic->sample(samples), platf::capture_e::ok);
 }

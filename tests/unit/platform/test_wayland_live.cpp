@@ -96,14 +96,14 @@ TEST_F(WaylandLiveTest, SelectsOutputsByNameAndLegacyIndex) {
               << ", logical " << by_name->logical_width << 'x' << by_name->logical_height
               << " at " << by_name->offset_x << ',' << by_name->offset_y
               << ", layout " << by_name->env_width << 'x' << by_name->env_height
-              << " at " << by_name->env_x << ',' << by_name->env_y << std::endl;
+              << " at " << by_name->env_offset_x << ',' << by_name->env_offset_y << std::endl;
 
     EXPECT_GT(by_name->logical_width, 0);
     EXPECT_GT(by_name->logical_height, 0);
-    EXPECT_LE(by_name->env_x, by_name->offset_x);
-    EXPECT_LE(by_name->env_y, by_name->offset_y);
-    EXPECT_GE(by_name->env_x + by_name->env_width, by_name->offset_x + by_name->logical_width);
-    EXPECT_GE(by_name->env_y + by_name->env_height, by_name->offset_y + by_name->logical_height);
+    EXPECT_LE(by_name->env_offset_x, by_name->offset_x);
+    EXPECT_LE(by_name->env_offset_y, by_name->offset_y);
+    EXPECT_GE(by_name->env_offset_x + by_name->env_width, by_name->offset_x + by_name->logical_width);
+    EXPECT_GE(by_name->env_offset_y + by_name->env_height, by_name->offset_y + by_name->logical_height);
 
     EXPECT_EQ(by_index->offset_x, by_name->offset_x);
     EXPECT_EQ(by_index->offset_y, by_name->offset_y);
@@ -159,7 +159,7 @@ namespace {
   }
 
   struct capture_run_t {
-    platf::capture_e status {platf::capture_e::error};
+    platf::capture_e status {platf::capture_e::capture_error};
     int frames {0};  ///< Images pushed with frame_captured = true.
     int wrong_size {0};
     int non_monotonic {0};
@@ -515,10 +515,12 @@ TEST_F(WaylandLiveTest, ExtAndWlrReportTheSameGeometry) {
     EXPECT_EQ(ext->offset_y, wlr->offset_y) << name;
     EXPECT_EQ(ext->logical_width, wlr->logical_width) << name;
     EXPECT_EQ(ext->logical_height, wlr->logical_height) << name;
-    EXPECT_EQ(ext->env_x, wlr->env_x) << name;
-    EXPECT_EQ(ext->env_y, wlr->env_y) << name;
-    EXPECT_EQ(ext->env_width, wlr->env_width) << name;
-    EXPECT_EQ(ext->env_height, wlr->env_height) << name;
+    EXPECT_EQ(ext->env_offset_x, wlr->env_offset_x) << name;
+    EXPECT_EQ(ext->env_offset_y, wlr->env_offset_y) << name;
+    // Absolute input uses the logical layout. env_width/env_height differ on scaled outputs: the wlr backend
+    // (upstream) unions logical offsets with mode sizes, the ext backend keeps the whole layout logical.
+    EXPECT_EQ(ext->env_logical_width, wlr->env_logical_width) << name;
+    EXPECT_EQ(ext->env_logical_height, wlr->env_logical_height) << name;
 
     auto config = WaylandLiveTest::config();
     auto wlr_port = video::make_port(wlr.get(), config);
@@ -527,10 +529,10 @@ TEST_F(WaylandLiveTest, ExtAndWlrReportTheSameGeometry) {
     EXPECT_EQ(ext_port.offset_y, wlr_port.offset_y) << name;
     EXPECT_EQ(ext_port.width, wlr_port.width) << name;
     EXPECT_EQ(ext_port.height, wlr_port.height) << name;
-    EXPECT_EQ(ext_port.env_x, wlr_port.env_x) << name;
-    EXPECT_EQ(ext_port.env_y, wlr_port.env_y) << name;
-    EXPECT_EQ(ext_port.env_width, wlr_port.env_width) << name;
-    EXPECT_EQ(ext_port.env_height, wlr_port.env_height) << name;
+    EXPECT_EQ(ext_port.env_offset_x, wlr_port.env_offset_x) << name;
+    EXPECT_EQ(ext_port.env_offset_y, wlr_port.env_offset_y) << name;
+    EXPECT_EQ(ext_port.env_logical_width, wlr_port.env_logical_width) << name;
+    EXPECT_EQ(ext_port.env_logical_height, wlr_port.env_logical_height) << name;
     EXPECT_FLOAT_EQ(ext_port.scalar_inv, wlr_port.scalar_inv) << name;
     EXPECT_FLOAT_EQ(ext_port.client_offsetX, wlr_port.client_offsetX) << name;
     EXPECT_FLOAT_EQ(ext_port.client_offsetY, wlr_port.client_offsetY) << name;

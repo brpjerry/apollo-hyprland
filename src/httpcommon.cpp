@@ -47,6 +47,7 @@ namespace http {
   bool user_creds_exist(const std::string &file);
 
   std::string unique_id;  ///< Unique ID.
+  uuid_util::uuid_t uuid;  ///< Apollo: server UUID derived from unique_id.
   net::net_e origin_web_ui_allowed;  ///< Origin web ui allowed.
 
   /**

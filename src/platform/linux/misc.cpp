@@ -19,6 +19,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -501,18 +503,148 @@ namespace platf {
     return "00:00:00:00:00:00"s;
   }
 
-  /**
-   * @brief Launch a command using the caller's Linux privileges and session.
-   * @details The common platform signature's elevation and interactivity flags do not apply on Linux.
-   */
-  bp::child run_command(bool, bool, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {
-    // clang-format off
-    if (!group) {
-      if (!file) {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec);
+std::string get_local_ip_for_gateway() {
+  int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+  if (fd < 0) {
+    BOOST_LOG(warning) << "Socket creation failed: " << strerror(errno);
+    return "";
+  }
+
+  char buffer[8192];
+  struct nlmsghdr *nlMsg = (struct nlmsghdr *)buffer;
+  struct rtmsg *rtMsg = (struct rtmsg *)NLMSG_DATA(nlMsg);
+  struct rtattr *rtAttr;
+  int len = 0;
+
+  memset(nlMsg, 0, sizeof(struct nlmsghdr));
+  nlMsg->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+  nlMsg->nlmsg_type = RTM_GETROUTE;
+  nlMsg->nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST;
+  nlMsg->nlmsg_seq = 1;
+  nlMsg->nlmsg_pid = getpid();
+
+  if (send(fd, nlMsg, nlMsg->nlmsg_len, 0) < 0) {
+    BOOST_LOG(warning) << "Send message failed: " << strerror(errno);
+    close(fd);
+    return "";
+  }
+
+  std::string local_ip;
+  bool found = false;
+
+  while ((len = recv(fd, nlMsg, sizeof(buffer), 0)) > 0) {
+    for (; NLMSG_OK(nlMsg, len); nlMsg = NLMSG_NEXT(nlMsg, len)) {
+      if (nlMsg->nlmsg_type == NLMSG_DONE) {
+        found = true;
+        break;
+      }
+
+      rtMsg = (struct rtmsg *)NLMSG_DATA(nlMsg);
+      if (rtMsg->rtm_family != AF_INET || rtMsg->rtm_table != RT_TABLE_MAIN)
+        continue;
+
+      rtAttr = (struct rtattr *)RTM_RTA(rtMsg);
+      int rtLen = RTM_PAYLOAD(nlMsg);
+
+      in_addr gateway;
+      in_addr local;
+      memset(&gateway, 0, sizeof(gateway));
+      memset(&local, 0, sizeof(local));
+
+      for (; RTA_OK(rtAttr, rtLen); rtAttr = RTA_NEXT(rtAttr, rtLen)) {
+        switch(rtAttr->rta_type) {
+          case RTA_GATEWAY:
+            gateway.s_addr = *reinterpret_cast<uint32_t *>(RTA_DATA(rtAttr));
+            break;
+          case RTA_PREFSRC:
+            local.s_addr = *reinterpret_cast<uint32_t *>(RTA_DATA(rtAttr));
+            break;
+          default:
+            break;
+        }
+      }
+
+      if (gateway.s_addr != 0 && local.s_addr != 0) {
+        local_ip = inet_ntoa(local);
+        found = true;
+        break;
+      }
+    }
+
+    if (found) break;
+  }
+
+  close(fd);
+
+  if (local_ip.empty()) {
+    BOOST_LOG(warning) << "No associated IP address found for the default gateway";
+  }
+
+  return local_ip;
+}
+
+  namespace {
+    /**
+     * @brief The installed apollo-run-elevated helper, or "" to use the `sh -c` fallback (e.g. in a build tree).
+     */
+    std::string elevation_helper() {
+#ifdef SUNSHINE_ELEVATION_HELPER
+      if (::access(SUNSHINE_ELEVATION_HELPER, X_OK) == 0) {
+        return SUNSHINE_ELEVATION_HELPER;
+      }
+#endif
+      return {};
+    }
+
+    template<class... Command>
+    bp::child spawn(boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group, Command &&...command) {
+      // clang-format off
+      if (!group) {
+        if (!file) {
+          return bp::child(std::forward<Command>(command)..., env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec);
+        }
+        else {
+          return bp::child(std::forward<Command>(command)..., env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec);
+        }
       }
       else {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec);
+        if (!file) {
+          return bp::child(std::forward<Command>(command)..., env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec, *group);
+        }
+        else {
+          return bp::child(std::forward<Command>(command)..., env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec, *group);
+        }
+      }
+      // clang-format on
+    }
+  }  // namespace
+
+  /**
+   * @details On Linux, `interactive` is not used: every caller passes true (on Windows it gives console programs a
+   *          console window and does nothing for GUI programs), and wrapping every app in a terminal would be wrong.
+   *          A terminal is opened for elevated commands when `elevation_method = terminal`, so sudo can ask for the
+   *          password on the streamed display. See command.h for URLs and elevation.
+   */
+  bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {
+    command::options_t options {
+      .elevated = elevated,
+      .elevation = command::parse_elevation(config::sunshine.elevation_method),
+      .working_dir = working_dir.string(),
+    };
+    if (elevated) {
+      options.helper = elevation_helper();
+      if (options.elevation == command::elevation_e::terminal) {
+        options.terminal = command::terminal_prefix(
+          [](const char *name) {
+            return std::getenv(name);
+          },
+          [](const std::string &name) {
+            return !bp::search_path(name).empty();
+          }
+        );
+        if (options.terminal.empty()) {
+          BOOST_LOG(error) << "No terminal found for elevated command ["sv << cmd << "]: install xdg-terminal-exec or set TERMINAL"sv;
+        }
       }
     }
 
@@ -641,6 +773,38 @@ namespace platf {
     // Unimplemented
   }
 
+  namespace {
+#ifdef SUNSHINE_BUILD_GIO
+    /**
+     * @brief The inhibitor held while any client streams. Never destroyed: its fds and bus connection close
+     *        with the process, and logging is gone by the time static destructors run.
+     */
+    idle::inhibitor_t &idle_inhibitor() {
+      static auto *inhibitor = new idle::inhibitor_t {};
+      return *inhibitor;
+    }
+#endif
+
+    /**
+     * @brief Switch on the streamed output if it is DPMS-off (it would capture as black). Only that output.
+     */
+    void wake_stream_output() {
+#ifdef SUNSHINE_BUILD_WAYLAND
+      // The connector capture will use: output_name may be empty (the default output) or a description.
+      const auto output = display_device::map_output_name(config::video.output_name);
+      if (output.empty()) {
+        BOOST_LOG(debug) << "Could not resolve the stream output; not checking DPMS"sv;
+        return;
+      }
+      auto ipc = hyprland::ipc_t::connect();
+      if (!ipc) {
+        return;
+      }
+      hyprland::wake_output(*ipc, output);
+#endif
+    }
+  }  // namespace
+
   /**
    * @brief Apply Linux platform state before streaming starts.
    */
@@ -697,6 +861,12 @@ namespace platf {
     atexit(restart_on_exit);
     lifetime::exit_sunshine(0, true);
   }
+
+  namespace {
+    std::mutex windows_closed_mutex;
+    /// Process groups whose windows request_process_group_exit() asked to close, and which got no SIGTERM yet.
+    std::set<pid_t> windows_closed_groups;
+  }  // namespace
 
   bool request_process_group_exit(std::uintptr_t native_handle) {
     const auto pgid = (pid_t) native_handle;
@@ -1261,6 +1431,9 @@ namespace platf {
 #endif
 
 #ifdef SUNSHINE_BUILD_WAYLAND
+  // The Wayland backends are chosen by the protocols the compositor offers, not by its current outputs: Apollo may
+  // start with every monitor disabled and stream a virtual display it creates later.
+  bool wl_capture_supported();
   /**
    * @brief Enumerate displays available through the Wayland capture backend.
    *
@@ -1280,7 +1453,7 @@ namespace platf {
   /**
    * @brief Check whether Wayland capture is available for the current session.
    *
-   * @return True when the active window system is Wayland and at least one output is discoverable.
+   * @return True when the active window system is Wayland and the compositor offers wlr-screencopy.
    */
   bool verify_wl() {
     return window_system == window_system_e::WAYLAND && wl_capture_supported();
@@ -1573,6 +1746,9 @@ namespace platf {
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
+    if (((selected_capture.empty() && sources.none()) || selected_capture == "ext") && verify_ext()) {
+      sources[source::WAYLAND_EXT] = true;
+    }
     if (((selected_capture.empty() && sources.none()) || selected_capture == "wlr") && verify_wl()) {
       sources[source::WAYLAND] = true;
     }
@@ -1780,5 +1956,47 @@ namespace platf {
       BOOST_LOG(info) << "[misc] drop_elevated_privileges succeeded in dropping capabilities"sv;
     }
 #endif
+  }
+
+#ifdef SUNSHINE_BUILD_WAYLAND
+  namespace {
+    std::mutex clipboard_mutex;
+    std::unique_ptr<clipboard::wayland_clipboard_t> clipboard_connection;
+
+    /**
+     * @brief The persistent clipboard connection, (re)connected on demand. Call with clipboard_mutex held.
+     */
+    clipboard::wayland_clipboard_t *wayland_clipboard() {
+      if (clipboard_connection && !clipboard_connection->alive()) {
+        clipboard_connection.reset();
+      }
+      if (!clipboard_connection) {
+        clipboard_connection = clipboard::wayland_clipboard_t::connect(nullptr);
+      }
+      return clipboard_connection.get();
+    }
+  }  // namespace
+#endif
+
+  std::optional<std::string>
+  get_clipboard() {
+#ifdef SUNSHINE_BUILD_WAYLAND
+    std::lock_guard lock {clipboard_mutex};
+    if (auto clipboard = wayland_clipboard()) {
+      return clipboard->get();
+    }
+#endif
+    return std::nullopt;
+  }
+
+  bool
+  set_clipboard(const std::string& content) {
+#ifdef SUNSHINE_BUILD_WAYLAND
+    std::lock_guard lock {clipboard_mutex};
+    if (auto clipboard = wayland_clipboard()) {
+      return clipboard->set(content);
+    }
+#endif
+    return false;
   }
 }  // namespace platf

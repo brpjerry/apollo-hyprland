@@ -61,6 +61,9 @@ namespace nvenc {
     // Add filler data to encoded frames to stay at target bitrate, mainly for testing
     bool insert_filler_data = false;  ///< Insert filler data to maintain bitrate constraints.
 
+    // Intra refresh for clients that doesn't request keyframe correctly
+    bool intra_refresh = false;  ///< Apollo: enable intra refresh.
+
     // Enable split-frame encoding if the gpu has multiple NVENC hardware clusters
     nvenc_split_frame_encoding split_frame_encoding = nvenc_split_frame_encoding::driver_decides;  ///< Split frame encoding.
   };

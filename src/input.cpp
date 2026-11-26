@@ -877,25 +877,6 @@ namespace input {
   }
 
   /**
-   * @brief The port handed to the platform's absolute mouse, touch and pen functions.
-   * @details width/height is the desktop bounding box, as the Windows backend expects; layout_x/layout_y and
-   * output_width/output_height carry the rest of the geometry for backends that need it (Linux).
-   */
-  platf::touch_port_t make_abs_port(const input::touch_port_t &touch_port) {
-    platf::touch_port_t abs_port {
-      touch_port.offset_x,
-      touch_port.offset_y,
-      touch_port.env_width,
-      touch_port.env_height
-    };
-    abs_port.layout_x = touch_port.env_x;
-    abs_port.layout_y = touch_port.env_y;
-    abs_port.output_width = touch_port.logical_width;
-    abs_port.output_height = touch_port.logical_height;
-    return abs_port;
-  }
-
-  /**
    * @brief Multiply a polar coordinate pair by a cartesian scaling factor.
    * @param r The radial coordinate.
    * @param angle The angular coordinate (radians).
@@ -2333,7 +2314,7 @@ namespace input {
    * @param input The input context pointer.
    * @param input_data The input message.
    */
-  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data) {
+  void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM &permission) {
     NV_INPUT_HEADER header {};
     if (!validate_input_packet(input_data, &header)) {
       if (input_data.size() >= sizeof(header)) {
@@ -2346,6 +2327,56 @@ namespace input {
         BOOST_LOG(warning) << "Dropping malformed input packet with actual size ["sv << input_data.size() << ']';
       }
       return;
+    }
+
+    // Apollo: drop input the client has no permission for.
+    if (!(permission & crypto::PERM::_all_inputs)) {
+      // No input permissions at all
+      return;
+    }
+    if ((permission & crypto::PERM::_all_inputs) != crypto::PERM::_all_inputs) {
+      // Some input permissions: check this packet's kind.
+      switch (util::endian::little(header.magic)) {
+        case MULTI_CONTROLLER_MAGIC_GEN5:
+        case SS_CONTROLLER_ARRIVAL_MAGIC:
+        case SS_CONTROLLER_TOUCH_MAGIC:
+        case SS_CONTROLLER_MOTION_MAGIC:
+        case SS_CONTROLLER_BATTERY_MAGIC:
+          if (!(permission & crypto::PERM::input_controller)) {
+            return;
+          }
+          break;
+        case MOUSE_MOVE_REL_MAGIC_GEN5:
+        case MOUSE_MOVE_ABS_MAGIC:
+        case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
+        case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
+        case SCROLL_MAGIC_GEN5:
+        case SS_HSCROLL_MAGIC:
+          if (!(permission & crypto::PERM::input_mouse)) {
+            return;
+          }
+          break;
+        case KEY_DOWN_EVENT_MAGIC:
+        case KEY_UP_EVENT_MAGIC:
+        case UTF8_TEXT_EVENT_MAGIC:
+          if (!(permission & crypto::PERM::input_kbd)) {
+            return;
+          }
+          break;
+        case SS_TOUCH_MAGIC:
+          if (!(permission & crypto::PERM::input_touch)) {
+            return;
+          }
+          break;
+        case SS_PEN_MAGIC:
+          if (!(permission & crypto::PERM::input_pen)) {
+            return;
+          }
+          break;
+        default:
+          // Unknown input event
+          return;
+      }
     }
 
     bool schedule_task = false;

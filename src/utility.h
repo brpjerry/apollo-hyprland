@@ -20,6 +20,8 @@
 #include <variant>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 /**
  * @def KITTY_WHILE_LOOP(x, y, z)
  * @brief Execute an initializer followed by a while loop body without leaking helper names.
@@ -737,6 +739,38 @@ namespace util {
     }
 
     return buf;
+  }
+
+  /**
+   * @brief Read a JSON value that may have been sent as a string (Apollo).
+   *
+   * @param j JSON object to read from.
+   * @param key Key to look up.
+   * @param default_value Value returned when the key is missing or cannot be converted.
+   * @return Converted value.
+   */
+  template<typename T>
+  T get_non_string_json_value(const nlohmann::json& j, const std::string& key, const T& default_value = T{}) {
+    if (!j.contains(key))
+      return default_value;
+    const auto& val = j.at(key);
+    if (val.is_number() || val.is_boolean())
+      return val.get<T>();
+    if (val.is_string()) {
+      std::string s = val.get<std::string>();
+      if constexpr (std::is_same_v<T, int>) {
+        return std::stoi(s);
+      } else if constexpr (std::is_same_v<T, double>) {
+        return std::stod(s);
+      } else if constexpr (std::is_same_v<T, bool>) {
+        return s == "true";
+      } else if constexpr (std::is_same_v<T, std::string>) {
+        return s;
+      } else {
+        return default_value;
+      }
+    }
+    return default_value;
   }
 
   /**

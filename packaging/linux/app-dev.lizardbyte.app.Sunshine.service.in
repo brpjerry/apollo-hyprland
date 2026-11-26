@@ -3,10 +3,9 @@ Description=@PROJECT_NAME@ - @PROJECT_DESCRIPTION@
 # Run inside the graphical session: start after it is up (so WAYLAND_DISPLAY, HYPRLAND_INSTANCE_SIGNATURE and
 # DBUS_SESSION_BUS_ADDRESS have been imported into the user manager) and stop with it at logout.
 PartOf=graphical-session.target
-After=graphical-session.target
+After=graphical-session.target xdg-desktop-autostart.target xdg-desktop-portal.service
 StartLimitIntervalSec=500
 StartLimitBurst=5
-After=graphical-session.target xdg-desktop-autostart.target xdg-desktop-portal.service
 
 [Service]
 @SUNSHINE_SERVICE_START_COMMAND@

@@ -26,28 +26,6 @@ Binaries can be found in the [latest release][latest-release].
 Docker images are available on [Dockerhub.io](https://hub.docker.com/repository/docker/lizardbyte/sunshine)
 and [ghcr.io](https://github.com/orgs/LizardByte/packages?repo_name=sunshine).
 
-See [Docker](../DOCKER_README.md) for more information.
-
-### FreeBSD
-
-#### Install
-1. Download the appropriate package for your architecture
-
-   | Architecture  | Package                                                                                                                                |
-   |---------------|----------------------------------------------------------------------------------------------------------------------------------------|
-   | amd64/x86_64  | [Sunshine-FreeBSD-14.4-amd64.pkg](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-FreeBSD-14.3-amd64.pkg)     |
-   | arm64/aarch64 | [Sunshine-FreeBSD-14.4-aarch64.pkg](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-FreeBSD-14.3-aarch64.pkg) |
-
-2. Open terminal and run the following command.
-   ```sh
-   sudo pkg install ./Sunshine-FreeBSD-14.4-{arch}.pkg
-   ```
-
-#### Uninstall
-```sh
-sudo pkg delete Sunshine
-```
-
 ### Linux
 
 LizardByte publishes DEB and RPM packages to the
@@ -153,14 +131,7 @@ NVENC support is built in and needs only the NVIDIA driver (`nvidia-utils`), not
 ##### Build the Package
 `packaging/linux/Arch/PKGBUILD` builds the release tag `v{pkgver}` from GitHub (CUDA is a build dependency):
 ```bash
-wget https://github.com/SunshineStream/Sunshine/releases/latest/download/sunshine.pkg.tar.gz
-tar -xvf sunshine.pkg.tar.gz
-cd sunshine
-
-# install optional dependencies
-pacman -S cuda  # Nvidia GPU encoding support
-pacman -S libva-mesa-driver  # AMD GPU encoding support
-
+cd packaging/linux/Arch
 makepkg -si
 ```
 
@@ -532,7 +503,33 @@ After adding yourself to the group, log out and log back in for the changes to t
 
 ### Linux
 
-#### Services
+#### KMS Capture
+
+> [!WARNING]
+> Capture of most Wayland-based desktop environments will fail unless this step is performed.
+
+> [!NOTE]
+> `cap_sys_admin` may as well be root, except you don't need to be root to run the program. This is necessary to
+> allow Sunshine to use KMS capture.
+
+> [!NOTE]
+> The Debian/RPM post-install script and the Arch package no longer set this capability by default, because Wayland
+> capture (used on Hyprland) does not need it and a file capability makes the loader drop `LD_*` variables from
+> Sunshine's environment. Run the command below, or install with `APOLLO_ENABLE_KMS_CAPTURE=1` set, to use KMS capture.
+
+##### Enable
+```bash
+sudo setcap cap_sys_admin+p $(readlink -f $(which sunshine))
+```
+
+#### X11 Capture
+For X11 capture to work, you may need to disable the capabilities that were set for KMS capture.
+
+```bash
+sudo setcap -r $(readlink -f $(which sunshine))
+```
+
+#### Service
 
 **Start once**
 ```bash
@@ -544,9 +541,129 @@ systemctl --user start app-dev.lizardbyte.app.Sunshine
 systemctl --user --now enable app-dev.lizardbyte.app.Sunshine
 ```
 
-> [!NOTE]
-> The service has been renamed to "app-dev.lizardbyte.app.Sunshine" in order to increase compatibility with
-> XDG Desktop Portal, but it is also aliased to "sunshine.service" for convenience.
+The user service is part of `graphical-session.target`: it starts once the desktop session is up and stops when it
+ends. Check what it is doing with `journalctl --user -u sunshine -f`.
+
+If you enabled the service under an older version, which started it with `xdg-desktop-autostart.target`, move its
+login link to the new target once:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user reenable sunshine
+```
+
+#### Running on Hyprland
+Sunshine uses Wayland capture on Hyprland, so it needs neither `cap_sys_admin` nor root. It does need to run inside
+your Hyprland session, with the session's environment, so that it can reach the compositor, Hyprland's IPC sockets,
+PipeWire and the session D-Bus. The systemd user manager does not get that environment by itself, so Hyprland has to
+export it when it starts.
+
+##### Input devices
+Mouse, keyboard and gamepad input go through `/dev/uinput`, and DualSense emulation through `/dev/uhid`. The packages
+install a udev rule (`60-sunshine.rules`) that gives the logged-in user access to both, and load the `uhid` module at
+boot (`60-sunshine.conf`). Check that your user has access:
+
+```bash
+getfacl /dev/uinput /dev/uhid    # should list "user:<you>:rw-"
+```
+
+If not (for example right after installing, before a reboot), reload the rules and load the modules:
+
+```bash
+sudo modprobe -a uinput uhid
+sudo udevadm control --reload-rules
+sudo udevadm trigger --property-match=DEVNAME=/dev/uinput
+sudo udevadm trigger --property-match=DEVNAME=/dev/uhid
+```
+
+##### With uwsm
+If you start Hyprland through [uwsm](https://github.com/Vladimir-csp/uwsm), it already imports the session's
+environment and activates `graphical-session.target`, so enabling the service is enough:
+
+```bash
+systemctl --user enable --now sunshine
+```
+
+##### Without uwsm
+Without uwsm, `graphical-session.target` is usually never reached, so Hyprland has to import the environment and start
+the service itself, and stop it when Hyprland exits. Importing `HYPRLAND_INSTANCE_SIGNATURE` again on each start
+matters: it changes every time Hyprland starts.
+
+For a Lua config (`hyprland.lua`):
+
+```lua
+hl.on("hyprland.start", function()
+    hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE "
+        .. "XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP && systemctl --user restart sunshine")
+end)
+hl.on("hyprland.shutdown", function()
+    hl.exec_cmd("systemctl --user stop sunshine")
+end)
+```
+
+For a hyprlang config (`hyprland.conf`):
+
+```
+exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP && systemctl --user restart sunshine
+exec-shutdown = systemctl --user stop sunshine
+```
+
+`restart` rather than `start` makes sure a copy left over from an earlier Hyprland instance, which still has the old
+environment, is replaced. The service does not need to be enabled in this setup.
+
+##### Check
+After logging in, `journalctl --user -u sunshine` should show `Screencasting with Wayland's protocol`. When you log
+out, the service stops: Sunshine receives `SIGTERM` (or `SIGHUP`), ends the running app and cleans up before exiting.
+
+##### Virtual displays
+On Hyprland, a virtual display is a headless output named `APOLLO-` followed by 8 hex digits, created for the
+session and removed when the app quits. Clients see virtual display support once Sunshine reaches Hyprland's IPC
+socket; the Audio/Video tab of the web UI shows the status. A virtual display is created when:
+
+- the client asks for one, the app has *Always create Virtual Display* set, or the client has *Always create virtual
+  display* set (PIN page);
+- `headless_mode` is enabled: every app then streams a virtual display, even when monitors are connected;
+- no monitor is active, i.e. every monitor is disabled or switched off with DPMS. Hyprland stops drawing a monitor
+  whose DPMS is off and captures it as solid black, so such a monitor does not count. Encoders are then probed on a
+  temporary 800x600 output, which is removed again right after.
+
+The output name is the same for a client on every session (for apps with *Use App Identity*, the same for the app),
+so a client's virtual display can be told apart from the others.
+
+**Focus and workspace.** When the stream starts, Sunshine shows a workspace named after the output (`apollo-` and the
+same 8 hex digits) on the virtual display and moves focus there, so the windows you open land on the stream rather
+than on a physical monitor. Windows of the app Sunshine launched are moved to that workspace even when they open
+elsewhere (they are recognised by the app's process group). When the app quits, focus goes back to the workspace
+that had it before the stream, if focus is still on the virtual display. Windows left on the stream's workspace move
+to a physical monitor with the workspace, and come back with it on the next session.
+
+**Remembered settings.** Changes you make to a client's virtual display during a stream are saved when the app quits
+and applied again on the next stream for that client: scale, transform, position (unless
+`isolated_virtual_display_option` is on, which places the display itself), and the workspace left showing on it.
+They are kept in `vdisplay_settings.json` next to `sunshine_state.json` (in the config directory by default); delete
+an entry there to forget it, or edit it while no stream runs (keys `scale`, `transform`, `bitdepth`, `position`,
+`workspace`; Hyprland does not report the bit depth of a headless output, so `bitdepth` is only learned on outputs
+that change format). A *Resolution Scale Factor* other than 100% (app settings, or requested by the client)
+becomes the output scale, so a 1920x1080 client at 200% gets a 3840x2160 display at scale 2 and the desktop keeps
+the client's size; a scale you set yourself on top of that is remembered for that scale factor.
+
+**Static monitor rules.** Since the names are stable, you can also configure a client's display in your Hyprland
+config instead, for example in `hyprland.lua`:
+
+```lua
+hl.monitor({ output = "APOLLO-1a2b3c4d", transform = 1, bitdepth = 10, cm = "hdr", sdrbrightness = 1.2 })
+hl.workspace_rule({ workspace = "name:apollo-1a2b3c4d", layout = "master" })
+```
+
+Sunshine always sets the mode (the client's resolution and refresh rate), the position (`auto-right`, or the
+remembered or isolated position) and the scale (1, the scale factor, or the remembered scale), so those three come
+from Sunshine, not from a static rule; change the scale during a stream and it is remembered instead. With the Lua
+config every other field of a static rule applies (Sunshine sets transform and bit depth only when it remembers a
+value for them). With a hyprlang `hyprland.conf`, Sunshine's runtime rule replaces the whole static rule, so use the
+remembered settings there.
+
+### macOS
+The first time you start Sunshine, you will be asked to grant access to screen recording and your microphone.
 
 ### macOS
 On first launch, Sunshine requests Screen Recording and keyboard and mouse control when those features are enabled.

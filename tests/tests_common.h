@@ -8,6 +8,7 @@
 #pragma once
 
 // standard includes
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>

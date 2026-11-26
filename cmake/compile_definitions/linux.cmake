@@ -242,10 +242,24 @@ if(WAYLAND_FOUND)
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "unstable/linux-dmabuf" linux-dmabuf-unstable-v1)
     CPMAddPackage(NAME wlr_protocols DOWNLOAD_ONLY YES)
     GEN_WAYLAND("${wlr_protocols_SOURCE_DIR}" "unstable" wlr-screencopy-unstable-v1)
+    # ext-image-copy-capture-v1 needs wayland-protocols >= 1.37. ext-image-capture-source-v1 references
+    # ext_foreign_toplevel_handle_v1, so ext-foreign-toplevel-list-v1 is generated for its interface definition.
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-foreign-toplevel-list" ext-foreign-toplevel-list-v1)
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-image-capture-source" ext-image-capture-source-v1)
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-image-copy-capture" ext-image-copy-capture-v1)
+    # Clipboard sync: ext-data-control-v1 (wayland-protocols >= 1.39), falling back to wlr-data-control.
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-data-control" ext-data-control-v1)
+    GEN_WAYLAND("${wlr_protocols_SOURCE_DIR}" "unstable" wlr-data-control-unstable-v1)
+    # wp-color-management-v1: HDR state and metadata of the captured output (wayland-protocols >= 1.41).
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/color-management" color-management-v1)
+    # Unicode text input (HYP-14). The protocol lives in wlroots' tree, not in wlr-protocols or wayland-protocols.
+    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party" "wlroots-protocols" virtual-keyboard-unstable-v1)
+    pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 
     include_directories(
             SYSTEM
             ${WAYLAND_INCLUDE_DIRS}
+            ${XKBCOMMON_INCLUDE_DIRS}
     )
 
     list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES} ${XKBCOMMON_LIBRARIES} gbm)
@@ -265,9 +279,6 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.cpp"
-            # Non-normalized key codes through the host layout (HYP-25)
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp"
             # platf::vdisplay: Hyprland headless outputs (HYP-06)
@@ -363,6 +374,21 @@ set(LIBEVDEV_CUSTOM_LIBRARY "${EVDEV_LIBRARY}")
 list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtualhid.cpp")
 
+# keep the session from idling while streaming (HYP-20): org.freedesktop.ScreenSaver and logind over D-Bus.
+# GIO is required above, so this is always built.
+list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_GIO=1)
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.cpp")
+
+# Input option decisions (HYP-24, HYP-25).
+# TODO(libvirtualhid port): touch_pen.* (per-client uinput touch screen and pen tablet, HYP-24), inputtino_abs.*
+# (absolute mouse/touch/pen mapping onto the streamed Hyprland output) and keyboard_layout.* (non-normalized key codes
+# through the host layout, HYP-25; it uses inputtino's key table) were driven by the removed inputtino backend.
+# They stay out of the build until they are ported onto libvirtualhid (src/platform/virtualhid_input.cpp).
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/input_options.h")
+
 # Elevated commands (HYP-23): the helper installed by packaging/linux.cmake, also named in the polkit action.
 if(NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK})
     set(APOLLO_ELEVATION_HELPER "${CMAKE_INSTALL_FULL_LIBEXECDIR}/apollo/apollo-run-elevated")
@@ -389,7 +415,10 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/graphics.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp")
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/audio_sinks.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/audio_sinks.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/vdisplay.h")
 
 list(APPEND PLATFORM_LIBRARIES
         dl

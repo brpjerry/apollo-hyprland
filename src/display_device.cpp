@@ -750,6 +750,10 @@ namespace display_device {
           .m_hdr_blank_delay = video_config.dd.wa.hdr_toggle_delay != std::chrono::milliseconds::zero() ? std::make_optional(video_config.dd.wa.hdr_toggle_delay) : std::nullopt
         }
       );
+#elif defined(SUNSHINE_BUILD_WAYLAND)
+      // Hyprland: outputs are configured through its IPC socket. There is no audio context as on Windows (it keeps
+      // a disabled monitor's audio device in use); Apollo's audio capture follows the default sink.
+      return hyprland::dd::make_settings_manager(persistence_filepath);
 #elif defined(__APPLE__)
       return std::make_unique<MacSettingsManager>(
         std::make_shared<MacDisplayDevice>(std::make_shared<MacApiLayer>()),

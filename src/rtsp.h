@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <memory>
+#include <list>
 
 // local includes
 #include "crypto.h"
@@ -101,8 +103,12 @@ namespace rtsp_stream {
     std::string av_ping_payload;  ///< AV ping payload.
     uint32_t control_connect_data;  ///< Client-provided token used when connecting the control channel.
 
-    bool host_audio;  ///< Whether host audio should be played locally.
+    std::string device_name;  ///< Apollo: name of the paired client (same value as client_name).
     std::string unique_id;  ///< Moonlight client unique identifier for this launch request.
+    crypto::PERM perm;  ///< Apollo: permissions granted to the paired client.
+
+    bool input_only;  ///< Apollo: stream carries input only (no video or audio).
+    bool host_audio;  ///< Whether host audio should be played locally.
     int width;  ///< Frame or display width in pixels.
     int height;  ///< Frame or display height in pixels.
     int fps;  ///< Requested video frame rate.
@@ -113,12 +119,20 @@ namespace rtsp_stream {
     bool continuous_audio;  ///< Whether audio packets continue during silence.
     bool enable_hdr;  ///< Whether HDR streaming is requested.
     bool enable_sops;  ///< Whether sequence output protection is requested.
+    bool virtual_display;  ///< Apollo: stream to a per-client virtual display.
+    uint32_t scale_factor;  ///< Apollo: virtual display scale factor in percent.
     std::string client_name;  ///< Friendly client name from initial pairing.
 
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;  ///< AES-GCM cipher used once encrypted RTSP is negotiated.
     std::string rtsp_url_scheme;  ///< URL scheme selected by the RTSP SETUP flow.
     uint32_t rtsp_iv_counter;  ///< Counter value mixed into encrypted RTSP IVs.
     std::string client_cert;  ///< PEM certificate for the paired Moonlight client.
+
+    std::list<crypto::command_entry_t> client_do_cmds;  ///< Apollo: per-client commands run when the stream starts.
+    std::list<crypto::command_entry_t> client_undo_cmds;  ///< Apollo: per-client commands run when the stream ends.
+
+    // Identity of the virtual display created for this session (see platf::vdisplay::create()).
+    uuid_util::uuid_t display_guid {};  ///< Apollo: virtual display identity for this session.
   };
 
   /**

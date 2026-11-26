@@ -80,6 +80,32 @@ namespace video {
 #endif
   }
 
+  bool allow_encoder_probing() {
+    const auto devices {display_device::enumerate_devices()};
+
+#ifdef _WIN32
+    if (devices.empty() && platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
+      // We'll create a temporary virtual display for probing anyways.
+      return false;
+    }
+#else
+    // Ask the virtual display backend. With no active output (Hyprland: every monitor disabled or DPMS-off, which
+    // captures as black), probing happens on a temporary virtual display (main.cpp) and every app gets a virtual
+    // display (proc::proc_t::execute()). Without a working backend this cannot be told, and no virtual display could
+    // be created anyway, so probing goes ahead.
+    if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
+      const auto any_active = platf::vdisplay::any_display_active();
+      if (any_active && !*any_active) {
+        BOOST_LOG(info) << "No display is active (all outputs disabled or switched off); a virtual display will be used"sv;
+        return false;
+      }
+    }
+#endif
+
+    return allow_encoder_probing(devices);
+  }
+
+
   namespace {
     /**
      * @brief Identify the legacy video formats supported for compatibility clients.
@@ -90,22 +116,7 @@ namespace video {
     bool is_legacy_video_format(int video_format) {
       return video_format == format_mpeg2 || video_format == format_h263p;
     }
-
-    // Since Windows 11 24H2, it is possible that there will be no active devices present
-    // for some reason (probably a bug). Trying to probe encoders in such a state locks/breaks the DXGI
-    // and also the display device for Windows. So we must have at least 1 active device.
-    const bool at_least_one_device_is_active = std::any_of(std::begin(devices), std::end(devices), [](const auto &device) {
-      // If device has additional info, it is active.
-      return static_cast<bool>(device.m_info);
-    });
-
-    if (at_least_one_device_is_active) {
-      return true;
-    }
-
-    BOOST_LOG(error) << "No display devices are active at the moment! Cannot probe the encoders.";
-    return false;
-  }
+  }  // namespace
 
   /**
    * @brief Release context resources.
@@ -1492,8 +1503,8 @@ namespace video {
       .capabilities = {},
     },
     {},  // H.263+
-    // RC buffer size will be set in platform code if supported
-    LIMITED_GOP_SIZE | PARALLEL_ENCODING | NO_RC_BUF_LIMIT
+    // Apollo: the common encoder code sets the RC buffer size; VA-API handles large GOP values.
+    PARALLEL_ENCODING
   };
 
   #ifdef SUNSHINE_BUILD_VULKAN
@@ -1675,7 +1686,7 @@ namespace video {
   int active_hevc_mode;  ///< HEVC mode selected by the most recent encoder probe.
   int active_av1_mode;  ///< AV1 mode selected by the most recent encoder probe.
   bool last_encoder_probe_supported_ref_frames_invalidation = false;  ///< Whether the last probe found reference-frame invalidation support.
-  std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};  ///< YUV444 support discovered for each probed codec.
+  std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {true, true, true};  ///< YUV444 support discovered for each probed codec (Apollo: assumed until the first probe).
   std::array<bool, 3> last_encoder_probe_supported_dynamic_range_for_codec = {};  ///< 10-bit 4:2:0 support discovered for each probed codec.
   std::array<bool, 3> last_encoder_probe_supported_dynamic_range_yuv444_for_codec = {};  ///< 10-bit YUV444 support discovered for each probed codec.
 
@@ -1801,6 +1812,11 @@ namespace video {
     }
   }
 
+  void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index) {
+    static std::string empty_str = "";
+    refresh_displays(dev_type, display_names, current_display_index, empty_str);
+  }
+
   /**
    * @brief Run the shared display capture thread for asynchronous encoding.
    * @details Capture callbacks share this thread's session queues and reusable image pool.
@@ -1841,16 +1857,15 @@ namespace video {
 
     std::vector<std::string> display_names;
     int display_p = -1;
-    refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
-    capture_display_switches().poll(switch_display_event).apply(display_p, display_names.size(), applied_display_generation);
-    auto disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
-    if (!disp) {
-      return;
+    std::shared_ptr<platf::display_t> disp;
+    if (!proc::proc.display_name.empty()) {
+      disp = platf::display(encoder.platform_formats->dev_type, proc::proc.display_name, capture_ctxs.front().config);
     }
     if (!disp) {
       // Get all the monitor names now, rather than at boot, to
       // get the most up-to-date list available monitors
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+      capture_display_switches().poll(switch_display_event).apply(display_p, display_names.size(), applied_display_generation);
       disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
       if (disp) {
         proc::proc.display_name = display_names[display_p];
@@ -2782,9 +2797,11 @@ namespace video {
     });
 
     // set max frame time based on client-requested target framerate.
-    double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target : (config.framerate / 2);
-    std::chrono::duration<double, std::milli> max_frametime {1000.0 / minimum_fps_target};
-    BOOST_LOG(info) << "Minimum FPS target set to ~"sv << minimum_fps_target << "fps ("sv << max_frametime.count() << "ms)"sv;
+    double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target * 1000 : std::max(config.encodingFramerate / 5, 10000);
+    auto max_frametime = std::chrono::nanoseconds(1000ms) * 1000 / minimum_fps_target;
+    auto encode_frame_threshold = std::chrono::nanoseconds(1000ms) * 1000 / config.encodingFramerate;
+    BOOST_LOG(info) << "Minimum FPS target set to ~"sv << (minimum_fps_target / 2000) << "fps ("sv << max_frametime * 2 << ")"sv;
+    BOOST_LOG(info) << "Encoding Frame threshold: "sv << encode_frame_threshold;
 
     auto shutdown_event = mail->event<bool>(mail::shutdown);
     auto packets = mail::man->queue<packet_t>(mail::video_packets);
@@ -2933,15 +2950,7 @@ namespace video {
     auto offsetX = (config.width - w2) * 0.5f;
     auto offsetY = (config.height - h2) * 0.5f;
 
-    // The letterboxing above is in captured-frame pixels. When the backend reports a logical size
-    // (offsets and layout in scaled desktop units, e.g. Wayland), convert so that input coordinates
-    // come out in that same space.
-    float to_desktop_units = 1.0f;
-    if (display->logical_width > 0 && wd > 0) {
-      to_desktop_units = display->logical_width / wd;
-    }
-
-    input::touch_port_t port {
+    return input::touch_port_t {
       {
         display->offset_x,
         display->offset_y,
@@ -2963,11 +2972,6 @@ namespace video {
       display_env_logical_width,
       display_env_logical_height
     };
-    port.env_x = display->env_x;
-    port.env_y = display->env_y;
-    port.logical_width = display->logical_width > 0 ? display->logical_width : display->width;
-    port.logical_height = display->logical_height > 0 ? display->logical_height : display->height;
-    return port;
   }
 
   /**
@@ -3698,6 +3702,18 @@ namespace video {
       test_yuv444(encoder.av1, format_av1);
       test_yuv420_hdr(encoder.av1, format_av1);
       test_yuv444_hdr(encoder.av1, format_av1);
+
+      // Apollo: the tests above only show that the encoder can produce 10-bit streams; on an SDR display they encode
+      // 10-bit SDR. Advertising Main10 makes clients offer HDR, so only do it when HDR can actually reach them.
+      const bool any_10bit = encoder.hevc[encoder_t::DYNAMIC_RANGE] || encoder.av1[encoder_t::DYNAMIC_RANGE] ||
+                             encoder.hevc[encoder_t::DYNAMIC_RANGE_YUV444] || encoder.av1[encoder_t::DYNAMIC_RANGE_YUV444];
+      if (disp && !disp->hdr_supported() && any_10bit) {
+        BOOST_LOG(info) << encoder.name << ": the display cannot deliver HDR here; not advertising HDR (10-bit) codec profiles"sv;
+        encoder.hevc[encoder_t::DYNAMIC_RANGE] = false;
+        encoder.av1[encoder_t::DYNAMIC_RANGE] = false;
+        encoder.hevc[encoder_t::DYNAMIC_RANGE_YUV444] = false;
+        encoder.av1[encoder_t::DYNAMIC_RANGE_YUV444] = false;
+      }
     }
 
     encoder.h264[encoder_t::VUI_PARAMETERS] = encoder.h264[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];

@@ -60,6 +60,9 @@ namespace stream {
      * @return Allocated object or identifier, or an error value on failure.
      */
     std::shared_ptr<session_t> alloc(config_t &config, rtsp_stream::launch_session_t &launch_session);
+    std::string uuid(const session_t& session);
+    bool uuid_match(const session_t& session, const std::string_view& uuid);
+    bool update_device_info(session_t& session, const std::string& name, const crypto::PERM& newPerm);
     /**
      * @brief Start a streaming session for the supplied peer address.
      *
@@ -74,6 +77,7 @@ namespace stream {
      * @param session Active streaming or pairing session for the request.
      */
     void stop(session_t &session);
+    void graceful_stop(session_t& session);
     /**
      * @brief Wait for worker threads owned by the session to exit.
      *
@@ -87,6 +91,7 @@ namespace stream {
      * @return Current lifecycle state for the stream session.
      */
     state_e state(session_t &session);
+    inline bool send(session_t& session, const std::string_view &payload);
     /**
      * @brief Return the paired client certificate for a stream session.
      *

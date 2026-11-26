@@ -5,6 +5,7 @@
 
 // test includes
 #include "../tests_common.h"
+#include "platform/private_pulse.h"
 
 // local includes
 #include <src/audio.h>

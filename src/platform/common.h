@@ -549,6 +549,13 @@ namespace platf {
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;  ///< Capture timestamp associated with the frame.
 
     /**
+     * @brief The content is the same as the previous frame's. Damage-driven capture backends re-send the newest
+     *        frame while the screen does not change; the encoder encodes it but does not count it against the
+     *        frame rate, so the next real frame is not dropped for arriving too soon after it.
+     */
+    bool repeat {};
+
+    /**
      * @brief Destroy the image.
      */
     virtual ~img_t() = default;
@@ -871,19 +878,6 @@ namespace platf {
     int logical_height {0};  ///< Height of the captured display after display scaling.
     int transform {0};  ///< Wayland output transform (rotation) of the captured display.
 
-    /**
-     * Size of this display in the coordinate space of offset_x/offset_y and env_*.
-     * 0 means the same as width/height. Backends set it when that space is not hardware pixels,
-     * e.g. Wayland, where offsets and the layout are in logical (scaled) pixels.
-     */
-    int logical_width {0}, logical_height {0};
-
-    /**
-     * Top-left corner of the env_width x env_height bounding box, in the same space as offset_x/offset_y.
-     * 0 unless the desktop layout has outputs at negative coordinates (Wayland sets it to the layout minimum).
-     */
-    int env_x {0}, env_y {0};
-
   protected:
     // collect capture timing data (at loglevel debug)
     logging::time_delta_periodic_logger sleep_overshoot_logger = {debug, "Frame capture sleep overshoot"};  ///< Periodic logger for capture sleep overshoot measurements.
@@ -979,6 +973,8 @@ namespace platf {
    * @return Hardware MAC address string, or an empty string when it cannot be resolved.
    */
   std::string get_mac_address(const std::string_view &address);
+
+  std::string get_local_ip_for_gateway();
 
   /**
    * @brief Convert a socket address to a printable IP address.
@@ -1398,7 +1394,7 @@ namespace platf {
    */
   platform_caps::caps_t get_capabilities();
 
-  constexpr auto SERVICE_NAME = "Sunshine";  ///< mDNS service instance name advertised for GameStream discovery.
+  constexpr auto SERVICE_NAME = "Apollo";  ///< mDNS service instance name advertised for GameStream discovery.
   constexpr auto SERVICE_TYPE = "_nvstream._tcp";  ///< mDNS service type advertised for GameStream discovery.
 
   namespace publish {
@@ -1459,6 +1455,16 @@ namespace platf {
    * @return A unique pointer to timer
    */
   std::unique_ptr<high_precision_timer> create_high_precision_timer();
+
+  /**
+   * @brief The clipboard text.
+   * @return The text ("" for an empty or non-text clipboard), or std::nullopt if it could not be read.
+   */
+  std::optional<std::string>
+  get_clipboard();
+
+  bool
+  set_clipboard(const std::string& content);
 
   /**
    * @brief Check is the current process is running with elevated privileges (e.g. system admin/etc.)

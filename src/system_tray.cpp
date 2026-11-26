@@ -9,22 +9,22 @@
    * @def TRAY_ICON
    * @brief Path to the default system tray icon.
    */
-  #define TRAY_ICON WEB_DIR "images/logo-sunshine.svg"
+  #define TRAY_ICON WEB_DIR "images/logo-apollo.svg"
   /**
    * @def TRAY_ICON_PLAYING
    * @brief Path to the system tray icon used while streaming.
    */
-  #define TRAY_ICON_PLAYING WEB_DIR "images/sunshine-playing.svg"
+  #define TRAY_ICON_PLAYING WEB_DIR "images/apollo-playing.svg"
   /**
    * @def TRAY_ICON_PAUSING
    * @brief Path to the system tray icon used while streaming is paused.
    */
-  #define TRAY_ICON_PAUSING WEB_DIR "images/sunshine-pausing.svg"
+  #define TRAY_ICON_PAUSING WEB_DIR "images/apollo-pausing.svg"
   /**
    * @def TRAY_ICON_LOCKED
    * @brief Path to the system tray icon used for pairing requests.
    */
-  #define TRAY_ICON_LOCKED WEB_DIR "images/sunshine-locked.svg"
+  #define TRAY_ICON_LOCKED WEB_DIR "images/apollo-locked.svg"
   /**
    * @def TRAY_ICON_VIRTUALHID
    * @brief Path to the Virtual HID Broker notification icon.
@@ -179,8 +179,7 @@ namespace system_tray {
     launch_ui();
   }
 
-  void
-  tray_force_stop_cb(struct tray_menu *item) {
+  void tray_force_stop_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Force stop from system tray"sv;
     proc::proc.terminate();
   }
@@ -302,23 +301,16 @@ namespace system_tray {
     .menu =
       (struct tray_menu[]) {
         // Tray menu labels currently use the project's English source strings.
-        {.text = "Open Sunshine", .cb = tray_open_ui_cb},
+        {.text = "Open Apollo", .cb = tray_open_ui_cb},
         {.text = "-"},
+        // Apollo: menu[2] shows the running app and force-closes it; update_tray_playing/stopped rewrite its label.
+        {.text = TRAY_MSG_NO_APP_RUNNING, .cb = tray_force_stop_cb},
   #if defined(_WIN32) || defined(__APPLE__)
         {.text = "Virtual HID Broker", .submenu = virtualhid_license_menu.data()},
         {.text = "-"},
   #endif
-        {.text = "Donate",
-         .submenu =
-           (struct tray_menu[]) {
-             {.text = "GitHub Sponsors", .cb = tray_donate_github_cb},
-             {.text = "Patreon", .cb = tray_donate_patreon_cb},
-             {.text = "PayPal", .cb = tray_donate_paypal_cb},
-             {.text = nullptr}
-           }},
-        {.text = "-"},
-  // Currently display device settings are only supported on Windows
-  #ifdef _WIN32
+  // Display device settings are supported on Windows and on Hyprland (Wayland builds)
+  #if defined(_WIN32) || defined(SUNSHINE_BUILD_WAYLAND)
         {.text = "Reset Display Device Config", .cb = tray_reset_display_device_config_cb},
   #endif
         {.text = "Restart", .cb = tray_restart_cb},
@@ -864,12 +856,16 @@ namespace system_tray {
     tray.icon = tray.allIconPaths[2];
     tray_update(&tray);
     tray.icon = tray.allIconPaths[2];
-    tray.notification_title = "Stream Started";
+    tray.notification_title = "App launched";
 
-    static std::string msg = std::format("Streaming started for {}", app_name);
+    static std::string msg;
+    static std::string force_close_msg;
+    msg = std::format("{} launched.", app_name);
+    force_close_msg = std::format("Force close [{}]", app_name);
     tray.notification_text = msg.c_str();
-    tray.tooltip = msg.c_str();
     tray.notification_icon = tray.allIconPaths[2];
+    tray.tooltip = PROJECT_NAME;
+    tray.menu[2].text = force_close_msg.c_str();
     tray_update(&tray);
   }
 
@@ -886,12 +882,13 @@ namespace system_tray {
     tray.icon = tray.allIconPaths[3];
     tray_update(&tray);
 
-    static std::string msg = std::format("Streaming paused for {}", app_name);
+    static std::string msg;
+    msg = std::format("Streaming paused for {}", app_name);
     tray.icon = tray.allIconPaths[3];
     tray.notification_title = "Stream Paused";
     tray.notification_text = msg.c_str();
-    tray.tooltip = msg.c_str();
     tray.notification_icon = tray.allIconPaths[3];
+    tray.tooltip = PROJECT_NAME;
     tray_update(&tray);
   }
 
@@ -908,37 +905,36 @@ namespace system_tray {
     tray.icon = tray.allIconPaths[0];
     tray_update(&tray);
 
-    static std::string msg = std::format("Application {} successfully stopped", app_name);
+    static std::string msg;
+    msg = std::format("Streaming stopped for {}", app_name);
     tray.icon = tray.allIconPaths[0];
     tray.notification_icon = tray.allIconPaths[0];
     tray.notification_title = "Application Stopped";
-    tray.notification_text = msg;
+    tray.notification_text = msg.c_str();
     tray.tooltip = PROJECT_NAME;
     tray.menu[2].text = TRAY_MSG_NO_APP_RUNNING;
     tray_update(&tray);
   }
 
-  void
-  update_tray_launch_error(std::string app_name, int exit_code) {
-    if (!tray_initialized) {
+  void update_tray_launch_error(std::string app_name, int exit_code) {
+    const std::scoped_lock lock(tray_state_mutex());
+    if (!tray_initialized_state().load()) {
       return;
     }
 
-    tray.notification_title = NULL;
-    tray.notification_text = NULL;
-    tray.notification_cb = NULL;
-    tray.notification_icon = NULL;
-    tray.icon = TRAY_ICON;
+    tray.notification_title = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_cb = nullptr;
+    tray.notification_icon = nullptr;
+    tray.icon = tray.allIconPaths[0];
     tray_update(&tray);
-    char msg[256];
-    snprintf(msg, std::size(msg), "Application %s exited too fast with code %d. Click here to terminate the stream.", app_name.c_str(), exit_code);
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
-    tray.icon = TRAY_ICON;
-    tray.notification_icon = TRAY_ICON;
+
+    static std::string msg;
+    msg = std::format("Application {} exited too fast with code {}. Click here to terminate the stream.", app_name, exit_code);
+    tray.icon = tray.allIconPaths[0];
+    tray.notification_icon = tray.allIconPaths[0];
     tray.notification_title = "Launch Error";
-    tray.notification_text = msg;
+    tray.notification_text = msg.c_str();
     tray.notification_cb = []() {
       BOOST_LOG(info) << "Force stop from notification"sv;
       proc::proc.terminate();
@@ -970,49 +966,45 @@ namespace system_tray {
     tray_update(&tray);
   }
 
-  void
-  update_tray_paired(std::string device_name) {
-    if (!tray_initialized) {
+  void update_tray_paired(std::string device_name) {
+    const std::scoped_lock lock(tray_state_mutex());
+    if (!tray_initialized_state().load()) {
       return;
     }
 
-    tray.notification_title = NULL;
-    tray.notification_text = NULL;
-    tray.notification_cb = NULL;
-    tray.notification_icon = NULL;
+    tray.notification_title = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_cb = nullptr;
+    tray.notification_icon = nullptr;
     tray_update(&tray);
-    char msg[256];
-    snprintf(msg, std::size(msg), "Device %s paired Succesfully. Please make sure you have access to the device.", device_name.c_str());
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
+
+    static std::string msg;
+    msg = std::format("Device {} paired Succesfully. Please make sure you have access to the device.", device_name);
     tray.notification_title = "Device Paired Succesfully";
-    tray.notification_text = msg;
-    tray.notification_icon = TRAY_ICON;
+    tray.notification_text = msg.c_str();
+    tray.notification_icon = tray.allIconPaths[0];
     tray.tooltip = PROJECT_NAME;
     tray_update(&tray);
   }
 
-  void
-  update_tray_client_connected(std::string client_name) {
-    if (!tray_initialized) {
+  void update_tray_client_connected(std::string client_name) {
+    const std::scoped_lock lock(tray_state_mutex());
+    if (!tray_initialized_state().load()) {
       return;
     }
 
-    tray.notification_title = NULL;
-    tray.notification_text = NULL;
-    tray.notification_cb = NULL;
-    tray.notification_icon = NULL;
-    tray.icon = TRAY_ICON;
+    tray.notification_title = nullptr;
+    tray.notification_text = nullptr;
+    tray.notification_cb = nullptr;
+    tray.notification_icon = nullptr;
+    tray.icon = tray.allIconPaths[0];
     tray_update(&tray);
-    char msg[256];
-    snprintf(msg, std::size(msg), "%s has connected to the session.", client_name.c_str());
-  #ifdef _WIN32
-    strncpy(msg, utf8ToAcp(msg).c_str(), std::size(msg) - 1);
-  #endif
+
+    static std::string msg;
+    msg = std::format("{} has connected to the session.", client_name);
     tray.notification_title = "Client Connected";
-    tray.notification_text = msg;
-    tray.notification_icon = TRAY_ICON;
+    tray.notification_text = msg.c_str();
+    tray.notification_icon = tray.allIconPaths[0];
     tray.tooltip = PROJECT_NAME;
     tray_update(&tray);
   }
@@ -1049,6 +1041,17 @@ namespace system_tray {
   }
 
   int init_tray_threaded() {
+    {
+      // Apollo: show the instance name and Web UI port in the first menu entry.
+      static const std::string title_str = "Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")";
+      const std::scoped_lock lock(tray_state_mutex());
+      tray.menu[0].text = title_str.c_str();
+
+      if (config::sunshine.hide_tray_controls) {
+        tray.menu[1].text = nullptr;
+      }
+    }
+
     try {
       auto &worker = tray_worker_thread();
       if (worker.joinable()) {

@@ -47,6 +47,17 @@ else()
     endif()
 endif()
 
+# Elevated commands (HYP-23): the helper Apollo runs through pkexec or sudo, and the polkit action naming it.
+# Not for AppImage/Flatpak: polkit needs a fixed path, and pkexec cannot run from a sandbox.
+if(NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK})
+    install(PROGRAMS "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/apollo-run-elevated"
+            DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/apollo")
+    configure_file("${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/run-elevated.policy.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_FQDN}.run-elevated.policy" @ONLY)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_FQDN}.run-elevated.policy"
+            DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/polkit-1/actions")
+endif()
+
 # RPM specific
 set(CPACK_RPM_PACKAGE_LICENSE "GPLv3")
 
@@ -81,9 +92,8 @@ if(FREEBSD)
     list(APPEND CPACK_POST_BUILD_SCRIPTS "${CMAKE_MODULE_PATH}/packaging/freebsd_custom_cpack.cmake")
 endif()
 
-# Apply setcap for RPM
-# https://github.com/coreos/rpm-ostree/discussions/5036#discussioncomment-10291071
-set(CPACK_RPM_USER_FILELIST "%caps(cap_sys_admin,cap_sys_nice+p) ${SUNSHINE_EXECUTABLE_PATH}")
+# No %caps(cap_sys_admin,cap_sys_nice+p) on the RPM: only KMS capture and the high-priority EGL context need them,
+# and postinst sets them on request (APOLLO_ENABLE_KMS_CAPTURE=1). File metadata would grant them on every install.
 
 # Dependencies
 set(CPACK_DEB_COMPONENT_INSTALL ON)
@@ -154,7 +164,7 @@ set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_RPM_PACKAGE_AUTOREQ ON)
 
 # application icon
-install(FILES "${CMAKE_SOURCE_DIR}/sunshine.svg"
+install(FILES "${CMAKE_SOURCE_DIR}/apollo.svg"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps"
         RENAME "${PROJECT_FQDN}.svg")
 

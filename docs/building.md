@@ -86,6 +86,45 @@ Dependencies vary depending on the distribution. You can reference our
 dependencies we use in Debian-based, Fedora-based and Arch-based distributions. Please submit a PR if you would like to extend the
 script to support other distributions.
 
+##### Arch Linux + Hyprland
+```bash
+sudo pacman -S --needed base-devel cmake ninja boost libva libdrm wayland wayland-protocols libpulse libevdev \
+  avahi libayatana-appindicator libnotify nodejs npm miniupnpc nlohmann-json libcap numactl opus cuda
+git submodule update --init --recursive
+scripts/hyprland/build.sh        # configures build/ with tests, CUDA and the system Boost
+scripts/hyprland/test.sh         # runs unit tests, skipping known baseline failures
+```
+`BOOST_ALLOW_NEWER_SYSTEM=ON` lets CMake use Arch's newer Boost instead of fetching Boost 1.89, whose CMake files
+fail under CMake 4.
+
+Without an NVIDIA GPU, leave out `cuda` and pass extra CMake options through `CMAKE_EXTRA_ARGS` (this is what CI does,
+see `.github/workflows/ci.yml`):
+```bash
+CMAKE_EXTRA_ARGS="-DSUNSHINE_ENABLE_CUDA=OFF -DCUDA_FAIL_ON_MISSING=OFF" scripts/hyprland/build.sh
+```
+
+###### Live compositor tests
+Test suites named `*LiveTest` talk to a compositor and skip themselves when there is none. To run them against a
+private, headless Hyprland instead of your desktop session (needs `hyprland` and a C++ compiler):
+```bash
+scripts/hyprland/test-live.sh    # starts a headless Hyprland, runs the *LiveTest suites, stops it
+```
+The instance gets its own `XDG_RUNTIME_DIR` under `/tmp` and two headless outputs (`APOLLO-TEST-1` at
+1920x1080@60, `APOLLO-TEST-2` at 1280x720@30). It never opens a seat, so it does not touch your monitors or input
+devices, and the script drops `WAYLAND_DISPLAY` and `HYPRLAND_INSTANCE_SIGNATURE` so the tests cannot reach your
+session. Hyprland's logs end up in `build/tests/hyprland-live/`. Name new compositor suites `*LiveTest` and the script
+picks them up, or add them to `live_suites` in the script.
+
+Hyprland 0.57 has no headless-only mode: it needs a DRM device even with only headless outputs.
+`scripts/hyprland/run-headless-hyprland.sh` builds a small `LD_PRELOAD` shim (`headless-drm-shim.cpp`) that hands
+the headless backend the first GPU render node, or a [vkms](https://docs.kernel.org/gpu/vkms.html) card node on
+machines without a GPU (`sudo modprobe vkms`; Mesa then renders in software; do not load it under a running
+desktop, whose compositor would add the vkms output as a monitor). With neither, `test-live.sh` exits with
+status 77 (skipped). To use the instance for something else:
+```bash
+eval "$(scripts/hyprland/run-headless-hyprland.sh start -o 2560x1440@120)"   # exports WAYLAND_DISPLAY etc.
+hyprctl monitors
+scripts/hyprland/run-headless-hyprland.sh stop
 ##### KMS Capture
 If you are using KMS, patching the Sunshine binary with `setcap` is required. Some post-install scripts handle this. If building
 from source and using the binary directly, this will also work:
@@ -240,8 +279,8 @@ MSYS2 Node.js package is not supported because its shared runtime cannot load th
 Ensure [git](https://git-scm.com) is installed on your system, then clone the repository using the following command:
 
 ```bash
-git clone https://github.com/SunshineStream/Sunshine.git --recurse-submodules
-cd sunshine
+git clone https://github.com/brpjerry/apollo-hyprland.git
+cd apollo-hyprland
 mkdir build
 ```
 

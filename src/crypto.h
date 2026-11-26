@@ -148,6 +148,7 @@ namespace crypto {
     bool enable_legacy_ordering;
     bool allow_client_commands;
     bool always_use_virtual_display;
+    bool enabled = true;  ///< Whether this paired client may connect (Sunshine's client enable/disable).
   };
 
   using p_named_cert_t = std::shared_ptr<named_cert_t>;
@@ -262,6 +263,13 @@ namespace crypto {
     void add(x509_t &&cert);
 
     /**
+     * @brief Add a paired client's certificate to the verification chain (Apollo).
+     *
+     * @param named_cert_p Paired client whose certificate is trusted; returned by verify() on a match.
+     */
+    void add(const p_named_cert_t &named_cert_p);
+
+    /**
      * @brief Remove all certificates from the verification chain.
      */
     void clear();
@@ -274,8 +282,26 @@ namespace crypto {
      */
     const char *verify(x509_t::element_type *cert);
 
+    /**
+     * @brief Verify that a certificate exactly matches one stored trust anchor and return its paired client (Apollo).
+     *
+     * @param cert Client certificate to verify.
+     * @param named_cert_out Set to the matching paired client (nullptr for certificates added without one).
+     * @return `nullptr` when the exact certificate is trusted, otherwise an OpenSSL error string.
+     */
+    const char *verify(x509_t::element_type *cert, p_named_cert_t &named_cert_out);
+
   private:
-    std::vector<std::pair<x509_t, x509_store_t>> _certs;
+    /**
+     * @brief Trusted certificate with the store used to verify against it.
+     */
+    struct trusted_cert_t {
+      p_named_cert_t named_cert;  ///< Apollo: paired client owning the certificate, if any.
+      x509_t cert;  ///< Trusted certificate.
+      x509_store_t store;  ///< Store holding only this certificate.
+    };
+
+    std::vector<trusted_cert_t> _certs;  ///< Trusted certificates, one store each.
     x509_store_ctx_t _cert_ctx {X509_STORE_CTX_new()};  ///< Verification context created for each certificate chain.
   };
 

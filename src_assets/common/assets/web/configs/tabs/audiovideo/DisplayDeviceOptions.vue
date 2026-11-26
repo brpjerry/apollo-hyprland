@@ -49,26 +49,19 @@ function addRemappingEntry() {
 </script>
 
 <template>
-  <!-- Windows: libdisplaydevice. Linux: Hyprland's settings manager (src/platform/linux/hyprland/settings_manager.*),
-       which supports every option here. -->
-  <template v-if="platform === 'windows' || platform === 'linux'">
+  <PlatformLayout :platform="platform">
+    <template #windows>
       <div class="mb-3 accordion">
         <div class="accordion-item">
           <h2 class="accordion-header">
-            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+            <button class="accordion-button" type="button" data-bs-toggle="collapse"
                     data-bs-target="#panelsStayOpen-collapseOne">
               {{ $t('config.dd_options_header') }}
             </button>
           </h2>
-          <div id="panelsStayOpen-collapseOne" class="accordion-collapse collapse"
+          <div id="panelsStayOpen-collapseOne" class="accordion-collapse collapse show"
                aria-labelledby="panelsStayOpen-headingOne">
             <div class="accordion-body">
-              <div class="alert alert-info" v-if="platform === 'windows'">
-                <i class="fa-solid fa-xl fa-circle-info"></i> {{ $t('config.dd_resolution_option_vdisplay_desc') }} {{ $t('config.dd_resolution_option_multi_instance_desc') }}
-              </div>
-              <div class="alert alert-info" v-if="platform === 'linux'">
-                <i class="fa-solid fa-xl fa-circle-info"></i> {{ $t('config.dd_linux_hyprland_desc') }} {{ $t('config.dd_resolution_option_multi_instance_desc') }}
-              </div>
 
               <!-- Configuration option -->
               <div class="mb-3">
@@ -127,6 +120,30 @@ function addRemappingEntry() {
                   </label>
                   <input type="text" class="form-control" id="dd_manual_refresh_rate" placeholder="59.9558"
                          v-model="config.dd_manual_refresh_rate" />
+                </div>
+              </div>
+
+              <!-- HDR option -->
+              <div class="mb-3" v-if="config.dd_configuration_option !== 'disabled'">
+                <label for="dd_hdr_option" class="form-label">
+                  {{ $t('config.dd_hdr_option') }}
+                </label>
+                <select id="dd_hdr_option" class="mb-3 form-select" v-model="config.dd_hdr_option">
+                  <option value="disabled">{{ $t('config.dd_hdr_option_disabled') }}</option>
+                  <option value="auto">{{ $t('config.dd_hdr_option_auto') }}</option>
+                </select>
+                <!-- HDR toggle -->
+                <label for="dd_wa_hdr_toggle_delay" class="form-label">
+                  {{ $t('config.dd_wa_hdr_toggle_delay') }}
+                </label>
+                <input type="number" class="form-control" id="dd_wa_hdr_toggle_delay" placeholder="0" min="0" max="3000"
+                       v-model="config.dd_wa_hdr_toggle_delay" />
+                <div class="form-text">
+                  {{ $t('config.dd_wa_hdr_toggle_delay_desc_1') }}
+                  <br>
+                  {{ $t('config.dd_wa_hdr_toggle_delay_desc_2') }}
+                  <br>
+                  {{ $t('config.dd_wa_hdr_toggle_delay_desc_3') }}
                 </div>
               </div>
 

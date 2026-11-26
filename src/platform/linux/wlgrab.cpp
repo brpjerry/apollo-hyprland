@@ -1,6 +1,6 @@
 /**
  * @file src/platform/linux/wlgrab.cpp
- * @brief Definitions for wlr-screencopy capture.
+ * @brief Definitions for wlgrab capture.
  */
 // standard includes
 #include <charconv>
@@ -338,7 +338,7 @@ namespace wl {
   /**
    * @brief Wayland screencopy capture backend shared by RAM and VRAM paths.
    */
-  class wlr_t: public platf::display_t {
+  class wlr_t: public platf::display_t, public capture_stats_source_t {
   public:
     /**
      * @brief Initialize Wayland screencopy capture for the selected output.
@@ -435,6 +435,9 @@ namespace wl {
       apply_monitor_geometry(*this, *monitor);
       this->monitor = monitor;
 
+      // HDR state and metadata of the output. Without wp-color-management the output is treated as SDR.
+      color.open(monitor->name);
+
       platf::desktop_geometry_t desktop;
       for (const auto &monitor_entry : interface.monitors) {
         desktop.add(monitor_entry->viewport);
@@ -459,6 +462,35 @@ namespace wl {
      */
     int dummy_img(platf::img_t *img) override {
       return 0;
+    }
+
+    /**
+     * @brief Capture counters for tests and diagnostics.
+     * @details The screencopy backend allocates a buffer per frame, so `buffers_allocated` stays 0.
+     * @return Frames captured and delivered so far.
+     */
+    capture_stats_t capture_stats() const override {
+      return stats;
+    }
+
+    bool is_hdr() override {
+      return hdr_frames && color.is_hdr();
+    }
+
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      if (!is_hdr()) {
+        std::memset(&metadata, 0, sizeof(metadata));
+        return false;
+      }
+      return fill_hdr_metadata(*color.description(), metadata);
+    }
+
+    bool hdr_supported() override {
+      if (!hdr_frames) {
+        return false;
+      }
+      // Apollo's Hyprland virtual displays can be put in HDR mode (platf::vdisplay::set_hdr()).
+      return color.is_hdr() || (color.compositor_supports_hdr10() && platf::vdisplay::status() == platf::vdisplay::status_e::ok);
     }
 
     /**
@@ -496,6 +528,7 @@ namespace wl {
       } while (dmabuf.status == dmabuf_t::WAITING);
 
       auto current_frame = dmabuf.current_frame;
+      ++stats.frames_captured;
 
       auto frame_time = damage_frame_time(current_frame->frame_timestamp, std::chrono::steady_clock::now(), delay);
       next_request = next_damage_request(next_request, frame_time, delay);
@@ -562,8 +595,8 @@ namespace wl {
         // The output switched between SDR and HDR (or its HDR metadata changed): the encoder has to be recreated
         // with the new colorspace.
         if (color.poll_changed()) {
-          BOOST_LOG(info) << "Output colors changed; reinitializing capture"sv;
-          return platf::capture_e::reinit;
+          BOOST_LOG(info) << "[wlgrab] Output colors changed; reinitializing capture"sv;
+          return reinit;
         }
 
         std::shared_ptr<platf::img_t> img_out;
@@ -575,6 +608,9 @@ namespace wl {
             return status;
           case timeout:
           case ok:
+            if (status == ok) {
+              ++stats.frames_delivered;
+            }
             if (!push_captured_image_cb(std::move(img_out), status == ok)) {
               return ok;
             }
@@ -614,6 +650,12 @@ namespace wl {
 
     wl_output *output;  ///< Wayland output selected for capture.
     wl::monitor_t *monitor {};  ///< Monitor selected for capture.
+
+    capture_stats_t stats;  ///< Capture counters (capture_stats()).
+    output_color_t color;  ///< The output's color description (HDR state and metadata).
+    /// The encode path of this backend turns captured frames into PQ for HDR streams. Until it does, an HDR
+    /// output is streamed as SDR.
+    bool hdr_frames {false};
   };
 
   /**
@@ -635,7 +677,6 @@ namespace wl {
       if (status != platf::capture_e::ok) {
         return status;
       }
-      auto frame_timestamp = std::chrono::steady_clock::now();
 
       auto current_frame = dmabuf.current_frame;
 
@@ -668,10 +709,7 @@ namespace wl {
         return platf::capture_e::interrupted;
       }
 
-      if (!read_buffer(egl_display.get(), buffer, *img_out, screencopy.y_invert)) {
-        return platf::capture_e::reinit;
-      }
-      screencopy.pool.slots.consumed(slot);
+      gl::ctx.BindTexture(GL_TEXTURE_2D, (*rgb_opt)->tex[0]);
 
       // Don't remove these lines, see https://github.com/LizardByte/Sunshine/issues/453
       int h;
@@ -697,7 +735,7 @@ namespace wl {
      * @return 0 on success; nonzero or negative platform status on failure.
      */
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
-      if (wlr_t::init(hwdevice_type, display_name, config, true)) {
+      if (wlr_t::init(hwdevice_type, display_name, config)) {
         return -1;
       }
 
@@ -768,6 +806,11 @@ namespace wl {
    */
   class wlr_vram_t: public wlr_t {
   public:
+    wlr_vram_t() {
+      // The GL converter turns the SDR frames of an HDR output into PQ (output_color_t::sdr_white_nits()).
+      hdr_frames = true;
+    }
+
     /**
      * @brief Capture a display frame into the provided image object.
      *
@@ -783,13 +826,6 @@ namespace wl {
       auto status = wlr_t::acquire_frame(pull_free_image_cb, img_out, timeout, cursor, mods);
       if (status != platf::capture_e::ok) {
         return status;
-      }
-      auto frame_timestamp = std::chrono::steady_clock::now();
-
-      auto slot = *screencopy.pool.slots.ready_slot();
-      const auto &spec = screencopy.pool[slot].spec;
-      if ((int) spec.width != width || (int) spec.height != height) {
-        return platf::capture_e::reinit;
       }
 
       auto current_frame = dmabuf.current_frame;
@@ -808,12 +844,16 @@ namespace wl {
       if (!pull_free_image_cb(img_out)) {
         return platf::capture_e::interrupted;
       }
+      auto img = (egl::img_descriptor_t *) img_out.get();
+      img->reset();
 
       ++sequence;
       img->sequence = sequence;
 
       img->sd = current_frame->sd;
       img->frame_timestamp = current_frame->frame_timestamp;
+      img->y_invert = current_frame->shm_y_invert;
+      img->sdr_white_nits = color.sdr_white_nits();
 
       // Prevent dmabuf from closing the file descriptors.
       current_frame->sd.fds.fill(-1);
@@ -946,11 +986,22 @@ namespace platf {
   }
 
   /**
+   * @brief Whether the compositor offers wlr-screencopy (and xdg-output), whatever outputs it has right now.
+   */
+  bool wl_capture_supported() {
+    wl::display_t display;
+    if (display.init()) {
+      return false;
+    }
+    wl::interface_t interface;
+    interface.listen(display.registry());
+    display.roundtrip();
+    return interface[wl::interface_t::XDG_OUTPUT] && interface[wl::interface_t::WLR_EXPORT_DMABUF];
+  }
+
+  /**
    * @brief Enumerate capture display names reported by the Wayland compositor.
    */
-  std::vector<std::string> wl_display_names() {
-    std::vector<std::string> display_names;
-
   std::vector<std::string> wl_display_names() {
     wl::display_t display;
     if (display.init()) {
@@ -958,37 +1009,17 @@ namespace platf {
     }
 
     wl::interface_t interface;
-    interface.listen(display.registry());
-
-    display.roundtrip();
-
-    if (!interface[wl::interface_t::XDG_OUTPUT]) {
-      BOOST_LOG(warning) << "[wlgrab] Missing Wayland wire for xdg_output"sv;
+    if (!wl::enumerate_outputs(display, interface)) {
       return {};
     }
 
     if (!interface[wl::interface_t::WLR_EXPORT_DMABUF]) {
-      BOOST_LOG(warning) << "[wlgrab] Missing Wayland wire for wlr-export-dmabuf"sv;
+      BOOST_LOG(warning) << "Missing Wayland wire for wlr-screencopy"sv;
       return {};
     }
 
-    for (auto &monitor : interface.monitors) {
-      monitor->listen(interface.output_manager);
-    }
-
-    display.roundtrip();
-
-    BOOST_LOG(info) << "[wlgrab] -------- Start of Wayland monitor list --------"sv;
-
-    for (int x = 0; x < interface.monitors.size(); ++x) {
-      auto monitor = interface.monitors[x].get();
-
-      BOOST_LOG(info) << "[wlgrab] Monitor " << x << " is "sv << monitor->name << ": "sv << monitor->description;
-
-      display_names.emplace_back(monitor->name.empty() ? std::to_string(x) : monitor->name);
-    }
-
-    BOOST_LOG(info) << "[wlgrab] --------- End of Wayland monitor list ---------"sv;
+    auto display_names = wl::output_names(interface);
+    wl::log_outputs(interface, display_names);
 
     return display_names;
   }

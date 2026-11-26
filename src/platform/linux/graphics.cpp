@@ -1109,10 +1109,45 @@ namespace egl {
 
     color_matrix.update(members.data(), members.size());
 
-    int planesCount = is_yuv444 ? 3 : 2;
+    yuv_program_count = is_yuv444 ? 3 : 2;
 
-    for (int i = 0; i < planesCount; i++) {
+    for (int i = 0; i < yuv_program_count; i++) {
       program[i].bind(color_matrix);
+    }
+
+    hdr_output = video::colorspace_is_hdr(colorspace);
+    update_transfer_uniforms();
+  }
+
+  void sws_t::set_sdr_white(float nits) {
+    if (nits == sdr_white_nits) {
+      return;
+    }
+    sdr_white_nits = nits;
+    update_transfer_uniforms();
+  }
+
+  void sws_t::update_transfer_uniforms() {
+    const bool convert = hdr_output && sdr_white_nits > 0;
+    const GLfloat white = sdr_white_nits / 10000.0f;
+    for (int x = 0; x < yuv_program_count; ++x) {
+      auto handle = program[x].handle();
+      auto loc_convert = gl::ctx.GetUniformLocation(handle, "sdr_to_pq");
+      auto loc_white = gl::ctx.GetUniformLocation(handle, "sdr_white");
+      if (loc_convert < 0 || loc_white < 0) {
+        // Shaders from an older install: they cannot convert.
+        if (convert) {
+          BOOST_LOG(warning) << "The installed YUV shaders cannot convert SDR input to HDR; colors will be wrong"sv;
+        }
+        continue;
+      }
+      gl::ctx.UseProgram(handle);
+      gl::ctx.Uniform1i(loc_convert, convert ? 1 : 0);
+      gl::ctx.Uniform1fv(loc_white, 1, &white);
+    }
+    gl::ctx.UseProgram(0);
+    if (convert) {
+      BOOST_LOG(info) << "Converting SDR frames to HDR (PQ, BT.2020) with white at "sv << sdr_white_nits << " cd/m2"sv;
     }
   }
 
@@ -1147,6 +1182,7 @@ namespace egl {
     sws.cursor_framebuffer.bind(&sws.tex[0], &sws.tex[1]);
 
     int programCount = is_yuv444 ? 3 : 2;
+    sws.yuv_program_count = programCount;
 
     for (int i = 0; i < programCount; i++) {
       sws.program[i].bind(sws.color_matrix);
@@ -1430,8 +1466,10 @@ namespace egl {
   }
 
   void sws_t::load_vram(img_descriptor_t &img, int offset_x, int offset_y, int texture, bool is_yuv444) {
-    // When only a sub-part of the image must be encoded...
-    const bool copy = offset_x || offset_y || img.sd.width != in_width || img.sd.height != in_height;
+    set_sdr_white(img.sdr_white_nits);
+
+    // When only a sub-part of the image must be encoded, or the image is upside down...
+    const bool copy = img.y_invert || offset_x || offset_y || img.sd.width != in_width || img.sd.height != in_height;
     if (copy) {
       auto framebuf = gl::frame_buf_t::make(1);
       framebuf.bind(&texture, &texture + 1);

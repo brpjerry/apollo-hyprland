@@ -125,13 +125,6 @@ private:
 TEST_P(PairingTest, Run) {
   auto [input, expected] = GetParam();
 
-  // A successful pairing saves and reloads the state file unless the state is fresh; keep the test off disk.
-  bool fresh_state = config::sunshine.flags[config::flag::FRESH_STATE];
-  config::sunshine.flags[config::flag::FRESH_STATE] = true;
-  auto restore_flags = util::fail_guard([&]() {
-    config::sunshine.flags[config::flag::FRESH_STATE] = fresh_state;
-  });
-
   boost::property_tree::ptree tree;
 
   setup(PRIVATE_KEY, PUBLIC_CERT);

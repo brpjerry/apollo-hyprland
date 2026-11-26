@@ -50,10 +50,16 @@ constexpr int IDX_HDR_MODE = 11;  ///< Control-stream message index for hdr mode
 constexpr int IDX_RUMBLE_TRIGGER_DATA = 12;  ///< Control-stream message index for rumble trigger data.
 constexpr int IDX_SET_MOTION_EVENT = 13;  ///< Control-stream message index for set motion event.
 constexpr int IDX_SET_RGB_LED = 14;  ///< Control-stream message index for set rgb led.
-constexpr int IDX_SET_ADAPTIVE_TRIGGERS = 15;  ///< Control-stream message index for set adaptive triggers.
-constexpr int IDX_SET_PLAYER_LEDS = 16;  ///< Control-stream message index for set player indicator LEDs.
+constexpr int IDX_EXEC_SERVER_CMD = 15;  ///< Apollo: control-stream message index for executing a server command.
+constexpr int IDX_SET_CLIPBOARD = 16;  ///< Apollo: control-stream message index for setting the host clipboard.
+constexpr int IDX_FILE_TRANSFER_NONCE_REQUEST = 17;  ///< Apollo: control-stream message index for a file transfer nonce request.
+constexpr int IDX_SET_ADAPTIVE_TRIGGERS = 18;  ///< Control-stream message index for set adaptive triggers.
+constexpr int IDX_SET_PLAYER_LEDS = 19;  ///< Control-stream message index for set player indicator LEDs.
 
-static const std::array<short, 17> packetTypes = {
+/**
+ * @brief GameStream control packet types, indexed by the IDX_* constants above.
+ */
+static const std::array<short, 20> packetTypes = {
   0x0305,  // Start A
   0x0307,  // Start B
   0x0301,  // Invalidate reference frames
@@ -567,6 +573,12 @@ namespace stream {
     std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
     std::string client_cert;  ///< PEM certificate for the paired client owning the stream.
     std::string input_session_id;  ///< Stable client identity used to retain input devices across resume.
+    std::string device_name;  ///< Apollo: name of the paired client.
+    std::string device_uuid;  ///< Apollo: UUID of the paired client.
+    crypto::PERM permission;  ///< Apollo: permissions of the paired client.
+
+    std::list<crypto::command_entry_t> do_cmds;  ///< Apollo: client commands run when the stream starts.
+    std::list<crypto::command_entry_t> undo_cmds;  ///< Apollo: client commands run when the stream ends.
 
     safe::mail_raw_t::event_t<bool> shutdown_event;  ///< Event raised when the stream should shut down.
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
@@ -2322,6 +2334,36 @@ namespace stream {
       return session.state.load(std::memory_order_relaxed);
     }
 
+    inline bool send(session_t& session, const std::string_view &payload) {
+      return session.broadcast_ref->control_server.send(payload, session.control.peer);
+    }
+
+    std::string uuid(const session_t& session) {
+      return session.device_uuid;
+    }
+
+    bool uuid_match(const session_t &session, const std::string_view& uuid) {
+      return session.device_uuid == uuid;
+    }
+
+    bool update_device_info(session_t& session, const std::string& name, const crypto::PERM& newPerm) {
+      session.permission = newPerm;
+      if (!(newPerm & crypto::PERM::_allow_view)) {
+        BOOST_LOG(debug) << "Session: View permission revoked for [" << session.device_name << "], disconnecting...";
+        graceful_stop(session);
+        return true;
+      }
+
+      BOOST_LOG(debug) << "Session: Permission updated for [" << session.device_name << "]";
+
+      if (session.device_name != name) {
+        BOOST_LOG(debug) << "Session: Device name changed from [" << session.device_name << "] to [" << name << "]";
+        session.device_name = name;
+      }
+
+      return false;
+    }
+
     /**
      * @brief Return the paired client certificate for this session.
      */
@@ -2341,6 +2383,39 @@ namespace stream {
       }
 
       session.shutdown_event->raise(true);
+    }
+
+    void graceful_stop(session_t& session) {
+      while_starting_do_nothing(session.state);
+      auto expected = state_e::RUNNING;
+      auto already_stopping = !session.state.compare_exchange_strong(expected, state_e::STOPPING);
+      if (already_stopping) {
+        return;
+      }
+
+      // reason: graceful termination
+      std::uint32_t reason = 0x80030023;
+
+      control_terminate_t plaintext;
+      plaintext.header.type = packetTypes[IDX_TERMINATION];
+      plaintext.header.payloadLength = sizeof(plaintext.ec);
+      plaintext.ec = util::endian::big<uint32_t>(reason);
+
+      // We may not have gotten far enough to have an ENet connection yet
+      if (session.control.peer) {
+        std::array<std::uint8_t,
+          sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+          encrypted_payload;
+        auto payload = stream::encode_control(&session, util::view(plaintext), encrypted_payload);
+
+        if (send(session, payload)) {
+          TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session.control.peer->address.address));
+          BOOST_LOG(warning) << "Couldn't send termination code to ["sv << addr << ':' << port << ']';
+        }
+      }
+
+      session.shutdown_event->raise(true);
+      session.controlEnd.raise(true);
     }
 
     /**
@@ -2483,6 +2558,12 @@ namespace stream {
 
       session->shutdown_event = mail->event<bool>(mail::shutdown);
       session->launch_session_id = launch_session.id;
+      session->device_name = launch_session.device_name;
+      session->device_uuid = launch_session.unique_id;
+      session->permission = launch_session.perm;
+
+      session->do_cmds = std::move(launch_session.client_do_cmds);
+      session->undo_cmds = std::move(launch_session.client_undo_cmds);
       session->client_cert = launch_session.client_cert;
       session->input_session_id = launch_session.client_cert.empty() ? launch_session.unique_id : launch_session.client_cert;
 

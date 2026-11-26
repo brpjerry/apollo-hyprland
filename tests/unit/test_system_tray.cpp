@@ -124,7 +124,7 @@ namespace {
     const auto &tray_data = system_tray::tray_data_for_testing();
     ASSERT_NE(tray_data.menu, nullptr);
 
-    EXPECT_STREQ(tray_data.menu[0].text, "Open Sunshine");
+    EXPECT_STREQ(tray_data.menu[0].text, "Open Apollo");
     EXPECT_NE(tray_data.menu[0].cb, nullptr);
     EXPECT_STREQ(tray_data.menu[1].text, "-");
     EXPECT_EQ(tray_data.menu[1].cb, nullptr);
@@ -173,18 +173,20 @@ namespace {
     EXPECT_EQ(tray_data.menu[8].text, nullptr);
     #endif
   #else
-    EXPECT_STREQ(tray_data.menu[2].text, "Donate");
-    ASSERT_NE(tray_data.menu[2].submenu, nullptr);
-    EXPECT_STREQ(tray_data.menu[2].submenu[0].text, "GitHub Sponsors");
-    EXPECT_STREQ(tray_data.menu[2].submenu[1].text, "Patreon");
-    EXPECT_STREQ(tray_data.menu[2].submenu[2].text, "PayPal");
-    EXPECT_EQ(tray_data.menu[2].submenu[3].text, nullptr);
-    EXPECT_STREQ(tray_data.menu[3].text, "-");
-    EXPECT_STREQ(tray_data.menu[4].text, "Restart");
-    EXPECT_NE(tray_data.menu[4].cb, nullptr);
-    EXPECT_STREQ(tray_data.menu[5].text, "Quit");
-    EXPECT_NE(tray_data.menu[5].cb, nullptr);
-    EXPECT_EQ(tray_data.menu[6].text, nullptr);
+    // Apollo: menu[2] force-closes the running app; there is no Donate submenu.
+    EXPECT_STREQ(tray_data.menu[2].text, "Reload Apps");
+    EXPECT_NE(tray_data.menu[2].cb, nullptr);
+    std::size_t next = 3;
+    #ifdef SUNSHINE_BUILD_WAYLAND
+    EXPECT_STREQ(tray_data.menu[next].text, "Reset Display Device Config");
+    EXPECT_NE(tray_data.menu[next].cb, nullptr);
+    ++next;
+    #endif
+    EXPECT_STREQ(tray_data.menu[next].text, "Restart");
+    EXPECT_NE(tray_data.menu[next].cb, nullptr);
+    EXPECT_STREQ(tray_data.menu[next + 1].text, "Quit");
+    EXPECT_NE(tray_data.menu[next + 1].cb, nullptr);
+    EXPECT_EQ(tray_data.menu[next + 2].text, nullptr);
   #endif
   }
 
@@ -233,13 +235,13 @@ namespace {
     verify_state(0, PROJECT_NAME, nullptr, nullptr, std::nullopt, false);
 
     system_tray::update_tray_playing("Moonlight");
-    verify_state(2, "Streaming started for Moonlight", "Stream Started", "Streaming started for Moonlight", 2, false);
+    verify_state(2, PROJECT_NAME, "App launched", "Moonlight launched.", 2, false);
 
     system_tray::update_tray_pausing("Moonlight");
-    verify_state(3, "Streaming paused for Moonlight", "Stream Paused", "Streaming paused for Moonlight", 3, false);
+    verify_state(3, PROJECT_NAME, "Stream Paused", "Streaming paused for Moonlight", 3, false);
 
     system_tray::update_tray_stopped("Moonlight");
-    verify_state(0, PROJECT_NAME, "Application Stopped", "Application Moonlight successfully stopped", 0, false);
+    verify_state(0, PROJECT_NAME, "Application Stopped", "Streaming stopped for Moonlight", 0, false);
 
     system_tray::update_tray_require_pin();
     verify_state(0, PROJECT_NAME, "Incoming Pairing Request", "Click here to complete the pairing process", 1, true);

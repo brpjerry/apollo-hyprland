@@ -115,11 +115,6 @@ if(SUNSHINE_ENABLE_TRAY AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux
             "${CMAKE_CURRENT_BINARY_DIR}/test_assets/web/images")
     file(MAKE_DIRECTORY "${SUNSHINE_TRAY_TEST_ICON_DESTINATION_DIR}")
 
-    configure_file(
-            "${CMAKE_SOURCE_DIR}/sunshine.svg"
-            "${SUNSHINE_TRAY_TEST_ICON_DESTINATION_DIR}/logo-sunshine.svg"
-            COPYONLY)
-
     if(WIN32 OR APPLE)
         configure_file(
                 "${libvirtualhid_SOURCE_DIR}/libvirtualhid.svg"
@@ -127,10 +122,12 @@ if(SUNSHINE_ENABLE_TRAY AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux
                 COPYONLY)
     endif()
 
+    # Apollo's tray icons (see TRAY_ICON* in src/system_tray.cpp).
     set(SUNSHINE_TRAY_TEST_ICONS
-            sunshine-locked.svg
-            sunshine-playing.svg
-            sunshine-pausing.svg)
+            logo-apollo.svg
+            apollo-locked.svg
+            apollo-playing.svg
+            apollo-pausing.svg)
 
     foreach(icon IN LISTS SUNSHINE_TRAY_TEST_ICONS)
         configure_file(
@@ -166,6 +163,12 @@ if(SUNSHINE_ENABLE_TRAY AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux
         endif()
     endif()
 endif()
+
+# TODO(libvirtualhid port): these test the inputtino-era touch/pen and absolute input code, which is out of the build
+# until it is ported onto libvirtualhid (see cmake/compile_definitions/linux.cmake).
+list(FILTER TEST_SOURCES EXCLUDE REGEX
+        "/tests/(unit/platform/test_(inputtino_abs|touch_pen|input_options)|integration/test_(touch_pen_uinput|abs_input_live))\\.cpp$")
+
 # Add macOS-specific test files only when building tests for macOS
 if (APPLE)
     file(GLOB_RECURSE MACOS_TEST_SOURCES CONFIGURE_DEPENDS
@@ -180,7 +183,7 @@ if(WAYLAND_FOUND)
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "stable/xdg-shell" xdg-shell)
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "stable/viewporter" viewporter)
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/single-pixel-buffer" single-pixel-buffer-v1)
-    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-layer-shell-unstable-v1)
+    GEN_WAYLAND("${wlr_protocols_SOURCE_DIR}" "unstable" wlr-layer-shell-unstable-v1)
     list(APPEND TEST_SOURCES ${PLATFORM_TARGET_FILES})
     set(PLATFORM_TARGET_FILES "${SUNSHINE_PLATFORM_TARGET_FILES}")
 endif()
@@ -287,6 +290,17 @@ if(GCOV_LINK_LIBRARY)
 endif()
 
 target_link_libraries(${PROJECT_NAME} ${TEST_LINK_LIBRARIES})
+
+# Optional: libinput reads the virtual touch screen and pen in tests/integration/test_touch_pen_uinput.cpp
+# (excluded above until the libvirtualhid port).
+if(UNIX AND NOT APPLE)
+    pkg_check_modules(TEST_LIBINPUT libinput libudev)
+    if(TEST_LIBINPUT_FOUND)
+        target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${TEST_LIBINPUT_INCLUDE_DIRS})
+        target_link_libraries(${PROJECT_NAME} ${TEST_LIBINPUT_LIBRARIES})
+        target_compile_definitions(${PROJECT_NAME} PRIVATE TESTS_HAVE_LIBINPUT)
+    endif()
+endif()
 target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST_DEFINITIONS})
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE ${SUNSHINE_LINK_OPTIONS})

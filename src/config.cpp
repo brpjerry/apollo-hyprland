@@ -816,6 +816,8 @@ namespace config {
     true,  // stream audio
     true,  // install_steam_drivers
     false,  // external_audio
+    true, // keep_sink_default
+    true, // auto_capture
   };
 
   /**
@@ -904,6 +906,9 @@ namespace config {
     false,  // legacy_ordering
     true,  // system_tray
     {},  // prep commands
+    {},  // state commands
+    {},  // server commands
+    "pkexec",  // elevation_method
     {},  // csrf_allowed_origins
   };
 
@@ -1482,6 +1487,39 @@ namespace config {
   }
 
   /**
+   * @brief Consume the Apollo server command list (`server_cmd`), a JSON array of `{name, cmd, elevated}` objects.
+   *
+   * @param vars Parsed configuration entries; consumed keys are erased.
+   * @param name Configuration key to consume.
+   * @param destination Destination list the parsed commands are appended to.
+   */
+  void list_server_cmd_f(config_map_t &vars, const std::string &name, std::vector<server_cmd_t> &destination) {
+    std::string string;
+    string_f(vars, name, string);
+
+    std::stringstream jsonStream;
+
+    // check if string is empty, i.e. when the value doesn't exist in the config file
+    if (string.empty()) {
+      return;
+    }
+
+    // We need to add a wrapping object to make it valid JSON, otherwise ptree cannot parse it.
+    jsonStream << "{\"server_cmd\":" << string << "}";
+
+    boost::property_tree::ptree jsonTree;
+    boost::property_tree::read_json(jsonStream, jsonTree);
+
+    for (auto &[_, prep_cmd] : jsonTree.get_child("server_cmd"s)) {
+      auto cmd_name = prep_cmd.get_optional<std::string>("name"s);
+      auto cmd_val = prep_cmd.get_optional<std::string>("cmd"s);
+      auto elevated = prep_cmd.get_optional<bool>("elevated"s);
+
+      destination.emplace_back(cmd_name.value_or(""), cmd_val.value_or(""), elevated.value_or(false));
+    }
+  }
+
+  /**
    * @brief Consume an integer list setting from decimal or hexadecimal configuration text.
    *
    * @param vars Parsed configuration entries; consumed keys are erased.
@@ -1704,6 +1742,7 @@ namespace config {
     bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
+    bool_f(vars, "nvenc_intra_refresh", video.nv.intra_refresh);
     generic_f(vars, "nvenc_split_encode", video.nv.split_frame_encoding, nv::split_encode_from_view);
     bool_f(vars, "nvenc_realtime_hags", video.nv_realtime_hags);
     bool_f(vars, "nvenc_opengl_vulkan_on_dxgi", video.nv_opengl_vulkan_on_dxgi);
@@ -1841,6 +1880,8 @@ namespace config {
     bool_f(vars, "stream_audio", audio.stream);
     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
     bool_f(vars, "external_audio", audio.external_audio);
+    bool_f(vars, "keep_sink_default", audio.keep_default);
+    bool_f(vars, "auto_capture_sink", audio.auto_capture);
 
     string_restricted_f(vars, "origin_web_ui_allowed", nvhttp.origin_web_ui_allowed, {"pc"sv, "lan"sv, "wan"sv});
 
@@ -1975,6 +2016,7 @@ namespace config {
     sunshine.csrf_allowed_origins.push_back(std::format("https://[::1]:{}", web_ui_port));
 
     string_restricted_f(vars, "address_family", sunshine.address_family, {"ipv4"sv, "both"sv});
+    string_restricted_f(vars, "elevation_method", sunshine.elevation_method, {"pkexec"sv, "sudo"sv, "terminal"sv});
     string_f(vars, "bind_address", sunshine.bind_address);
 
     bool upnp = false;

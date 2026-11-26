@@ -1,6 +1,6 @@
 /**
  * @file src/confighttp.cpp
- * @brief Definitions for the Web UI Config HTTPS server.
+ * @brief Definitions for the Web UI Config HTTP server.
  *
  * @todo Authentication, better handling of routes common to nvhttp, cleanup
  */
@@ -13,9 +13,13 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <new>
+#include <numeric>
 #include <optional>
+#include <sstream>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -48,6 +52,7 @@
 #include "confighttp.h"
 #include "crypto.h"
 #include "display_device.h"
+#include "entry_handler.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
@@ -57,15 +62,12 @@
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "platform/permissions.h"
+#include "platform/vdisplay.h"
 #include "process.h"
 #include "rtsp.h"
 #include "system_tray.h"
 #include "utility.h"
 #include "uuid.h"
-
-#ifdef _WIN32
-  #include "platform/windows/utils.h"
-#endif
 
 using namespace std::literals;
 
@@ -146,13 +148,15 @@ namespace confighttp {
    * @brief Client certificate operations accepted by the configuration API.
    */
   enum class op_e {
-    ADD,    ///< Add client
+    ADD,  ///< Add client
     REMOVE  ///< Remove client
   };
 
-  // SESSION COOKIE
-  std::string sessionCookie;
-  static std::chrono::time_point<std::chrono::steady_clock> cookie_creation_time;
+  // Apollo: Web UI login session (see login()). Requests carrying the matching "auth" cookie are authenticated
+  // like requests with valid HTTP Basic credentials.
+  std::string sessionCookie;  ///< Salted hash of the current session cookie, or empty when nobody is logged in.
+  static std::chrono::time_point<std::chrono::steady_clock> cookie_creation_time;  ///< When the session started.
+  std::mutex session_cookie_mutex;  ///< Guards sessionCookie and cookie_creation_time.
 
   /**
    * @brief Overwrite a request-local sensitive string when leaving scope.
@@ -577,13 +581,17 @@ namespace confighttp {
   void print_req(const req_https_t &request) {
     BOOST_LOG(debug) << "METHOD :: "sv << request->method;
     BOOST_LOG(debug) << "DESTINATION :: "sv << request->path;
+
     for (auto &[name, val] : request->header) {
       BOOST_LOG(debug) << name << " -- " << (name == "Authorization" ? "CREDENTIALS REDACTED" : val);
     }
+
     BOOST_LOG(debug) << " [--] "sv;
+
     for (auto &[name, val] : request->parse_query_string()) {
       BOOST_LOG(debug) << name << " -- " << val;
     }
+
     BOOST_LOG(debug) << " [--] "sv;
   }
 
@@ -615,12 +623,80 @@ namespace confighttp {
     tree["status_code"] = code;
     tree["status"] = false;
     tree["error"] = "Unauthorized";
-    const SimpleWeb::CaseInsensitiveMultimap headers {
+
+    SimpleWeb::CaseInsensitiveMultimap headers {
       {"Content-Type", "application/json"},
       {"X-Frame-Options", "DENY"},
       {"Content-Security-Policy", "frame-ancestors 'none';"}
     };
+    // A browser that signs in through Apollo's login page (session cookie) must not get the Basic credentials prompt.
+    if (request->header.find("cookie") == request->header.end()) {
+      headers.emplace("WWW-Authenticate", R"(Basic realm="Apollo Gamestream Host", charset="UTF-8")");
+    }
+
     response->write(code, tree.dump(), headers);
+  }
+
+  /**
+   * @brief Retrieve the value of a key from a cookie string (Apollo).
+   * @param cookieString The cookie header string.
+   * @param key The key to search.
+   * @return The value if found, empty string otherwise.
+   */
+  std::string getCookieValue(const std::string &cookieString, const std::string &key) {
+    std::string keyWithEqual = key + "=";
+    std::size_t startPos = cookieString.find(keyWithEqual);
+    if (startPos == std::string::npos) {
+      return "";
+    }
+    startPos += keyWithEqual.length();
+    std::size_t endPos = cookieString.find(';', startPos);
+    if (endPos == std::string::npos) {
+      return cookieString.substr(startPos);
+    }
+    return cookieString.substr(startPos, endPos - startPos);
+  }
+
+  /**
+   * @brief Check whether the request carries the cookie of the current Web UI login session (Apollo).
+   * @param request The HTTP request object.
+   * @return True if the session cookie is present, matches and has not expired.
+   */
+  bool has_valid_session_cookie(const req_https_t &request) {
+    const auto cookies = request->header.find("cookie");
+    if (cookies == request->header.end()) {
+      return false;
+    }
+    const auto authCookie = getCookieValue(cookies->second, "auth");
+    if (authCookie.empty()) {
+      return false;
+    }
+
+    std::lock_guard lock {session_cookie_mutex};
+    if (sessionCookie.empty()) {
+      return false;
+    }
+    if (std::chrono::steady_clock::now() - cookie_creation_time > SESSION_EXPIRE_DURATION) {
+      sessionCookie.clear();
+      return false;
+    }
+    return util::hex(crypto::hash(authCookie + config::sunshine.salt)).to_string() == sessionCookie;
+  }
+
+  /**
+   * @brief Check if the IP origin is allowed to use the Web UI (Apollo).
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   * @return True if allowed, false otherwise.
+   */
+  bool checkIPOrigin(const resp_https_t &response, const req_https_t &request) {
+    auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
+    if (const auto ip_type = net::from_address(address); ip_type > http::origin_web_ui_allowed) {
+      BOOST_LOG(info) << "Web UI: ["sv << address << "] -- denied"sv;
+      response->write(SimpleWeb::StatusCode::client_error_forbidden);
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -631,7 +707,7 @@ namespace confighttp {
    */
   void send_redirect(const resp_https_t &response, const req_https_t &request, const char *path) {
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
-    BOOST_LOG(info) << "Web UI: ["sv << address << "] -- redirecting"sv;
+    BOOST_LOG(info) << "Web UI: ["sv << address << "] -- not authorized"sv;
     const SimpleWeb::CaseInsensitiveMultimap headers {
       {"Location", path},
       {"X-Frame-Options", "DENY"},
@@ -641,28 +717,10 @@ namespace confighttp {
   }
 
   /**
-   * @brief Retrieve the value of a key from a cookie string.
-   * @param cookieString The cookie header string.
-   * @param key The key to search.
-   * @return The value if found, empty string otherwise.
-   */
-  std::string getCookieValue(const std::string& cookieString, const std::string& key) {
-    std::string keyWithEqual = key + "=";
-    std::size_t startPos = cookieString.find(keyWithEqual);
-    if (startPos == std::string::npos)
-      return "";
-    startPos += keyWithEqual.length();
-    std::size_t endPos = cookieString.find(";", startPos);
-    if (endPos == std::string::npos)
-      return cookieString.substr(startPos);
-    return cookieString.substr(startPos, endPos - startPos);
-  }
-
-  /**
-   * @brief Check if the IP origin is allowed.
+   * @brief Authenticate the user.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
-   * @return True if allowed, false otherwise.
+   * @return True if the user is authenticated, false otherwise.
    */
   bool authenticate(const resp_https_t &response, const req_https_t &request) {
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
@@ -672,39 +730,25 @@ namespace confighttp {
       response->write(SimpleWeb::StatusCode::client_error_forbidden);
       return false;
     }
-    return true;
-  }
 
-  /**
-   * @brief Authenticate the request.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   * @param needsRedirect Whether to redirect on failure.
-   * @return True if authenticated, false otherwise.
-   *
-   * This function uses session cookies (if set) and ensures they have not expired.
-   */
-  bool authenticate(resp_https_t response, req_https_t request, bool needsRedirect = false) {
-    if (!checkIPOrigin(response, request))
-      return false;
-    // If credentials not set, redirect to welcome.
+    // If credentials are shown, redirect the user to a /welcome page
     if (config::sunshine.username.empty()) {
       send_redirect(response, request, "/welcome");
       return false;
     }
-    // Guard: on failure, redirect if requested.
+
     auto fg = util::fail_guard([&]() {
-      if (needsRedirect) {
-        std::string redir_path = "/login?redir=.";
-        redir_path += request->path;
-        send_redirect(response, request, redir_path.c_str());
-      } else {
-        send_unauthorized(response, request);
-      }
+      send_unauthorized(response, request);
     });
 
+    // Apollo: a Web UI login session.
+    if (has_valid_session_cookie(request)) {
+      fg.disable();
+      return true;
+    }
+
     const auto auth = request->header.find("authorization");
-    if (auth == request->header.end()) {
+    if (auth == request->header.end() || !auth->second.starts_with("Basic "sv)) {
       return false;
     }
 
@@ -721,6 +765,8 @@ namespace confighttp {
 
     if (const auto hash = util::hex(crypto::hash(password + config::sunshine.salt)).to_string(); !boost::iequals(username, config::sunshine.username) || hash != config::sunshine.password) {
       return false;
+    }
+
     fg.disable();
     return true;
   }
@@ -756,9 +802,10 @@ namespace confighttp {
     constexpr auto code = SimpleWeb::StatusCode::client_error_bad_request;
 
     nlohmann::json tree;
-    tree["status_code"] = static_cast<int>(code);
+    tree["status_code"] = code;
     tree["status"] = false;
     tree["error"] = error_message;
+
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "application/json");
     headers.emplace("X-Frame-Options", "DENY");
@@ -766,7 +813,6 @@ namespace confighttp {
 
     response->write(code, tree.dump(), headers);
   }
-
 
   /**
    * @brief Validate the request content type and send a bad request when mismatched.
@@ -777,7 +823,6 @@ namespace confighttp {
       bad_request(response, "Content type not provided");
       return false;
     }
-
     // Extract the media type part before any parameters (e.g., charset)
     std::string actualContentType = requestContentType->second;
     if (const size_t semicolonPos = actualContentType.find(';'); semicolonPos != std::string::npos) {
@@ -795,8 +840,6 @@ namespace confighttp {
       bad_request(response, "Content type mismatch");
       return false;
     }
-    return true;
-
     return true;
   }
 
@@ -1006,6 +1049,8 @@ namespace confighttp {
    * @brief Get the favicon image.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
+   * @todo combine function with getApolloLogoImage and possibly getNodeModules
+   * @todo use mime_types map
    */
   void getFaviconImage(const resp_https_t &response, const req_https_t &request) {
     print_req(request);
@@ -1022,11 +1067,10 @@ namespace confighttp {
    * @brief Get the Apollo logo image.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
-   *
    * @todo combine function with getFaviconImage and possibly getNodeModules
    * @todo use mime_types map
    */
-  void getSunshineLogoImage(const resp_https_t &response, const req_https_t &request) {
+  void getApolloLogoImage(const resp_https_t &response, const req_https_t &request) {
     print_req(request);
 
     std::ifstream in(WEB_DIR "images/logo-apollo-45.png", std::ios::binary);
@@ -1055,7 +1099,6 @@ namespace confighttp {
    */
   void getAsset(const resp_https_t &response, const req_https_t &request) {
     print_req(request);
-
     fs::path webDirPath(WEB_DIR);
     fs::path nodeModulesPath(webDirPath / "assets");
 
@@ -1068,7 +1111,6 @@ namespace confighttp {
       bad_request(response);
       return;
     }
-
     if (!fs::exists(filePath)) {
       not_found(response);
       return;
@@ -1078,10 +1120,13 @@ namespace confighttp {
     // get the mime type from the file extension mime_types map
     // remove the leading period from the extension
     auto mimeType = mime_types.find(relPath.extension().string().substr(1));
+    // check if the extension is in the map at the x position
     if (mimeType == mime_types.end()) {
       bad_request(response);
       return;
     }
+
+    // if it is, set the content type to the mime type
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", mimeType->second);
     headers.emplace("X-Frame-Options", "DENY");
@@ -1164,6 +1209,11 @@ namespace confighttp {
           }
         }
       }
+
+      // Apollo: the running app and the host identity.
+      file_tree["current_app"] = proc::proc.get_running_app_uuid();
+      file_tree["host_uuid"] = http::unique_id;
+      file_tree["host_name"] = config::nvhttp.sunshine_name;
 
       send_response(response, file_tree);
     } catch (std::exception &e) {
@@ -1270,7 +1320,11 @@ namespace confighttp {
   }
 
   /**
-   * @brief Save an application. To save a new application, the index must be `-1`. To update an existing application, you must provide the current index of the application.
+   * @brief Save an application.
+   *
+   * Apollo identifies applications by UUID: to save a new application leave `uuid` empty; to update one, give its
+   * current `uuid`. Sunshine's `index` is still accepted: `-1` adds an application, any other value updates the
+   * application at that position (keeping its UUID).
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    * The body for the post request should be JSON serialized in the following format:
@@ -1279,6 +1333,7 @@ namespace confighttp {
    *   "name": "Application Name",
    *   "output": "Log Output Path",
    *   "cmd": "Command to run the application",
+   *   "uuid": "aaaa-bbbb",
    *   "exclude-global-prep-cmd": false,
    *   "elevated": false,
    *   "auto-detach": true,
@@ -1294,8 +1349,7 @@ namespace confighttp {
    *   "detached": [
    *     "Detached command"
    *   ],
-   *   "image-path": "Full path to the application image. Must be a png file.",
-   *   "uuid": "aaaa-bbbb"
+   *   "image-path": "Full path to the application image. Must be a png file."
    * }
    * @endcode
    *
@@ -1303,7 +1357,7 @@ namespace confighttp {
    * from the saved application. Nonempty string values are trimmed before saving.
    * Null optional fields are omitted before persistence; explicit `false` and `0` are preserved.
    *
-   * @api_examples{/api/apps|:| POST|:| {"name":"Hello, World!","index":-1}}
+   * @api_examples{/api/apps|:| POST|:| {"name":"Hello, World!","uuid":"aaaa-bbbb"}}
    */
   void saveApp(const resp_https_t &response, const req_https_t &request) {
     if (!check_content_type(response, request, "application/json")) {
@@ -1322,26 +1376,38 @@ namespace confighttp {
 
     std::stringstream ss;
     ss << request->content.rdbuf();
-
-    BOOST_LOG(info) << config::stream.file_apps;
     try {
       // TODO: Input Validation
+      nlohmann::json output_tree;
+      nlohmann::json input_tree = nlohmann::json::parse(ss);
+      std::string file = file_handler::read_file(config::stream.file_apps.c_str());
+      nlohmann::json file_tree = nlohmann::json::parse(file);
 
       normalize_optional_app_fields(input_tree);
 
-      auto &apps_node = file_tree["apps"];
-      int index = input_tree["index"].get<int>();  // this will intentionally cause an exception if the provided value is the wrong type
+      // Sunshine's index: update the application at that position, keeping its UUID.
+      const bool has_uuid = input_tree.contains("uuid") && input_tree["uuid"].is_string() && !input_tree["uuid"].get<std::string>().empty();
+      if (!has_uuid && input_tree.contains("index") && input_tree["index"].is_number_integer()) {
+        const auto index = input_tree["index"].get<int>();
+        if (auto &apps = file_tree["apps"]; index >= 0 && apps.is_array() && index < static_cast<int>(apps.size())) {
+          auto &app = apps[index];
+          if (!app.contains("uuid") || !app["uuid"].is_string() || app["uuid"].get<std::string>().empty()) {
+            app["uuid"] = uuid_util::uuid_t::generate().string();
+          }
+          input_tree["uuid"] = app["uuid"];
+        }
+      }
+      input_tree.erase("index");
 
-      // Write the updated file tree back to disk.
-      file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
+      // Migrate/merge the new app into the file tree: a new UUID adds it, a known UUID replaces that app.
+      proc::migrate_apps(&file_tree, &input_tree);
+
+      file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
       proc::refresh(config::stream.file_apps);
 
-      // Prepare and send the output response.
-      nlohmann::json outputTree;
-      outputTree["status"] = true;
-      send_response(response, outputTree);
-    }
-    catch (std::exception &e) {
+      output_tree["status"] = true;
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
       BOOST_LOG(warning) << "SaveApp: "sv << e.what();
       bad_request(response, e.what());
     }
@@ -1367,6 +1433,7 @@ namespace confighttp {
     print_req(request);
 
     proc::proc.terminate();
+
     nlohmann::json output_tree;
     output_tree["status"] = true;
     send_response(response, output_tree);
@@ -1377,10 +1444,18 @@ namespace confighttp {
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    *
-   * @api_examples{/api/apps/reorder| POST| {"order": ["aaaa-bbbb", "cccc-dddd"]}}
+   * @api_examples{/api/apps/reorder|:| POST|:| {"order": ["aaaa-bbbb", "cccc-dddd"]}}
    */
-  void reorderApps(resp_https_t response, req_https_t request) {
-    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
+  void reorderApps(const resp_https_t &response, const req_https_t &request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
       return;
     }
 
@@ -1482,7 +1557,7 @@ namespace confighttp {
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "ReorderApps: "sv << e.what();
-      bad_request(response, request, e.what());
+      bad_request(response, e.what());
     }
   }
 
@@ -1491,9 +1566,73 @@ namespace confighttp {
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    *
-   * @api_examples{/api/apps/9999|:| DELETE|:| null}
+   * @api_examples{/api/apps/delete|:| POST|:| {"uuid": "aaaa-bbbb"}}
    */
   void deleteApp(const resp_https_t &response, const req_https_t &request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+
+    try {
+      std::stringstream ss;
+      ss << request->content.rdbuf();
+      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+
+      // Check for required uuid field in body
+      if (!input_tree.contains("uuid") || !input_tree["uuid"].is_string()) {
+        bad_request(response, "Missing or invalid uuid in request body");
+        return;
+      }
+      auto uuid = input_tree["uuid"].get<std::string>();
+
+      // Read the apps file into a nlohmann::json object.
+      std::string content = file_handler::read_file(config::stream.file_apps.c_str());
+      nlohmann::json fileTree = nlohmann::json::parse(content);
+
+      // Remove any app with the matching uuid directly from the "apps" array.
+      if (fileTree.contains("apps") && fileTree["apps"].is_array()) {
+        auto& apps = fileTree["apps"];
+        apps.erase(
+          std::remove_if(apps.begin(), apps.end(), [&uuid](const nlohmann::json& app) {
+            return app.value("uuid", "") == uuid;
+          }),
+          apps.end()
+        );
+      }
+
+      // Write the updated JSON back to the file.
+      file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
+      proc::refresh(config::stream.file_apps);
+
+      // Prepare and send the response.
+      nlohmann::json outputTree;
+      outputTree["status"] = true;
+      send_response(response, outputTree);
+    }
+    catch (std::exception &e) {
+      BOOST_LOG(warning) << "DeleteApp: "sv << e.what();
+      bad_request(response, e.what());
+    }
+  }
+
+  /**
+   * @brief Delete an application by its position in the list (Sunshine).
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @api_examples{/api/apps/9999|:| DELETE|:| null}
+   */
+  void deleteAppByIndex(const resp_https_t &response, const req_https_t &request) {
     if (!authenticate(response, request)) {
       return;
     }
@@ -1513,7 +1652,6 @@ namespace confighttp {
       if (!check_app_index(response, index)) {
         return;
       }
-      auto uuid = input_tree["uuid"].get<std::string>();
 
       std::string file = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json file_tree = nlohmann::json::parse(file);
@@ -1524,17 +1662,15 @@ namespace confighttp {
           new_apps.push_back(apps[i]);
         }
       }
+      file_tree["apps"] = new_apps;
 
-      // Write the updated JSON back to the file.
-      file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
+      file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
       proc::refresh(config::stream.file_apps);
 
-      // Prepare and send the response.
-      nlohmann::json outputTree;
-      outputTree["status"] = true;
-      send_response(response, outputTree);
-    }
-    catch (std::exception &e) {
+      output_tree["status"] = true;
+      output_tree["result"] = std::format("application {} deleted", index);
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
       BOOST_LOG(warning) << "DeleteApp: "sv << e.what();
       bad_request(response, e.what());
     }
@@ -1554,7 +1690,8 @@ namespace confighttp {
 
     print_req(request);
 
-    nlohmann::json named_certs = nvhttp::get_all_clients();
+    const nlohmann::json named_certs = nvhttp::get_all_clients();
+
     nlohmann::json output_tree;
     output_tree["named_certs"] = named_certs;
     output_tree["platform"] = SUNSHINE_PLATFORM;
@@ -1563,20 +1700,26 @@ namespace confighttp {
   }
 
   /**
-   * @brief Enable or disable a client.
+   * @brief Update a paired client: Apollo's per-client settings and permissions, and Sunshine's enable/disable.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
-   * The body for the POST request should be JSON serialized in the following format:
+   * The body for the POST request should be JSON serialized in the following format. Only `uuid` is required:
+   * the Apollo settings are updated when `name` is given, and the client is enabled or disabled when `enabled` is.
    * @code{.json}
    * {
    *   "uuid": "<uuid>",
+   *   "name": "<Friendly Name>",
+   *   "display_mode": "1920x1080x59.94",
+   *   "do": [ { "cmd": "<command>", "elevated": false }, ... ],
+   *   "undo": [ { "cmd": "<command>", "elevated": false }, ... ],
+   *   "perm": <uint32_t>,
    *   "enabled": true
    * }
    * @endcode
    *
    * @api_examples{/api/clients/update|:| POST|:| {"uuid":"<uuid>","enabled":true}}
    */
-  void updateClient(resp_https_t response, req_https_t request) {
+  void updateClient(const resp_https_t &response, const req_https_t &request) {
     if (!check_content_type(response, request, "application/json")) {
       return;
     }
@@ -1596,22 +1739,48 @@ namespace confighttp {
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
       nlohmann::json output_tree;
       std::string uuid = input_tree.value("uuid", "");
-      bool enabled = input_tree.value("enabled", true);
-      output_tree["status"] = nvhttp::set_client_enabled(uuid, enabled);
+      bool status = true;
 
-      if (!enabled && output_tree["status"]) {
-        auto cert = nvhttp::get_cert_by_uuid(uuid);
-        if (!cert.empty()) {
-          rtsp_stream::terminate_sessions_by_cert(cert);
-        }
+      if (input_tree.contains("name")) {
+        std::string name = input_tree.value("name", "");
+        std::string display_mode = input_tree.value("display_mode", "");
+        bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
+        bool allow_client_commands = input_tree.value("allow_client_commands", true);
+        bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
+        auto do_cmds = nvhttp::extract_command_entries(input_tree, "do");
+        auto undo_cmds = nvhttp::extract_command_entries(input_tree, "undo");
+        auto perm = static_cast<crypto::PERM>(input_tree.value("perm", static_cast<uint32_t>(crypto::PERM::_no)) & static_cast<uint32_t>(crypto::PERM::_all));
+        status = nvhttp::update_device_info(
+          uuid,
+          name,
+          display_mode,
+          do_cmds,
+          undo_cmds,
+          perm,
+          enable_legacy_ordering,
+          allow_client_commands,
+          always_use_virtual_display
+        );
+      }
 
-        if (rtsp_stream::session_count() == 0 && proc::proc.running() > 0) {
-          proc::proc.terminate();
+      if (status && input_tree.contains("enabled")) {
+        const bool enabled = input_tree.value("enabled", true);
+        status = nvhttp::set_client_enabled(uuid, enabled);
+
+        if (!enabled && status) {
+          if (auto cert = nvhttp::get_cert_by_uuid(uuid); !cert.empty()) {
+            rtsp_stream::terminate_sessions_by_cert(cert);
+          }
+
+          if (rtsp_stream::session_count() == 0 && proc::proc.running() > 0) {
+            proc::proc.terminate();
+          }
         }
       }
 
+      output_tree["status"] = status;
       send_response(response, output_tree);
-    } catch (nlohmann::json::exception &e) {
+    } catch (std::exception &e) {
       BOOST_LOG(warning) << "Update Client: "sv << e.what();
       bad_request(response, e.what());
     }
@@ -1624,12 +1793,7 @@ namespace confighttp {
    * The body for the POST request should be JSON serialized in the following format:
    * @code{.json}
    * {
-   *   "uuid": "<uuid>",
-   *   "name": "<Friendly Name>",
-   *   "display_mode": "1920x1080x59.94",
-   *   "do": [ { "cmd": "<command>", "elevated": false }, ... ],
-   *   "undo": [ { "cmd": "<command>", "elevated": false }, ... ],
-   *   "perm": <uint32_t>
+   *  "uuid": "<uuid>"
    * }
    * @endcode
    *
@@ -1652,17 +1816,14 @@ namespace confighttp {
 
     std::stringstream ss;
     ss << request->content.rdbuf();
+
     try {
-      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+      // TODO: Input Validation
       nlohmann::json output_tree;
       const nlohmann::json input_tree = nlohmann::json::parse(ss);
       const std::string uuid = input_tree.value("uuid", "");
-      const bool removed = nvhttp::unpair_client(uuid);
-      output_tree["status"] = removed;
-
-      if (removed && nvhttp::get_all_clients().empty()) {
-        proc::proc.terminate();
-      }
+      // Also stops the client's stream, and the running app when no paired client is left.
+      output_tree["status"] = nvhttp::unpair_client(uuid);
 
       send_response(response, output_tree);
     } catch (std::exception &e) {
@@ -1692,6 +1853,7 @@ namespace confighttp {
 
     nvhttp::erase_all_clients();
     proc::proc.terminate();
+
     nlohmann::json output_tree;
     output_tree["status"] = true;
     send_response(response, output_tree);
@@ -1719,15 +1881,18 @@ namespace confighttp {
       // The SudoVDA driver status codes the web UI understands (status_e keeps those values).
       output_tree["vdisplayStatus"] = static_cast<int>(vdisplay_status);
     }
+
     auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
+
     for (auto &[name, value] : vars) {
-      output_tree[name] = value;
+      output_tree[name] = std::move(value);
     }
+
     send_response(response, output_tree);
   }
 
   /**
-   * @brief Get the locale setting.
+   * @brief Get the locale setting. This endpoint does not require authentication.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    *
@@ -1868,6 +2033,13 @@ namespace confighttp {
    * @brief Upload a cover image.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
+   * The body for the post request should be JSON serialized in the following format:
+   * @code{.json}
+   * {
+   *   "key": "igdb_<game_id>",
+   *   "url": "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/<slug>.png"
+   * }
+   * @endcode
    *
    * @api_examples{/api/covers/upload|:| POST|:| {"key":"igdb_1234","url":"https://images.igdb.com/igdb/image/upload/t_cover_big_2x/abc123.png"}}
    */
@@ -1880,20 +2052,22 @@ namespace confighttp {
     }
 
     std::stringstream ss;
-
     ss << request->content.rdbuf();
     try {
-      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
       nlohmann::json output_tree;
+      nlohmann::json input_tree = nlohmann::json::parse(ss);
+
       std::string key = input_tree.value("key", "");
       if (key.empty()) {
         bad_request(response, "Cover key is required");
         return;
       }
       std::string url = input_tree.value("url", "");
+
       const std::string coverdir = platf::appdata().string() + "/covers/";
       file_handler::make_directory(coverdir);
-      std::string path = coverdir + http::url_escape(key) + ".png";
+
+      std::basic_string path = coverdir + http::url_escape(key) + ".png";
       if (!url.empty()) {
         if (http::url_get_host(url) != "images.igdb.com") {
           bad_request(response, "Only images.igdb.com is allowed");
@@ -1905,6 +2079,7 @@ namespace confighttp {
         }
       } else {
         auto data = SimpleWeb::Crypto::Base64::decode(input_tree.value("data", ""));
+
         std::ofstream imgfile(path);
         imgfile.write(data.data(), static_cast<int>(data.size()));
       }
@@ -1930,14 +2105,10 @@ namespace confighttp {
     }
 
     print_req(request);
+
     std::string content = file_handler::read_file(config::sunshine.log_file.c_str());
     SimpleWeb::CaseInsensitiveMultimap headers;
-    std::string contentType = "text/plain";
-  #ifdef _WIN32
-    contentType += "; charset=";
-    contentType += currentCodePageToCharset();
-  #endif
-    headers.emplace("Content-Type", contentType);
+    headers.emplace("Content-Type", "text/plain");
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
     response->write(SimpleWeb::StatusCode::success_ok, content, headers);
@@ -1947,8 +2118,7 @@ namespace confighttp {
    * @brief Update existing credentials.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
-   *
-   * The body for the POST request should be JSON serialized in the following format:
+   * The body for the post request should be JSON serialized in the following format:
    * @code{.json}
    * {
    *   "currentUsername": "Current Username",
@@ -1975,37 +2145,45 @@ namespace confighttp {
     }
 
     print_req(request);
-    std::vector<std::string> errors;
+
+    std::vector<std::string> errors = {};
     std::stringstream ss;
+    std::stringstream config_stream;
     ss << request->content.rdbuf();
     try {
-      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+      // TODO: Input Validation
       nlohmann::json output_tree;
+      nlohmann::json input_tree = nlohmann::json::parse(ss);
       std::string username = input_tree.value("currentUsername", "");
       std::string newUsername = input_tree.value("newUsername", "");
       std::string password = input_tree.value("currentPassword", "");
       std::string newPassword = input_tree.value("newPassword", "");
       std::string confirmPassword = input_tree.value("confirmNewPassword", "");
-      if (newUsername.empty())
-        newUsername = username;
       if (newUsername.empty()) {
-        errors.push_back("Invalid Username");
+        newUsername = username;
+      }
+      if (newUsername.empty()) {
+        errors.emplace_back("Invalid Username");
       } else {
         auto hash = util::hex(crypto::hash(password + config::sunshine.salt)).to_string();
-        if (config::sunshine.username.empty() ||
-            (boost::iequals(username, config::sunshine.username) && hash == config::sunshine.password)) {
-          if (newPassword.empty() || newPassword != confirmPassword)
-            errors.push_back("Password Mismatch");
-          else {
+        if (config::sunshine.username.empty() || (boost::iequals(username, config::sunshine.username) && hash == config::sunshine.password)) {
+          if (newPassword.empty() || newPassword != confirmPassword) {
+            errors.emplace_back("Password Mismatch");
+          } else {
             http::save_user_creds(config::sunshine.credentials_file, newUsername, newPassword);
             http::reload_user_creds(config::sunshine.credentials_file);
-            sessionCookie.clear(); // force re-login
+            {
+              // Apollo: force a new login.
+              std::lock_guard lock {session_cookie_mutex};
+              sessionCookie.clear();
+            }
             output_tree["status"] = true;
           }
         } else {
-          errors.push_back("Invalid Current Credentials");
+          errors.emplace_back("Invalid Current Credentials");
         }
       }
+
       if (!errors.empty()) {
         // join the errors array
         std::string error_message = std::accumulate(errors.begin(), errors.end(), std::string(), [](const std::string &a, const std::string &b) {
@@ -2014,6 +2192,7 @@ namespace confighttp {
         bad_request(response, error_message);
         return;
       }
+
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "SavePassword: "sv << e.what();
@@ -2122,15 +2301,23 @@ namespace confighttp {
 
     print_req(request);
 
+    std::stringstream ss;
+    ss << request->content.rdbuf();
     try {
-      std::stringstream ss;
-      ss << request->content.rdbuf();
-      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
       nlohmann::json output_tree;
       nlohmann::json input_tree = nlohmann::json::parse(ss);
-      const std::string name = input_tree.value("name", "");
+      std::string name = input_tree.value("name", "");
       const std::string pairing_id = input_tree.value("pairing_id", "");
       const std::string pin = input_tree.value("pin", "");
+      if (name.empty()) {
+        // Apollo: without a name, keep the name the client reported.
+        for (const auto &pairing : nvhttp::get_pending_pairings()) {
+          if (pairing.id == pairing_id) {
+            name = pairing.name;
+            break;
+          }
+        }
+      }
       if (!nvhttp::is_valid_pairing_id(pairing_id)) {
         bad_request(response, "pairing_id must contain exactly 32 hexadecimal characters");
         return;
@@ -2148,6 +2335,53 @@ namespace confighttp {
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "SavePin: "sv << e.what();
+      bad_request(response, e.what());
+    }
+  }
+
+  /**
+   * @brief Get a one-time password (OTP).
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @api_examples{/api/otp|:| POST|:| {"passphrase":"abcd","deviceName":"My Phone"}}
+   */
+  void getOTP(const resp_https_t &response, const req_https_t &request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    try {
+      std::stringstream ss;
+      ss << request->content.rdbuf();
+      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+
+      std::string passphrase = input_tree.value("passphrase", "");
+      if (passphrase.empty())
+        throw std::runtime_error("Passphrase not provided!");
+      if (passphrase.size() < 4)
+        throw std::runtime_error("Passphrase too short!");
+
+      std::string deviceName = input_tree.value("deviceName", "");
+      output_tree["otp"] = nvhttp::request_otp(passphrase, deviceName);
+      output_tree["ip"] = platf::get_local_ip_for_gateway();
+      output_tree["name"] = config::nvhttp.sunshine_name;
+      output_tree["status"] = true;
+      output_tree["message"] = "OTP created, effective within 3 minutes.";
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "OTP creation failed: "sv << e.what();
       bad_request(response, e.what());
     }
   }
@@ -2232,12 +2466,37 @@ namespace confighttp {
 
     print_req(request);
 
+    proc::proc.terminate();
+
+    // We may not return from this call
+    platf::restart();
+  }
+
+  /**
+   * @brief Quit Apollo.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * On Windows, if running in a service, a special shutdown code is returned.
+   */
+  void quit(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+
     BOOST_LOG(warning) << "Requested quit from config page!"sv;
 
     proc::proc.terminate();
 
 #ifdef _WIN32
-    if (GetConsoleWindow() == NULL) {
+    if (GetConsoleWindow() == nullptr) {
       lifetime::exit_sunshine(ERROR_SHUTDOWN_IN_PROGRESS, true);
     } else
 #endif
@@ -2250,6 +2509,155 @@ namespace confighttp {
       response->write();
     });
     write_resp.detach();
+  }
+
+  /**
+   * @brief Launch an application.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   */
+  void launchApp(const resp_https_t &response, const req_https_t &request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+
+    try {
+      std::stringstream ss;
+      ss << request->content.rdbuf();
+      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+
+      // Check for required uuid field in body
+      if (!input_tree.contains("uuid") || !input_tree["uuid"].is_string()) {
+        bad_request(response, "Missing or invalid uuid in request body");
+        return;
+      }
+      std::string uuid = input_tree["uuid"].get<std::string>();
+
+      nlohmann::json output_tree;
+      const auto &apps = proc::proc.get_apps();
+      for (auto &app : apps) {
+        if (app.uuid == uuid) {
+          crypto::named_cert_t named_cert {
+            .name = "",
+            .uuid = http::unique_id,
+            .perm = crypto::PERM::_all,
+          };
+          BOOST_LOG(info) << "Launching app ["sv << app.name << "] from web UI"sv;
+          auto launch_session = nvhttp::make_launch_session(true, false, request->parse_query_string(), &named_cert);
+          auto err = proc::proc.execute(app, launch_session);
+          if (err) {
+            bad_request(response, err == 503 ?
+                        "Failed to initialize video capture/encoding. Is a display connected and turned on?" :
+                        "Failed to start the specified application");
+          } else {
+            output_tree["status"] = true;
+            send_response(response, output_tree);
+          }
+          return;
+        }
+      }
+      BOOST_LOG(error) << "Couldn't find app with uuid ["sv << uuid << ']';
+      bad_request(response, "Cannot find requested application");
+    }
+    catch (std::exception &e) {
+      BOOST_LOG(warning) << "LaunchApp: "sv << e.what();
+      bad_request(response, e.what());
+    }
+  }
+
+  /**
+   * @brief Disconnect a client.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   */
+  void disconnect(const resp_https_t &response, const req_https_t &request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+
+    try {
+      std::stringstream ss;
+      ss << request->content.rdbuf();
+      nlohmann::json output_tree;
+      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+      std::string uuid = input_tree.value("uuid", "");
+      output_tree["status"] = nvhttp::find_and_stop_session(uuid, true);
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "Disconnect: "sv << e.what();
+      bad_request(response, e.what());
+    }
+  }
+
+  /**
+   * @brief Login the user.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * The body for the POST request should be JSON serialized in the following format:
+   * @code{.json}
+   * {
+   *   "username": "<username>",
+   *   "password": "<password>"
+   * }
+   * @endcode
+   */
+  void login(const resp_https_t &response, const req_https_t &request) {
+    if (!checkIPOrigin(response, request) || !check_content_type(response, request, "application/json")) {
+      return;
+    }
+
+    auto fg = util::fail_guard([&]{
+      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
+    });
+
+    try {
+      std::stringstream ss;
+      ss << request->content.rdbuf();
+      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+      std::string username = input_tree.value("username", "");
+      std::string password = input_tree.value("password", "");
+      std::string hash = util::hex(crypto::hash(password + config::sunshine.salt)).to_string();
+      if (!boost::iequals(username, config::sunshine.username) || hash != config::sunshine.password)
+        return;
+      std::string sessionCookieRaw = crypto::rand_alphabet(64);
+      {
+        std::lock_guard lock {session_cookie_mutex};
+        sessionCookie = util::hex(crypto::hash(sessionCookieRaw + config::sunshine.salt)).to_string();
+        cookie_creation_time = std::chrono::steady_clock::now();
+      }
+      const SimpleWeb::CaseInsensitiveMultimap headers {
+        { "Set-Cookie", "auth=" + sessionCookieRaw + "; Secure; SameSite=Strict; Max-Age=2592000; Path=/" }
+      };
+      response->write(headers);
+      fg.disable();
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "Web UI Login failed: ["sv << net::addr_to_normalized_string(request->remote_endpoint().address())
+                               << "]: "sv << e.what();
+      response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
+      fg.disable();
+      return;
+    }
   }
 
   /**
@@ -2722,13 +3130,18 @@ namespace confighttp {
     // Public SPA routes with authentication behavior that differs from the default fallback
     server.resource["^/logout/?$"]["GET"] = page_handler(false);
     server.resource["^/welcome/?$"]["GET"] = page_handler(false, true);
+    server.resource["^/login/?$"]["GET"] = page_handler(false);  // Apollo: session login page
 
     // rest api
     server.resource["^/api/browse$"]["GET"] = browseDirectory;
     server.resource["^/api/apps$"]["GET"] = getApps;
     server.resource["^/api/apps$"]["POST"] = saveApp;
-    server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
+    server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteAppByIndex;
     server.resource["^/api/apps/close$"]["POST"] = closeApp;
+    server.resource["^/api/apps/delete$"]["POST"] = deleteApp;  // Apollo: delete by UUID
+    server.resource["^/api/apps/launch$"]["POST"] = launchApp;  // Apollo
+    server.resource["^/api/apps/reorder$"]["POST"] = reorderApps;  // Apollo
+    server.resource["^/api/clients/disconnect$"]["POST"] = disconnect;  // Apollo
     server.resource["^/api/clients/list$"]["GET"] = getClients;
     server.resource["^/api/clients/unpair$"]["POST"] = unpair;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
@@ -2743,9 +3156,12 @@ namespace confighttp {
     server.resource["^/api/pin$"]["DELETE"] = cancelPairing;
     server.resource["^/api/pin$"]["GET"] = getPendingPairings;
     server.resource["^/api/pin$"]["POST"] = savePin;
+    server.resource["^/api/login$"]["POST"] = login;  // Apollo
     server.resource["^/api/logs$"]["GET"] = getLogs;
+    server.resource["^/api/otp$"]["POST"] = getOTP;  // Apollo
     server.resource["^/api/reset-display-device-persistence$"]["POST"] = resetDisplayDevicePersistence;
     server.resource["^/api/reset-portal-token$"]["POST"] = resetPortalToken;
+    server.resource["^/api/quit$"]["POST"] = quit;  // Apollo
     server.resource["^/api/restart$"]["POST"] = restart;
     server.resource["^/api/permissions$"]["GET"] = getPermissions;
     server.resource["^/api/permissions/request$"]["POST"] = requestPermission;
@@ -2754,8 +3170,8 @@ namespace confighttp {
     server.resource["^/api/virtual-input/status$"]["GET"] = getVirtualInputStatus;
 
     // static/dynamic resources
-    server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
-    server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getSunshineLogoImage;
+    server.resource["^/images/apollo.ico$"]["GET"] = getFaviconImage;
+    server.resource["^/images/logo-apollo-45.png$"]["GET"] = getApolloLogoImage;
     server.resource["^/assets\\/.+$"]["GET"] = getAsset;
 
     server.config.reuse_address = true;
@@ -2772,8 +3188,10 @@ namespace confighttp {
         });
       } catch (boost::system::system_error &err) {
         // It's possible the exception gets thrown after calling server->stop() from a different thread
-        if (shutdown_event->peek())
+        if (shutdown_event->peek()) {
           return;
+        }
+
         BOOST_LOG(fatal) << "Couldn't start Configuration HTTPS server on port ["sv << port_https << "]: "sv << err.what();
         shutdown_event->raise(true);
         return;

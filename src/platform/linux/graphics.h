@@ -648,6 +648,10 @@ namespace egl {
     std::optional<uint64_t> seq;  ///< PipeWire frame sequence number.
     std::optional<bool> pw_damage;  ///< Whether PipeWire damage tracking should be used.
     std::optional<uint32_t> pw_flags;  ///< PipeWire frame flags reported with the buffer.
+
+    /// The image is SDR (sRGB, BT.709) and its white is this many cd/m² in an HDR stream; it is converted to PQ
+    /// when the stream is HDR. 0: the image is already in the stream's transfer function (e.g. a PQ framebuffer).
+    float sdr_white_nits {0};
   };
 
   /**
@@ -791,6 +795,17 @@ namespace egl {
 
     // Store latest cursor for load_vram
     std::uint64_t serial;  ///< Serial.
+
+    // The stream is HDR (PQ), and the white level of SDR input (0: input is not SDR).
+    bool hdr_output {false};  ///< Whether the stream uses the PQ transfer function.
+    int yuv_program_count {2};  ///< YUV programs at the front of `program`: 2 for NV12, 3 for YUV444.
+    float sdr_white_nits {0};  ///< White level of SDR input in cd/m², 0 when the input is not SDR.
+
+  private:
+    /**
+     * @brief Push sdr_to_pq and sdr_white to the YUV programs.
+     */
+    void update_transfer_uniforms();
   };
 
   /**

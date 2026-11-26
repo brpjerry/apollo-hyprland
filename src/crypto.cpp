@@ -22,8 +22,19 @@ namespace crypto {
 
   cert_chain_t::cert_chain_t() = default;
 
-    X509_STORE_add_cert(x509_store.get(), x509(named_cert_p->cert).get());
-    _certs.emplace_back(std::make_pair(named_cert_p, std::move(x509_store)));
+  void cert_chain_t::add(x509_t &&cert) {
+    x509_store_t x509_store {X509_STORE_new()};
+
+    X509_STORE_add_cert(x509_store.get(), cert.get());
+    _certs.emplace_back(trusted_cert_t {nullptr, std::move(cert), std::move(x509_store)});
+  }
+
+  void cert_chain_t::add(const p_named_cert_t &named_cert_p) {
+    x509_store_t x509_store {X509_STORE_new()};
+    auto cert = x509(named_cert_p->cert);
+
+    X509_STORE_add_cert(x509_store.get(), cert.get());
+    _certs.emplace_back(trusted_cert_t {named_cert_p, std::move(cert), std::move(x509_store)});
   }
 
   void cert_chain_t::clear() {
@@ -47,8 +58,21 @@ namespace crypto {
   }
 
   const char *cert_chain_t::verify(x509_t::element_type *cert) {
+    p_named_cert_t ignored;
+    return verify(cert, ignored);
+  }
+
+  /**
+   * @brief Verify the certificate chain.
+   * When certificates from two or more instances of Moonlight have been added to x509_store_t,
+   * only one of them will be verified by X509_verify_cert, resulting in only a single instance of
+   * Moonlight to be able to use Sunshine
+   *
+   * To circumvent this, x509_store_t instance will be created for each instance of the certificates.
+   */
+  const char *cert_chain_t::verify(x509_t::element_type *cert, p_named_cert_t &named_cert_out) {
     int err_code = 0;
-    for (auto &[trusted_cert, x509_store] : _certs) {
+    for (auto &[named_cert_p, trusted_cert, x509_store] : _certs) {
       auto fg = util::fail_guard([this]() {
         X509_STORE_CTX_cleanup(_cert_ctx.get());
       });
@@ -63,6 +87,7 @@ namespace crypto {
 
       if (auto err = X509_verify_cert(_cert_ctx.get()); err == 1) {
         if (X509_cmp(trusted_cert.get(), cert) == 0) {
+          named_cert_out = named_cert_p;
           return nullptr;
         }
 

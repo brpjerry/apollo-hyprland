@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -41,6 +42,10 @@
 struct gbm_bo;
 struct gbm_device;
 struct _drmDevice;
+
+namespace platf {
+  class display_t;
+}
 
 namespace wl {
   /**
@@ -375,6 +380,17 @@ namespace wl {
     bool init(const std::string &render_path, const gbm_device_accessors_t &device_accessors);
 
     /**
+     * @brief Open a GBM device on the DRM node the compositor named, for capture buffers it can import.
+     *
+     * Keeps a device that is already open.
+     *
+     * @param device dev_t of the DRM node to use (its render node is preferred), or no value for the configured
+     *        render device (platf::resolve_render_device()).
+     * @return `true` when a device is held.
+     */
+    bool open(std::optional<std::uint64_t> device = std::nullopt);
+
+    /**
      * @brief Destroy the GBM device and close the render-node descriptor.
      */
     void reset();
@@ -400,6 +416,8 @@ namespace wl {
       return device != nullptr;
     }
 
+    std::optional<std::uint64_t> dev;  ///< dev_t of the node opened by open(), if known.
+
   private:
     gbm_device_accessors_t accessors {};  ///< Functions used to create and destroy the device.
     int drm_fd {-1};  ///< Render-node descriptor the device was created from, or -1.
@@ -423,7 +441,7 @@ namespace wl {
     std::uint32_t shm_stride {0};  ///< Number of bytes per row in `shm_data`.
     std::uint32_t shm_format {0};  ///< `wl_shm` pixel format describing `shm_data`.
     bool is_shm {false};  ///< Whether this frame carries shared-memory pixels instead of a DMA-BUF.
-    bool shm_y_invert {false};  ///< Whether shared-memory rows are ordered bottom to top.
+    bool shm_y_invert {false};  ///< Whether rows are ordered bottom to top (shared memory and, for the encoder, DMA-BUFs).
   };
 
   /**
@@ -463,25 +481,18 @@ namespace wl {
      * @brief Capture state for the active screencopy request.
      */
     enum status_e {
-      IDLE,  ///< No frame in flight
       WAITING,  ///< Waiting for a frame
       READY,  ///< Frame is ready
       REINIT,  ///< Reinitialize the frame
     };
 
-    explicit screencopy_t(std::size_t max_buffers);
-    ~screencopy_t();
+    dmabuf_t();
+    ~dmabuf_t();
 
-    screencopy_t(screencopy_t &&) = delete;
-    screencopy_t(const screencopy_t &) = delete;
-    screencopy_t &operator=(const screencopy_t &) = delete;
-    screencopy_t &operator=(screencopy_t &&) = delete;
-
-    /**
-     * @brief Starts capturing a frame unless one is already in flight.
-     * @return The buffer pool's answer: `busy` if no buffer is free yet; `failed` sets status to REINIT.
-     */
-    buffer_pool_t::acquire_e start(display_t &display, zwlr_screencopy_manager_v1 *screencopy_manager, zwp_linux_dmabuf_v1 *linux_dmabuf, wl_shm *shm, struct gbm_device *device, wl_output *output, bool blend_cursor);
+    dmabuf_t(dmabuf_t &&) = delete;
+    dmabuf_t(const dmabuf_t &) = delete;
+    dmabuf_t &operator=(const dmabuf_t &) = delete;
+    dmabuf_t &operator=(dmabuf_t &&) = delete;
 
     /**
      * @brief Start a screencopy request and attach the DMA-BUF listener callbacks.
@@ -616,14 +627,13 @@ namespace wl {
     bool prefer_linear_copy {false};  ///< Allocate linear copy buffers for cross-GPU encode import.
     bool gbm_failed {false};  ///< Stay on SHM after DMA-BUF allocation, import or copy fails.
 
-  /**
-   * @brief Capture statistics exposed by the Wayland capture backends (for tests and diagnostics).
-   */
-  struct capture_stats_t {
-    std::size_t buffers_allocated {0};  ///< Capture buffers allocated since the display was created.
-    std::size_t frames_captured {0};  ///< Frames completed by the compositor.
-    std::size_t frames_delivered {0};  ///< Frames handed to the encoder.
-  };
+    struct {
+      bool supported {false};
+      std::uint32_t format;
+      std::uint32_t width;
+      std::uint32_t height;
+      std::uint32_t stride;
+    } shm_info;
 
     struct {
       bool supported {false};
@@ -647,6 +657,113 @@ namespace wl {
       wl_buffer *buffer {nullptr};  ///< Per-frame copy destination.
       bool active {false};  ///< Whether the pending copy uses shared memory.
     } shm;  ///< Shared-memory resources and capture mode.
+  };
+
+  class display_t;
+
+  /**
+   * @brief A buffer the compositor copies frames into: a GBM dma-buf or a shared memory buffer.
+   */
+  class capture_buffer_t {
+  public:
+    ~capture_buffer_t();
+
+    capture_buffer_t(const capture_buffer_t &) = delete;
+    capture_buffer_t &operator=(const capture_buffer_t &) = delete;
+
+    /**
+     * @brief Allocates a dma-buf with GBM and wraps it in a wl_buffer through linux-dmabuf.
+     * @details Roundtrips with the compositor, so it must not be called from inside a Wayland callback.
+     */
+    static std::unique_ptr<capture_buffer_t> make_dmabuf(display_t &display, zwp_linux_dmabuf_v1 *linux_dmabuf, struct gbm_device *device, const buffer_spec_t &spec);
+
+    /**
+     * @brief Allocates a memfd backed wl_shm buffer.
+     */
+    static std::unique_ptr<capture_buffer_t> make_shm(wl_shm *shm, const buffer_spec_t &spec);
+
+    /**
+     * @brief Copies the dma-buf description with duplicated file descriptors; the caller owns them.
+     * @return false if a descriptor could not be duplicated (`out` then owns none).
+     */
+    bool export_descriptor(egl::surface_descriptor_t &out) const;
+
+    buffer_spec_t spec;
+    wl_buffer *buffer {nullptr};
+
+    /// dma-buf planes; the file descriptors belong to this buffer.
+    egl::surface_descriptor_t sd;
+
+    /// shm mapping.
+    std::uint8_t *data {nullptr};
+    std::size_t size {0};
+    std::uint32_t stride {0};
+
+  private:
+    capture_buffer_t();
+
+    struct gbm_bo *bo {nullptr};
+  };
+
+  /**
+   * @brief A small pool of capture buffers reused from frame to frame (see buffer_slots_t).
+   */
+  class buffer_pool_t {
+  public:
+    explicit buffer_pool_t(std::size_t max_buffers):
+        slots {max_buffers},
+        max_buffers {max_buffers} {
+    }
+
+    /**
+     * @brief Sets what buffers to allocate. Existing buffers are dropped if the spec changed.
+     */
+    void configure(const buffer_spec_t &spec);
+
+    enum class acquire_e {
+      ok,  ///< `index` is a slot with an allocated buffer, now marked as capturing.
+      busy,  ///< Every buffer is in use; try again once the encoder released one.
+      failed,  ///< Allocation failed.
+    };
+
+    /**
+     * @brief Picks a buffer to capture into, allocating it if needed.
+     * @details May roundtrip with the compositor, so it must not be called from inside a Wayland callback.
+     */
+    acquire_e acquire(display_t &display, zwp_linux_dmabuf_v1 *linux_dmabuf, wl_shm *shm, struct gbm_device *device, std::size_t &index);
+
+    capture_buffer_t &operator[](std::size_t index) {
+      return *buffers[index];
+    }
+
+    bool configured() const {
+      return spec.width && spec.height;
+    }
+
+    buffer_spec_t spec;
+    buffer_slots_t slots;
+
+    /// Number of buffers allocated since construction (including ones dropped by configure()).
+    std::size_t allocations {0};
+
+  private:
+    std::size_t max_buffers;
+    std::vector<std::unique_ptr<capture_buffer_t>> buffers;
+  };
+
+  /**
+   * @brief Capture statistics exposed by the Wayland capture backends (for tests and diagnostics).
+   */
+  struct capture_stats_t {
+    std::size_t buffers_allocated {0};  ///< Capture buffers allocated since the display was created.
+    std::size_t frames_captured {0};  ///< Frames completed by the compositor.
+    std::size_t frames_delivered {0};  ///< Frames handed to the encoder.
+  };
+
+  class capture_stats_source_t {
+  public:
+    virtual ~capture_stats_source_t() = default;
+    virtual capture_stats_t capture_stats() const = 0;
   };
 
   /**
@@ -712,9 +829,7 @@ namespace wl {
      * input needs the transform to map points onto it.
      * @param transform Wayland output transform value.
      */
-    void wl_geometry(wl_output *, std::int32_t, std::int32_t, std::int32_t, std::int32_t, std::int32_t, const char *, const char *, std::int32_t transform) {  // NOSONAR(cpp:S107): libwayland's wl_output geometry callback signature.
-      viewport.transform = transform;
-    }
+    void wl_geometry(wl_output *, std::int32_t, std::int32_t, std::int32_t, std::int32_t, std::int32_t, const char *, const char *, std::int32_t transform);  // NOSONAR(cpp:S107): libwayland's wl_output geometry callback signature.
 
     /**
      * @brief Store the active pixel mode reported by wl-output.
@@ -736,20 +851,39 @@ namespace wl {
     }
 
     /**
-     * @brief Ignore wl-output scale; capture uses the active pixel mode and xdg-output logical size.
-     * @details Retain the wl-output listener signature while ignoring both event arguments.
+     * @brief Store the wl-output integer scale (used when xdg-output gives no logical size).
+     *
+     * @param factor Integer scale factor of the output.
      */
-    void wl_scale(wl_output *, std::int32_t) {
-      // Pixel mode and xdg-output logical size already describe the capture and input coordinate spaces.
-    }
+    void wl_scale(wl_output *, std::int32_t factor);
+
+    /**
+     * @brief Store the wl-output connector name (wl_output v4), preferred over the xdg-output name.
+     *
+     * @param name Connector name, e.g. "DP-3".
+     */
+    void wl_name(wl_output *, const char *name);
+
+    /**
+     * @brief Store the wl-output description (wl_output v4).
+     *
+     * @param description Human-readable description used in log output.
+     */
+    void wl_description(wl_output *, const char *description);
 
     wl_output *output;  ///< Wayland output associated with this monitor.
-    std::string name;  ///< xdg-output name used for display selection.
-    std::string description;  ///< xdg-output description used for logs and UI.
+    /// Connector name (e.g. "DP-3", "HEADLESS-2") used for display selection, from wl_output.name (v4) or else
+    /// zxdg_output_v1.name. Empty if the compositor supports neither.
+    std::string name;
+    std::string description;  ///< Output description used for logs and UI.
     platf::touch_port_t viewport;  ///< Logical monitor bounds used to scale absolute input.
+    output_geometry_t geometry;  ///< Logical position/size, mode size, transform and scale of this output.
     std::int32_t refresh_mhz {0};  ///< Refresh rate of the current mode in mHz, 0 when the compositor did not say.
     wl_output_listener wl_listener;  ///< Callback table for wl-output events.
     zxdg_output_v1_listener xdg_listener;  ///< Callback table for xdg-output events.
+
+  private:
+    bool has_wl_name {false};  ///< `name` came from wl_output.name and is kept over the xdg-output name.
   };
 
   /**
@@ -836,6 +970,20 @@ namespace wl {
     zwp_linux_dmabuf_v1 *dmabuf_interface {nullptr};  ///< Linux DMA-BUF global used to allocate frame buffers.
     zxdg_output_manager_v1 *output_manager {nullptr};  ///< xdg-output global used to query monitor names and sizes.
     wl_shm *shm_interface {nullptr};  ///< Shared-memory global used when DMA-BUF allocation is unavailable.
+    ext_image_copy_capture_manager_v1 *ext_copy_manager {nullptr};  ///< ext-image-copy-capture manager.
+    ext_output_image_capture_source_manager_v1 *ext_output_source_manager {nullptr};  ///< ext output capture sources.
+
+    /**
+     * @brief Bind wp_color_manager_v1. Set before listen().
+     * @details Off by default: Hyprland treats every client that bound the color manager as color-management aware
+     *          and then hands it captured frames in the output's own color space instead of converting them to sRGB
+     *          (ScreenshareFrame.cpp, `cmBackToSRGB`). Capture connections therefore leave it unbound; output_color_t
+     *          uses a connection of its own.
+     */
+    bool bind_color_manager {false};
+    wp_color_manager_v1 *color_manager {nullptr};  ///< Color manager, when bind_color_manager is set.
+    /// What the color manager advertised (supported_tf_named, supported_primaries_named, supported_feature).
+    std::vector<std::uint32_t> color_tfs, color_primaries, color_features;
 
   private:
     /**
@@ -876,6 +1024,9 @@ namespace wl {
     // Wait up to the timeout to read and dispatch new events
     bool dispatch(std::chrono::milliseconds timeout);
 
+    /// True once the connection failed (compositor gone, protocol error): nothing will be dispatched any more.
+    bool broken();
+
     /**
      * @brief Return the Wayland registry for global discovery.
      *
@@ -904,6 +1055,135 @@ namespace wl {
    */
   std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name = nullptr);
   /**
+   * @brief The color description of one output, from wp-color-management-v1.
+   * @details Uses a Wayland connection of its own (see interface_t::bind_color_manager), so it can live next to a
+   *          capture connection without changing what that one receives. Events are only read in open() and
+   *          poll_changed(); there is no thread.
+   */
+  class output_color_t {
+  public:
+    output_color_t() = default;
+    ~output_color_t();
+
+    output_color_t(const output_color_t &) = delete;
+    output_color_t &operator=(const output_color_t &) = delete;
+
+    /**
+     * @brief Connects, finds the output by connector name and fetches its image description.
+     * @return false if the compositor has no wp_color_manager_v1, the output does not exist, or the description
+     *         could not be read. description() is empty then.
+     */
+    bool open(const std::string &output_name, std::chrono::milliseconds timeout = std::chrono::seconds {1});
+
+    /**
+     * @brief Reads pending events without blocking. On image_description_changed the description is fetched again.
+     * @return true if the description is now different from before.
+     */
+    bool poll_changed();
+
+    const std::optional<image_description_t> &description() const {
+      return desc;
+    }
+
+    /// The output's description is HDR10 (ST 2084 PQ with BT.2020 primaries).
+    bool is_hdr() const {
+      return desc && is_hdr10(*desc);
+    }
+
+    /// The compositor can describe outputs as PQ / BT.2020, i.e. it supports HDR outputs at all.
+    bool compositor_supports_hdr10() const;
+
+    /**
+     * @brief For an HDR output: where white of the captured frames belongs in the HDR stream, in cd/m².
+     * @details Capture clients do not get the PQ framebuffer of an HDR output. Hyprland (0.57.2 and its main branch
+     *          as of 2026-11) copies frames out of a mirror buffer whose image description is sRGB whenever the output
+     *          uses PQ (CMonitorResources::getMirrorTexImageDescription()), converting and tone mapping the HDR
+     *          content to SDR, for color-management aware clients as well. Measured on a headless HDR output with
+     *          a PQ test pattern: 974, 102 and 5 cd/m² patches came back as sRGB 235, 186 and 71 (PQ would be 191,
+     *          130 and 64), and SDR content came back exactly as on an SDR output. The frames are therefore SDR with
+     *          white at the output's reference luminance (203 cd/m², from the image description), which is where
+     *          Hyprland puts SDR white on the HDR output.
+     * @return 0 for SDR outputs.
+     */
+    float sdr_white_nits() const;
+
+  private:
+    std::optional<image_description_t> fetch(std::chrono::milliseconds timeout);
+    void reset();
+
+    display_t display;
+    std::unique_ptr<interface_t> interface;
+    wp_color_management_output_v1 *cm_output {nullptr};
+    std::optional<image_description_t> desc;
+    bool changed {false};
+  };
+
+  /**
+   * @brief Logs an image description in one line.
+   */
+  std::string describe(const image_description_t &desc);
+
+  /**
+   * @brief Connects the registry, binds the globals and fetches every output's name and geometry.
+   * @return false if xdg-output is missing or there are no outputs.
+   */
+  bool enumerate_outputs(display_t &display, interface_t &interface);
+
+  /**
+   * @brief Names used to select outputs: the connector name, or the enumeration index if the compositor
+   *        did not report a name.
+   */
+  std::vector<std::string> output_names(const interface_t &interface);
+
+  /**
+   * @brief Finds the output to stream by connector name (or legacy index). An empty name selects the first output.
+   * @return The output's index in interface.monitors, or std::nullopt (logged) if it does not exist.
+   */
+  std::optional<std::size_t> select_output(const interface_t &interface, const std::string &display_name);
+
+  /**
+   * @brief Fills a display's size and input geometry for the selected output (ext-image-copy-capture).
+   * @param frame Size of the captured frames in hardware pixels, in the orientation the compositor delivers them.
+   * @details Everything handed to input is in the compositor's logical (scaled) layout space;
+   *          see input::touch_port_t for how these are used.
+   */
+  void apply_output_geometry(platf::display_t &display, const interface_t &interface, std::size_t index, extent_t frame);
+
+  /**
+   * @brief Logs the outputs (for the display list in the web UI's troubleshooting log).
+   */
+  void log_outputs(const interface_t &interface, const std::vector<std::string> &names);
+
+  /**
+   * @brief Copies a captured buffer into a system memory BGRA image.
+   * @param egl_display Display used to import dma-bufs; its context must be current. Unused for shm buffers.
+   * @param y_invert The buffer is stored bottom row first.
+   * @return false if the dma-buf could not be imported.
+   */
+  bool read_buffer(egl::display_t::pointer egl_display, const capture_buffer_t &buffer, platf::img_t &img, bool y_invert);
+
+  /**
+   * @brief Hands the ready dma-buf in `slot` to the encoder through an egl::img_descriptor_t.
+   * @details The image gets duplicated file descriptors, and the slot is not reused while anyone besides
+   *          the capture image pool still holds the image.
+   * @return false if the file descriptors could not be duplicated.
+   */
+  bool hand_over_buffer(buffer_pool_t &pool, std::size_t slot, const std::shared_ptr<platf::img_t> &img, std::uint64_t sequence, bool y_invert);
+
+  /**
+   * @brief Options for the ext-image-copy-capture backend.
+   */
+  struct ext_options_t {
+    /// Use shared memory buffers for system memory capture even when dma-bufs are possible.
+    bool prefer_shm {false};
+  };
+
+  /**
+   * @brief Creates an ext-image-copy-capture display (platf::ext_display() with options).
+   */
+  std::shared_ptr<platf::display_t> make_ext_display(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config, const ext_options_t &options);
+
+  /**
    * @brief Initialize Wayland registry interfaces required for capture.
    *
    * @return 0 on success; nonzero or negative platform status on failure.
@@ -930,7 +1210,7 @@ namespace wl {
     wl_output *output;
     std::string name;
     std::string description;
-    output_geometry_t geometry;
+    platf::touch_port_t viewport;
   };
 
   inline std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name = nullptr) {

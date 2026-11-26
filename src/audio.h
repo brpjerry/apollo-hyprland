@@ -79,6 +79,12 @@ namespace audio {
     stream_params_t customStreamParams;  ///< Custom Opus layout used when CUSTOM_SURROUND_PARAMS is enabled.
 
     std::bitset<MAX_FLAGS> flags;  ///< Enabled audio feature flags.
+
+    // Who TF knows what Sunshine did
+    // putting input_only at the end of flags will always be over written to true
+    uint64_t __padding;
+
+    bool input_only;  ///< Apollo: stream carries input only, so audio capture is skipped.
   };
 
   /**

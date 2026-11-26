@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -29,6 +30,7 @@ using namespace std::chrono_literals;
 
 namespace confighttp {
   constexpr auto PORT_HTTPS = 1;  ///< GameStream port offset for port https.
+  constexpr auto SESSION_EXPIRE_DURATION = 24h * 15;  ///< Apollo: lifetime of a Web UI login session.
 
   // Type aliases for HTTPS server components
   using https_server_t = SimpleWeb::Server<SimpleWeb::HTTPS>;

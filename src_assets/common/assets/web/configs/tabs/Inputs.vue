@@ -226,7 +226,7 @@ watch(
               default="true"
     ></Checkbox>
 
-    <!-- Key Repeat Delay (Windows only: on Linux, applications repeat held keys themselves) -->
+    <!-- Key Repeat Delay-->
     <div class="mb-3" v-if="config.keyboard === 'enabled' && platform === 'windows'">
       <label for="key_repeat_delay" class="form-label">{{ $t('config.key_repeat_delay') }}</label>
       <input type="text" class="form-control" id="key_repeat_delay" placeholder="500"
@@ -243,7 +243,7 @@ watch(
     </div>
 
     <!-- Always send scancodes -->
-    <Checkbox v-if="config.keyboard === 'enabled' && (platform === 'windows' || platform === 'linux')"
+    <Checkbox v-if="config.keyboard === 'enabled' && platform === 'windows'"
               class="mb-3"
               id="always_send_scancodes"
               locale-prefix="config"
@@ -348,26 +348,6 @@ watch(
               v-model="config.native_pen_touch"
               default="true"
     ></Checkbox>
-
-    <!-- Enable Input Only Mode -->
-    <hr>
-    <Checkbox class="mb-3"
-              id="enable_input_only_mode"
-              locale-prefix="config"
-              v-model="config.enable_input_only_mode"
-              default="false"
-    ></Checkbox>
-
-    <!-- Enable Rumble Messages to Controllers -->
-    <hr>
-    <Checkbox v-if="platform === 'windows' || platform === 'linux'"
-              class="mb-3"
-              id="forward_rumble"
-              locale-prefix="config"
-              v-model="config.forward_rumble"
-              default="true"
-    ></Checkbox>
-
   </div>
 </template>
 
