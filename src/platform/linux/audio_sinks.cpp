@@ -147,10 +147,14 @@ namespace platf::pa {
         // Not linked yet; look again when it changes.
         continue;
       }
-      _seen.insert(input.index);
-
+      // An input counts as seen once it is on the mute sink or was moved there; a later move by the user is then
+      // left alone. Until then (its sink not listed yet, or the move failed) its next change tries again.
       auto from = sink_name(input.sink);
-      if (!from || *from == _mute_sink) {
+      if (!from) {
+        continue;
+      }
+      if (*from == _mute_sink) {
+        _seen.insert(input.index);
         continue;
       }
       if (_backend.move_sink_input(input.index, _mute_sink)) {
@@ -158,6 +162,7 @@ namespace platf::pa {
         continue;
       }
       BOOST_LOG(info) << "Moved audio stream ["sv << input.name << "] from ["sv << *from << "] to ["sv << _mute_sink << ']';
+      _seen.insert(input.index);
       _moved.emplace(input.index, *from);
     }
   }
@@ -253,8 +258,9 @@ namespace platf::pa {
       return;
     }
 
-    bool assigned_is_mute = std::ranges::find(_mute_sinks, _assigned) != _mute_sinks.end();
-    if (options.keep_default && assigned_is_mute) {
+    // Only a mute Apollo started is defended. A virtual sink Apollo merely followed (host audio on, the user picked
+    // it) is the user's choice like any other, and so is the next one.
+    if (options.keep_default && !_mute_sink.empty() && _assigned == _mute_sink) {
       while (!_restores.empty() && now - _restores.front() > keep_default_window) {
         _restores.pop_front();
       }

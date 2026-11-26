@@ -397,6 +397,44 @@ TEST_F(AudioSinkManagerTest, AutoCaptureFollowsTheDefaultAwayFromAConfiguredSink
 }
 
 // Bugs caught: 0, False positives: 0
+TEST_F(AudioSinkManagerTest, AFollowedVirtualSinkIsNotPutBack) {
+  // Host audio on: Apollo never muted, the user picks the virtual sink and later another device.
+  server.default_name = "sink-sunshine-stereo";
+  manager.on_server_changed({.keep_default = true, .auto_capture = true});
+  EXPECT_EQ(manager.capture_sink(""), "sink-sunshine-stereo");
+  EXPECT_FALSE(manager.muted());
+
+  server.log.clear();
+  server.default_name = "headset";
+  manager.on_server_changed({.keep_default = true, .auto_capture = true});
+  EXPECT_EQ(server.default_name, "headset") << "keep_sink_default only defends a mute Apollo started";
+  EXPECT_TRUE(server.log.empty());
+  EXPECT_EQ(manager.capture_sink(""), "headset");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(AudioSinkManagerTest, AStreamWhoseMoveFailedIsMovedOnItsNextChange) {
+  ASSERT_EQ(manager.set_sink("sink-sunshine-stereo"), 0);
+  server.add_input(5, "headset");
+  server.unmovable.insert(5);
+  manager.on_sink_input_changed(5);
+  EXPECT_EQ(server.sink_of(5), "headset");
+
+  // The next change notification for the stream retries the move.
+  server.unmovable.erase(5);
+  manager.on_sink_input_changed(5);
+  EXPECT_EQ(server.sink_of(5), "sink-sunshine-stereo");
+
+  // Once moved, a move by the user is left alone.
+  server.input(5)->sink = server.sink_index("speakers");
+  manager.on_sink_input_changed(5);
+  EXPECT_EQ(server.sink_of(5), "speakers");
+
+  manager.unmute();
+  EXPECT_FALSE(manager.muted());
+}
+
+// Bugs caught: 0, False positives: 0
 TEST_F(AudioSinkManagerTest, CaptureSinkPriority) {
   EXPECT_EQ(manager.capture_sink(""), "speakers");
   EXPECT_EQ(manager.capture_sink("headset"), "headset");
