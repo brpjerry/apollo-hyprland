@@ -81,6 +81,11 @@ makedepends=(
   'wayland-protocols'
 )
 
+# test.sh hides /dev/uinput and /dev/uhid from the unit tests with bubblewrap when the build user can write them.
+if [[ "${_run_unit_tests::1}" == "t" ]]; then
+  checkdepends=('bubblewrap')
+fi
+
 optdepends=(
   'hyprland: virtual displays and per-stream workspaces'
   'libva-mesa-driver: AMD GPU encoding support'

@@ -86,6 +86,10 @@ CPMDeclarePackage(libvirtualhid
 # renovate: datasource=git-refs depName=moonlight-stream/moonlight-common-c
 # ref=master
 set(MOONLIGHT_COMMON_C_COMMIT b4ee1cea3d19e13c0b37c26585e6b1ee174effcb)
+# The patch digests are part of the declaration, so CPM_SOURCE_CACHE keeps a separate source tree per patch set: a
+# cached tree is reused without running PATCH_COMMAND, and would otherwise keep an edited patch's old version.
+file(SHA256 "${PATCH_DIRECTORY}/moonlight-common-c-0001-server-cmd-over-control-stream.patch" MOONLIGHT_PATCH_0001_SHA256)
+file(SHA256 "${PATCH_DIRECTORY}/moonlight-common-c-0002-send-empty-payload.patch" MOONLIGHT_PATCH_0002_SHA256)
 CPMDeclarePackage(moonlight-common-c
         NAME moonlight-common-c
         GIT_REPOSITORY https://github.com/moonlight-stream/moonlight-common-c.git
@@ -96,6 +100,7 @@ CPMDeclarePackage(moonlight-common-c
         # Applied with apply_patches_once.cmake instead of PATCHES so a reconfigure does not apply them twice.
         PATCH_COMMAND ${CMAKE_COMMAND}
             "-DPATCH_FILES=${PATCH_DIRECTORY}/moonlight-common-c-0001-server-cmd-over-control-stream.patch|${PATCH_DIRECTORY}/moonlight-common-c-0002-send-empty-payload.patch"
+            "-DPATCH_SET=${MOONLIGHT_PATCH_0001_SHA256}-${MOONLIGHT_PATCH_0002_SHA256}"
             -P "${CMAKE_CURRENT_LIST_DIR}/cmake/scripts/apply_patches_once.cmake"
         DOWNLOAD_ONLY YES
 )
@@ -126,6 +131,7 @@ CPMDeclarePackage(plasma_wayland_protocols
 # renovate: datasource=git-refs depName=eidheim/Simple-Web-Server
 # ref=master
 set(SIMPLE_WEB_SERVER_COMMIT 546895a93a29062bb178367b46c7afb72da9881e)
+file(SHA256 "${PATCH_DIRECTORY}/simple-web-server-0001-request-userp.patch" SIMPLE_WEB_SERVER_PATCH_0001_SHA256)  # see moonlight-common-c
 CPMDeclarePackage(simple_web_server
         NAME simple_web_server
         GIT_REPOSITORY https://github.com/LizardByte-infrastructure/Simple-Web-Server.git
@@ -133,6 +139,7 @@ CPMDeclarePackage(simple_web_server
         # Apollo adds a per-request user pointer (ClassicOldSong/Simple-Web-Server), rebased onto the pin above.
         PATCH_COMMAND ${CMAKE_COMMAND}
             "-DPATCH_FILES=${PATCH_DIRECTORY}/simple-web-server-0001-request-userp.patch"
+            "-DPATCH_SET=${SIMPLE_WEB_SERVER_PATCH_0001_SHA256}"
             -P "${CMAKE_CURRENT_LIST_DIR}/cmake/scripts/apply_patches_once.cmake"
 )
 

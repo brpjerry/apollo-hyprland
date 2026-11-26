@@ -88,12 +88,14 @@ script to support other distributions.
 
 ##### Arch Linux + Hyprland
 ```bash
-sudo pacman -S --needed base-devel git cmake ninja boost boost-libs nlohmann-json nodejs npm python-jinja shaderc \
+sudo pacman -S --needed base-devel git cmake ninja bubblewrap boost boost-libs nlohmann-json nodejs npm python-jinja shaderc \
   vulkan-headers wayland wayland-protocols libva libdrm libpipewire libpulse libevdev libxkbcommon avahi miniupnpc \
   libcap numactl opus qt6-base qt6-svg vulkan-icd-loader cuda
 scripts/hyprland/build.sh        # configures build/ with tests and CUDA, then builds
 scripts/hyprland/test.sh         # runs unit tests, skipping known baseline failures
 ```
+`test.sh` uses `bwrap` (bubblewrap) to hide `/dev/uinput` and `/dev/uhid` from the tests when you can write them, so
+they never add input devices to your session.
 `packaging/linux/Arch/PKGBUILD` has the full dependency list. Most other dependencies (moonlight-common-c,
 Simple-Web-Server, libdisplaydevice, libvirtualhid, the tray and the Wayland protocol files that Arch does not package)
 are fetched by [CPM](https://github.com/cpm-cmake/CPM.cmake) at configure time, at the versions pinned in
@@ -129,6 +131,8 @@ status 77 (skipped). To use the instance for something else:
 eval "$(scripts/hyprland/run-headless-hyprland.sh start -o 2560x1440@120)"   # exports WAYLAND_DISPLAY etc.
 hyprctl monitors
 scripts/hyprland/run-headless-hyprland.sh stop
+```
+
 ##### KMS Capture
 If you are using KMS, patching the Sunshine binary with `setcap` is required. Some post-install scripts handle this. If building
 from source and using the binary directly, this will also work:
@@ -285,6 +289,7 @@ Ensure [git](https://git-scm.com) is installed on your system, then clone the re
 ```bash
 git clone https://github.com/brpjerry/apollo-hyprland.git
 cd apollo-hyprland
+git submodule update --init third-party/lizardbyte-common
 mkdir build
 ```
 
