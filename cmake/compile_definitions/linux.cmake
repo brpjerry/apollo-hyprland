@@ -128,8 +128,9 @@ if(WAYLAND_FOUND)
     if(NOT SUNSHINE_SYSTEM_WAYLAND_PROTOCOLS)
         set(WAYLAND_PROTOCOLS_DIR "${CMAKE_SOURCE_DIR}/third-party/wayland-protocols")
     else()
+        # 1.41 for color-management-v1, the newest protocol generated below.
+        pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols>=1.41)
         pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
-        pkg_check_modules(WAYLAND_PROTOCOLS wayland-protocols REQUIRED)
     endif()
 
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "unstable/xdg-output" xdg-output-unstable-v1)
