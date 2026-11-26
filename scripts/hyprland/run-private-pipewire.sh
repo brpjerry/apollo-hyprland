@@ -86,7 +86,8 @@ run_session() {
   done
   pipewire-pulse > "$dir/pipewire-pulse.log" 2>&1 &
   wireplumber > "$dir/wireplumber.log" 2>&1 &
-  wait -n
+  # Any exit, failed or not, ends the instance; under set -e a failed one must not skip the group kill below.
+  wait -n || true
   log "a daemon of the private instance exited"
   kill -TERM 0 2>/dev/null || true
 }
