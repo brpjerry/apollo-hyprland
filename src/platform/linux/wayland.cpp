@@ -742,6 +742,12 @@ namespace wl {
     shm_info.width = width;
     shm_info.height = height;
     shm_info.stride = stride;
+
+    // buffer_done (and linux_dmabuf) came with version 3. Before that, this SHM event is the only buffer description,
+    // so request the copy now or the frame is never filled.
+    if (zwlr_screencopy_frame_v1_get_version(frame) < ZWLR_SCREENCOPY_FRAME_V1_BUFFER_DONE_SINCE_VERSION) {
+      buffer_done(frame);
+    }
   }
 
   // DMA-BUF format callback

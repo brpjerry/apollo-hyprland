@@ -69,7 +69,7 @@ namespace platf::touch_pen {
     return event;
   }
 
-  std::string client_device_suffix(int client_id) {
-    return std::format(" (client {})", client_id);
+  std::string client_device_suffix(int process_id, int client_id) {
+    return std::format(" (client {}-{})", process_id, client_id);
   }
 }  // namespace platf::touch_pen

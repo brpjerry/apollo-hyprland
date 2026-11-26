@@ -58,10 +58,12 @@ namespace platf::touch_pen {
   pen_input_t pen_event(const pen_input_t &pen, pen_state_t &state);
 
   /**
-   * @brief Suffix for a client's device names, unique within this process, e.g. " (client 3)".
-   * @details Hyprland binds devices to an output by name, so clients must not share names.
-   * @param client_id Client number.
+   * @brief Suffix for a client's device names, unique on the host, e.g. " (client 4242-3)".
+   * @details Hyprland binds devices to an output by name, so clients must not share names, not even with the clients
+   * of another Apollo process on the same compositor: the process id keeps them apart.
+   * @param process_id Id of this process.
+   * @param client_id Client number within the process.
    * @return The suffix.
    */
-  std::string client_device_suffix(int client_id);
+  std::string client_device_suffix(int process_id, int client_id);
 }  // namespace platf::touch_pen

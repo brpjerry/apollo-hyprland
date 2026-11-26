@@ -8,6 +8,7 @@
 #include <chrono>
 #include <fcntl.h>
 #include <filesystem>
+#include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -123,6 +124,26 @@ namespace portal {
 #endif
 
 namespace platf {
+  /**
+   * @brief Result of scanning one netlink datagram of a route dump (scan_gateway_routes()).
+   */
+  enum class route_scan_e {
+    more,  ///< Nothing yet; read the next datagram.
+    found,  ///< Found the local address of a route through a gateway.
+    done,  ///< The dump ended without one.
+    failed,  ///< The kernel answered with an error.
+  };
+
+  /**
+   * @brief Look for the local address of the default gateway's route in one datagram of an RTM_GETROUTE dump.
+   *
+   * @param data Datagram as received.
+   * @param size Length of the datagram.
+   * @param local_ip Receives the local address when one is found.
+   * @return Whether to keep reading.
+   */
+  route_scan_e scan_gateway_routes(const char *data, std::size_t size, std::string &local_ip);
+
   /**
    * @brief Remove environment variables that can load untrusted GUI modules.
    *

@@ -12,8 +12,14 @@
   // standard includes
   #include <array>
   #include <cstdlib>
+  #include <cstring>
+  #include <vector>
   #include <optional>
   #include <string>
+
+  // system includes
+  #include <arpa/inet.h>
+  #include <linux/rtnetlink.h>
 
   // local includes
   #include "src/config.h"
@@ -137,6 +143,86 @@ TEST(LinuxCaptureSessionHint, LogsOnlyWithoutSessionVariablesAndWithoutKms) {
   ASSERT_EQ(unsetenv("WAYLAND_DISPLAY"), 0);
   ASSERT_EQ(setenv("DISPLAY", ":1", 1), 0);
   EXPECT_FALSE(platf::log_missing_graphical_session_hint());
+}
+
+/**
+ * @brief Append one netlink message to a datagram.
+ *
+ * @param datagram Datagram being built.
+ * @param type Message type.
+ * @param payload Message payload.
+ */
+static void append_netlink_message(std::vector<char> &datagram, std::uint16_t type, const std::vector<char> &payload) {
+  nlmsghdr header {};
+  header.nlmsg_len = NLMSG_LENGTH(payload.size());
+  header.nlmsg_type = type;
+  const auto offset = datagram.size();
+  datagram.resize(offset + NLMSG_SPACE(payload.size()));
+  std::memcpy(datagram.data() + offset, &header, sizeof(header));
+  std::memcpy(datagram.data() + offset + NLMSG_HDRLEN, payload.data(), payload.size());
+}
+
+/**
+ * @brief An RTM_NEWROUTE payload for the main IPv4 table.
+ *
+ * @param gateway Gateway address, or nullptr for none.
+ * @param local Preferred source address.
+ */
+static std::vector<char> route_payload(const char *gateway, const char *local) {
+  std::vector<char> payload(NLMSG_ALIGN(sizeof(rtmsg)));
+  rtmsg route {};
+  route.rtm_family = AF_INET;
+  route.rtm_table = RT_TABLE_MAIN;
+  std::memcpy(payload.data(), &route, sizeof(route));
+  auto add = [&payload](std::uint16_t type, const char *address) {
+    in_addr value {};
+    inet_pton(AF_INET, address, &value);
+    rtattr attribute {};
+    attribute.rta_len = RTA_LENGTH(sizeof(value));
+    attribute.rta_type = type;
+    const auto offset = payload.size();
+    payload.resize(offset + RTA_SPACE(sizeof(value)));
+    std::memcpy(payload.data() + offset, &attribute, sizeof(attribute));
+    std::memcpy(payload.data() + offset + RTA_LENGTH(0), &value, sizeof(value));
+  };
+  if (gateway) {
+    add(RTA_GATEWAY, gateway);
+  }
+  add(RTA_PREFSRC, local);
+  return payload;
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(GatewayRouteTest, ScansEachDatagramOnItsOwn) {
+  std::string local_ip;
+
+  // A route without a gateway, then the default route.
+  std::vector<char> datagram;
+  append_netlink_message(datagram, RTM_NEWROUTE, route_payload(nullptr, "10.0.0.2"));
+  append_netlink_message(datagram, RTM_NEWROUTE, route_payload("192.168.1.1", "192.168.1.50"));
+  EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), datagram.size(), local_ip), platf::route_scan_e::found);
+  EXPECT_EQ(local_ip, "192.168.1.50");
+
+  // Nothing yet: the caller reads the next datagram (into the start of its buffer).
+  local_ip.clear();
+  datagram.clear();
+  append_netlink_message(datagram, RTM_NEWROUTE, route_payload(nullptr, "10.0.0.2"));
+  EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), datagram.size(), local_ip), platf::route_scan_e::more);
+  EXPECT_TRUE(local_ip.empty());
+
+  datagram.clear();
+  append_netlink_message(datagram, NLMSG_DONE, std::vector<char>(sizeof(int)));
+  EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), datagram.size(), local_ip), platf::route_scan_e::done);
+
+  // The kernel sends no NLMSG_DONE after an error, so an error ends the scan.
+  datagram.clear();
+  append_netlink_message(datagram, NLMSG_ERROR, std::vector<char>(sizeof(nlmsgerr)));
+  EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), datagram.size(), local_ip), platf::route_scan_e::failed);
+
+  // A truncated message is not read past its end.
+  datagram.clear();
+  append_netlink_message(datagram, RTM_NEWROUTE, route_payload("192.168.1.1", "192.168.1.50"));
+  EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), NLMSG_HDRLEN + 4, local_ip), platf::route_scan_e::more);
 }
 
 #endif  // __linux__

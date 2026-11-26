@@ -214,8 +214,9 @@ namespace {
           }
 
           if (is_vram(mem_type)) {
-            auto descriptor = static_cast<egl::img_descriptor_t *>(img.get());
-            if (descriptor->sd.fds[0] < 0 || descriptor->sd.width != disp.width || descriptor->sd.height != disp.height) {
+            // A backend that fell back to the RAM bridge hands out plain images: count those as missing dma-bufs.
+            auto descriptor = dynamic_cast<egl::img_descriptor_t *>(img.get());
+            if (!descriptor || descriptor->sd.fds[0] < 0 || descriptor->sd.width != disp.width || descriptor->sd.height != disp.height) {
               ++run.missing_fds;
             }
           } else if (check_colors) {

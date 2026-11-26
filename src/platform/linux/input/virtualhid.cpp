@@ -10,6 +10,7 @@
 #include <chrono>
 #include <format>
 #include <map>
+#include <unistd.h>
 #include <memory>
 #include <utility>
 
@@ -109,7 +110,9 @@ namespace platf {
     std::shared_ptr<abs_input::compositor_t> compositor = abs_input::hyprland_compositor();  ///< Hyprland, if built.
     abs_input::flat_accel_t mouse_accel {compositor};  ///< Keeps relative motion 1:1.
     abs_input::layout_mapper_t mouse_mapper {compositor};  ///< Places absolute moves in the live layout.
-    std::map<std::uint16_t, std::uint16_t> pressed_keys;  ///< Pressed key code -> code sent, so releases match.
+    /// Pressed key code and flags -> code sent, so releases match. Keyed like the input dispatcher (key and flags), so
+    /// a normalized and a host-layout press of the same key don't overwrite each other's release.
+    std::map<std::pair<std::uint16_t, std::uint8_t>, std::uint16_t> pressed_keys;
   #ifdef SUNSHINE_BUILD_WAYLAND
     std::unique_ptr<keyboard::virtual_keyboard_t> text_keyboard;  ///< Types Unicode text; connected on first use.
     std::chrono::steady_clock::time_point text_keyboard_retry {};  ///< When to try connecting text_keyboard again.
@@ -145,7 +148,7 @@ namespace platf {
        * @param input Platform input backend that receives the event.
        */
       explicit client_input_raw_t(input_t &input):
-          virtualhid {input->virtualhid, touch_pen::client_device_suffix(next_client_id())},
+          virtualhid {input->virtualhid, touch_pen::client_device_suffix(::getpid(), next_client_id())},
           touch_binder {device_name(virtualhid.touch), input->compositor},
           pen_binder {device_name(virtualhid.pen), input->compositor} {}
 
@@ -349,7 +352,7 @@ namespace platf {
     auto code = modcode;
     if (release) {
       // Release what the press pressed, even if the layout changed in between.
-      if (auto it = raw.pressed_keys.find(modcode); it != raw.pressed_keys.end()) {
+      if (auto it = raw.pressed_keys.find({modcode, flags}); it != raw.pressed_keys.end()) {
         code = it->second;
         raw.pressed_keys.erase(it);
       }
@@ -359,7 +362,7 @@ namespace platf {
         code = host_key(raw, modcode);
       }
   #endif
-      raw.pressed_keys[modcode] = code;
+      raw.pressed_keys[{modcode, flags}] = code;
     }
     virtualhid::keyboard_update(raw.virtualhid, code, release, flags, extended);
   }

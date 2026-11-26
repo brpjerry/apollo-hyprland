@@ -50,7 +50,7 @@ namespace {
       connection.server = wl_display_create();
       ASSERT_NE(connection.server, nullptr);
       ASSERT_EQ(wl_display_init_shm(connection.server), 0);
-      ASSERT_NE(wl_global_create(connection.server, &zwlr_screencopy_manager_v1_interface, 3, this, bind_manager), nullptr);
+      ASSERT_NE(wl_global_create(connection.server, &zwlr_screencopy_manager_v1_interface, screencopy_version, this, bind_manager), nullptr);
       ASSERT_NE(wl_global_create(connection.server, &zwp_linux_dmabuf_v1_interface, 3, this, bind_dmabuf), nullptr);
       ASSERT_NE(wl_global_create(connection.server, &wl_output_interface, 1, this, bind_output), nullptr);
       std::array<int, 2> sockets;
@@ -242,13 +242,15 @@ namespace {
       }
       ++self.requests;
       self.blend_cursor = args[1].i;
-      self.frame_resource = wl_resource_create(wl_resource_get_client(resource), &zwlr_screencopy_frame_v1_interface, 3, args[0].n);
+      const auto version = wl_resource_get_version(resource);
+      self.frame_resource = wl_resource_create(wl_resource_get_client(resource), &zwlr_screencopy_frame_v1_interface, version, args[0].n);
       wl_resource_set_dispatcher(self.frame_resource, dispatch_frame, nullptr, &self, nullptr);
       wl_resource_post_event(self.frame_resource, 0, WL_SHM_FORMAT_XRGB8888, self.width, self.height, self.stride);
-      if (self.advertise_dmabuf) {
+      // linux_dmabuf and buffer_done exist since version 3.
+      if (self.advertise_dmabuf && version >= 3) {
         wl_resource_post_event(self.frame_resource, 5, DRM_FORMAT_XRGB8888, self.width, self.height);
       }
-      if (!self.hold_buffer_done) {
+      if (!self.hold_buffer_done && version >= 3) {
         wl_resource_post_event(self.frame_resource, 6);
       }
       return 0;
@@ -336,6 +338,7 @@ namespace {
     wl_resource *buffer_resource {};  ///< Buffer retained by the pending copy.
     wl_resource *failed_frame {};  ///< Terminal frame that must not receive another copy.
     std::unique_ptr<capture_t> capture;  ///< Actual Sunshine capture implementation.
+    int screencopy_version {3};  ///< Version of the screencopy global; set it in a derived fixture's constructor.
     std::uint32_t width {2};  ///< Advertised frame width.
     std::uint32_t height {2};  ///< Advertised frame height.
     std::uint32_t stride {12};  ///< Advertised padded row size.
@@ -350,6 +353,45 @@ namespace {
     int destroyed_frames {0};  ///< Number of screencopy objects released by the client.
   };
 }  // namespace
+
+/**
+ * @brief A compositor with screencopy version 2, which has no buffer_done event.
+ */
+class WaylandShmProtocolV2Test: public WaylandShmProtocolTest {
+public:
+  WaylandShmProtocolV2Test() {
+    screencopy_version = 2;
+  }
+};
+
+// Bugs caught: 0, False positives: 0
+TEST_F(WaylandShmProtocolV2Test, CopiesWithoutBufferDone) {
+  // Before version 3 the buffer event is all the compositor sends; capture must request the copy from it.
+  start();
+  ASSERT_EQ(copies, 1);
+  complete();
+  EXPECT_EQ(capture->status, wl::dmabuf_t::READY);
+  EXPECT_TRUE(capture->current_frame->is_shm);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandFlipRowsTest, ReversesRowOrderInPlace) {
+  // The wlr RAM path reads a Y-inverted dma-buf back through GL and flips it like SHM frames.
+  std::array<std::uint8_t, 24> pixels {};
+  for (std::size_t i = 0; i < pixels.size(); ++i) {
+    pixels[i] = static_cast<std::uint8_t>(i / 8);  // row index in every byte
+  }
+  platf::img_t img;
+  img.data = pixels.data();
+  img.width = 2;
+  img.height = 3;
+  img.row_pitch = 8;
+  img.pixel_pitch = 4;
+  wl::flip_rows(img);
+  EXPECT_EQ(pixels[0], 2);
+  EXPECT_EQ(pixels[8], 1);
+  EXPECT_EQ(pixels[16], 0);
+}
 
 TEST_F(WaylandShmProtocolTest, CompletedPixelsRemainOwnedAcrossResolutionChanges) {
   start();

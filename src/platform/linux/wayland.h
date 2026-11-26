@@ -463,6 +463,12 @@ namespace wl {
   bool convert_shm_frame(const frame_t &frame, platf::img_t &img);
 
   /**
+   * @brief Reverse the row order of an image in place (a Y-inverted frame read back into system memory).
+   * @param img Image to flip; rows are `row_pitch` bytes apart.
+   */
+  void flip_rows(platf::img_t &img);
+
+  /**
    * @brief Export every GBM buffer plane into a captured frame descriptor.
    *
    * @param bo GBM buffer whose DMA-BUF planes will be exported.

@@ -74,6 +74,17 @@ namespace wl {
   /**
    * @brief Copy a shared-memory frame into a BGRA image buffer.
    */
+  void flip_rows(platf::img_t &img) {
+    if (!img.data || img.row_pitch <= 0) {
+      return;
+    }
+    for (int y = 0; y < img.height / 2; ++y) {
+      auto *top = img.data + static_cast<std::size_t>(y) * img.row_pitch;
+      auto *bottom = img.data + static_cast<std::size_t>(img.height - 1 - y) * img.row_pitch;
+      std::swap_ranges(top, top + img.row_pitch, bottom);
+    }
+  }
+
   bool convert_shm_frame(const frame_t &frame, platf::img_t &img) {
     auto layout = shm_layout(frame.shm_format);
     if (!layout) {
@@ -707,6 +718,11 @@ namespace wl {
       gl::ctx.GetTextureSubImage((*rgb_opt)->tex[0], 0, 0, 0, 0, width, height, 1, GL_BGRA, GL_UNSIGNED_BYTE, img_out->height * img_out->row_pitch, img_out->data);
       gl::ctx.BindTexture(GL_TEXTURE_2D, 0);
 
+      // The texture keeps the compositor's row order; SHM frames and the VRAM path both honor y_invert, so do the same.
+      if (current_frame->shm_y_invert) {
+        flip_rows(*img_out);
+      }
+
       img_out->frame_timestamp = current_frame->frame_timestamp;
 
       return platf::capture_e::ok;
@@ -792,9 +808,10 @@ namespace wl {
    */
   class wlr_vram_t: public wlr_t {
   public:
-    wlr_vram_t() {
-      // The GL converter turns the SDR frames of an HDR output into PQ (output_color_t::sdr_white_nits()).
-      hdr_frames = true;
+    explicit wlr_vram_t(platf::mem_type_e memory_type) {
+      // The GL converter turns the SDR frames of an HDR output into PQ (output_color_t::sdr_white_nits()). The Vulkan
+      // encoder doesn't: it would label SDR samples as PQ, so an HDR output streams as SDR there.
+      hdr_frames = memory_type != platf::mem_type_e::vulkan;
     }
 
     /**
@@ -943,7 +960,7 @@ namespace platf {
     }
 
     if ((hwdevice_type == platf::mem_type_e::vulkan || !wl::force_ram_capture) && wl::use_vram_capture(hwdevice_type)) {
-      auto wlr = std::make_shared<wl::wlr_vram_t>();
+      auto wlr = std::make_shared<wl::wlr_vram_t>(hwdevice_type);
       if (wlr->init(hwdevice_type, display_name, config)) {
         return nullptr;
       }

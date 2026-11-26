@@ -169,8 +169,10 @@ TEST(TouchPenTest, PenContactWithUnknownPressureTouches) {
 
 // Bugs caught: 0, False positives: 0
 TEST(TouchPenTest, ClientDeviceNamesAreUnique) {
-  EXPECT_EQ(client_device_suffix(3), " (client 3)");
-  EXPECT_NE(client_device_suffix(3), client_device_suffix(31));
+  EXPECT_EQ(client_device_suffix(4242, 3), " (client 4242-3)");
+  EXPECT_NE(client_device_suffix(4242, 3), client_device_suffix(4242, 31));
+  // The first client of two Apollo processes on one compositor.
+  EXPECT_NE(client_device_suffix(4242, 1), client_device_suffix(4243, 1));
 }
 
 // Bugs caught: 0, False positives: 0

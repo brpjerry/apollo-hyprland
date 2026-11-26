@@ -503,85 +503,100 @@ namespace platf {
     return "00:00:00:00:00:00"s;
   }
 
-std::string get_local_ip_for_gateway() {
-  int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
-  if (fd < 0) {
-    BOOST_LOG(warning) << "Socket creation failed: " << strerror(errno);
-    return "";
-  }
+  route_scan_e scan_gateway_routes(const char *data, std::size_t size, std::string &local_ip) {
+    // A copy keeps the netlink headers aligned whatever the caller's buffer is.
+    std::vector<nlmsghdr> aligned((size + sizeof(nlmsghdr) - 1) / sizeof(nlmsghdr) + 1);
+    std::memcpy(aligned.data(), data, size);
+    auto *message = aligned.data();
+    auto remaining = static_cast<int>(size);
 
-  char buffer[8192];
-  struct nlmsghdr *nlMsg = (struct nlmsghdr *)buffer;
-  struct rtmsg *rtMsg = (struct rtmsg *)NLMSG_DATA(nlMsg);
-  struct rtattr *rtAttr;
-  int len = 0;
-
-  memset(nlMsg, 0, sizeof(struct nlmsghdr));
-  nlMsg->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-  nlMsg->nlmsg_type = RTM_GETROUTE;
-  nlMsg->nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST;
-  nlMsg->nlmsg_seq = 1;
-  nlMsg->nlmsg_pid = getpid();
-
-  if (send(fd, nlMsg, nlMsg->nlmsg_len, 0) < 0) {
-    BOOST_LOG(warning) << "Send message failed: " << strerror(errno);
-    close(fd);
-    return "";
-  }
-
-  std::string local_ip;
-  bool found = false;
-
-  while ((len = recv(fd, nlMsg, sizeof(buffer), 0)) > 0) {
-    for (; NLMSG_OK(nlMsg, len); nlMsg = NLMSG_NEXT(nlMsg, len)) {
-      if (nlMsg->nlmsg_type == NLMSG_DONE) {
-        found = true;
-        break;
+    for (; NLMSG_OK(message, remaining); message = NLMSG_NEXT(message, remaining)) {
+      if (message->nlmsg_type == NLMSG_DONE) {
+        return route_scan_e::done;
+      }
+      if (message->nlmsg_type == NLMSG_ERROR) {
+        // The kernel sends no NLMSG_DONE after an error: waiting for one would block forever.
+        return route_scan_e::failed;
+      }
+      if (message->nlmsg_type != RTM_NEWROUTE || message->nlmsg_len < NLMSG_LENGTH(sizeof(rtmsg))) {
+        continue;
       }
 
-      rtMsg = (struct rtmsg *)NLMSG_DATA(nlMsg);
-      if (rtMsg->rtm_family != AF_INET || rtMsg->rtm_table != RT_TABLE_MAIN)
+      auto *route = static_cast<rtmsg *>(NLMSG_DATA(message));
+      if (route->rtm_family != AF_INET || route->rtm_table != RT_TABLE_MAIN) {
         continue;
+      }
 
-      rtAttr = (struct rtattr *)RTM_RTA(rtMsg);
-      int rtLen = RTM_PAYLOAD(nlMsg);
-
-      in_addr gateway;
-      in_addr local;
-      memset(&gateway, 0, sizeof(gateway));
-      memset(&local, 0, sizeof(local));
-
-      for (; RTA_OK(rtAttr, rtLen); rtAttr = RTA_NEXT(rtAttr, rtLen)) {
-        switch(rtAttr->rta_type) {
-          case RTA_GATEWAY:
-            gateway.s_addr = *reinterpret_cast<uint32_t *>(RTA_DATA(rtAttr));
-            break;
-          case RTA_PREFSRC:
-            local.s_addr = *reinterpret_cast<uint32_t *>(RTA_DATA(rtAttr));
-            break;
-          default:
-            break;
+      in_addr gateway {};
+      in_addr local {};
+      auto attribute_size = static_cast<int>(RTM_PAYLOAD(message));
+      for (auto *attribute = RTM_RTA(route); RTA_OK(attribute, attribute_size); attribute = RTA_NEXT(attribute, attribute_size)) {
+        if (RTA_PAYLOAD(attribute) < sizeof(in_addr)) {
+          continue;
+        }
+        if (attribute->rta_type == RTA_GATEWAY) {
+          std::memcpy(&gateway, RTA_DATA(attribute), sizeof(gateway));
+        } else if (attribute->rta_type == RTA_PREFSRC) {
+          std::memcpy(&local, RTA_DATA(attribute), sizeof(local));
         }
       }
 
       if (gateway.s_addr != 0 && local.s_addr != 0) {
-        local_ip = inet_ntoa(local);
-        found = true;
+        std::array<char, INET_ADDRSTRLEN> text {};
+        local_ip = inet_ntop(AF_INET, &local, text.data(), text.size()) ? text.data() : "";
+        return route_scan_e::found;
+      }
+    }
+    return route_scan_e::more;
+  }
+
+  std::string get_local_ip_for_gateway() {
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (fd < 0) {
+      BOOST_LOG(warning) << "Socket creation failed: " << strerror(errno);
+      return "";
+    }
+    auto close_fd = util::fail_guard([fd]() {
+      close(fd);
+    });
+
+    // A dump that never finishes must not hang the Web UI request.
+    timeval timeout {2, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    struct {
+      nlmsghdr header;
+      rtmsg route;
+    } request {};
+
+    request.header.nlmsg_len = NLMSG_LENGTH(sizeof(rtmsg));
+    request.header.nlmsg_type = RTM_GETROUTE;
+    request.header.nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST;
+    request.header.nlmsg_seq = 1;
+    request.header.nlmsg_pid = getpid();
+    request.route.rtm_family = AF_INET;
+
+    if (::send(fd, &request, request.header.nlmsg_len, 0) < 0) {
+      BOOST_LOG(warning) << "Send message failed: " << strerror(errno);
+      return "";
+    }
+
+    std::string local_ip;
+    // Every datagram is received at the start of the buffer (a dump spans several).
+    std::array<char, 16384> buffer;
+    ssize_t len;
+    while ((len = ::recv(fd, buffer.data(), buffer.size(), 0)) > 0) {
+      if (scan_gateway_routes(buffer.data(), static_cast<std::size_t>(len), local_ip) != route_scan_e::more) {
         break;
       }
     }
 
-    if (found) break;
+    if (local_ip.empty()) {
+      BOOST_LOG(warning) << "No associated IP address found for the default gateway";
+    }
+
+    return local_ip;
   }
-
-  close(fd);
-
-  if (local_ip.empty()) {
-    BOOST_LOG(warning) << "No associated IP address found for the default gateway";
-  }
-
-  return local_ip;
-}
 
   namespace {
     /**
@@ -1574,6 +1589,19 @@ std::string get_local_ip_for_gateway() {
   }
 #endif
 
+#ifdef SUNSHINE_BUILD_WAYLAND
+  /**
+   * @brief Whether to capture with ext-image-copy-capture rather than wlr-screencopy.
+   *
+   * ext capture can't feed the Vulkan encoder, so Vulkan uses wlr when the compositor offers both.
+   *
+   * @param hwdevice_type Memory type of the encoder.
+   */
+  bool use_ext_capture(mem_type_e hwdevice_type) {
+    return sources[source::WAYLAND_EXT] && (hwdevice_type != mem_type_e::vulkan || !sources[source::WAYLAND]);
+  }
+#endif
+
   /**
    * @brief List display names accepted by the selected capture backend.
    */
@@ -1585,7 +1613,7 @@ std::string get_local_ip_for_gateway() {
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
-    if (sources[source::WAYLAND_EXT]) {
+    if (use_ext_capture(hwdevice_type)) {
       return ext_display_names();
     }
     if (sources[source::WAYLAND]) {
@@ -1657,7 +1685,7 @@ std::string get_local_ip_for_gateway() {
 #endif
 
 #ifdef SUNSHINE_BUILD_WAYLAND
-    if (sources[source::WAYLAND_EXT]) {
+    if (use_ext_capture(hwdevice_type)) {
       BOOST_LOG(info) << "Screencasting with Wayland's ext-image-copy-capture protocol"sv;
       return ext_display(hwdevice_type, display_name, config);
     }
@@ -1749,7 +1777,8 @@ std::string get_local_ip_for_gateway() {
     if (((selected_capture.empty() && sources.none()) || selected_capture == "ext") && verify_ext()) {
       sources[source::WAYLAND_EXT] = true;
     }
-    if (((selected_capture.empty() && sources.none()) || selected_capture == "wlr") && verify_wl()) {
+    // Automatic selection also probes wlr when it found ext: ext capture can't feed the Vulkan encoder, wlr can.
+    if (((selected_capture.empty() && (sources.none() || sources[source::WAYLAND_EXT])) || selected_capture == "wlr") && verify_wl()) {
       sources[source::WAYLAND] = true;
     }
 #endif
