@@ -14,7 +14,7 @@
 : "${_run_unit_tests:=false}"
 
 pkgname='apollo-hyprland'
-pkgver=0.4.8.1
+pkgver=0.4.8.2
 pkgrel=1
 pkgdesc='Self-hosted game stream host for Artemis, with virtual displays on Hyprland'
 arch=('x86_64')
