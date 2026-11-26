@@ -132,7 +132,8 @@ struct PlatformTestSuite: testing::Test {
   static void SetUpTestSuite() {
     ASSERT_FALSE(platf_deinit);
     // platf::init() fails without a session to capture from, e.g. when CI builds the package in a container.
-    if (!std::getenv("WAYLAND_DISPLAY") && !std::getenv("DISPLAY")) {
+    // Only Linux and the BSDs capture through a display server; Windows and macOS have neither variable.
+    if (!IS_WINDOWS && !IS_MACOS && !std::getenv("WAYLAND_DISPLAY") && !std::getenv("DISPLAY")) {
       skipped = true;
       GTEST_SKIP() << "No Wayland or X11 display to initialise the platform against";
     }
