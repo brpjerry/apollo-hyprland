@@ -164,11 +164,6 @@ if(SUNSHINE_ENABLE_TRAY AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux
     endif()
 endif()
 
-# TODO(libvirtualhid port): these test the inputtino-era touch/pen and absolute input code, which is out of the build
-# until it is ported onto libvirtualhid (see cmake/compile_definitions/linux.cmake).
-list(FILTER TEST_SOURCES EXCLUDE REGEX
-        "/tests/(unit/test_touch_port|unit/platform/test_(inputtino_abs|touch_pen|input_options)|integration/test_(touch_pen_uinput|abs_input_live))\\.cpp$")
-
 # Add macOS-specific test files only when building tests for macOS
 if (APPLE)
     file(GLOB_RECURSE MACOS_TEST_SOURCES CONFIGURE_DEPENDS
@@ -291,8 +286,7 @@ endif()
 
 target_link_libraries(${PROJECT_NAME} ${TEST_LINK_LIBRARIES})
 
-# Optional: libinput reads the virtual touch screen and pen in tests/integration/test_touch_pen_uinput.cpp
-# (excluded above until the libvirtualhid port).
+# Optional: libinput reads the virtual touch screen and pen in tests/integration/test_touch_pen_uinput.cpp.
 if(UNIX AND NOT APPLE)
     pkg_check_modules(TEST_LIBINPUT libinput libudev)
     if(TEST_LIBINPUT_FOUND)

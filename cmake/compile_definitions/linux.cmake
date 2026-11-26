@@ -279,6 +279,9 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.cpp"
+            # Non-normalized key codes through the host layout (HYP-25)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp"
             # platf::vdisplay: Hyprland headless outputs (HYP-06)
@@ -381,13 +384,14 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.cpp")
 
-# Input option decisions (HYP-24, HYP-25).
-# TODO(libvirtualhid port): touch_pen.* (per-client uinput touch screen and pen tablet, HYP-24), inputtino_abs.*
-# (absolute mouse/touch/pen mapping onto the streamed Hyprland output) and keyboard_layout.* (non-normalized key codes
-# through the host layout, HYP-25; it uses inputtino's key table) were driven by the removed inputtino backend.
-# They stay out of the build until they are ported onto libvirtualhid (src/platform/virtualhid_input.cpp).
+# What the Linux input entry points (input/virtualhid.cpp) add to libvirtualhid: the absolute mouse in the live
+# Hyprland layout, touch and pen bound to the streamed output, relative motion 1:1 (abs_input.*) and touch and pen
+# event fixes for its devices (touch_pen.*, HYP-24).
 list(APPEND PLATFORM_TARGET_FILES
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/input_options.h")
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/abs_input.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/abs_input.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.cpp")
 
 # Elevated commands (HYP-23): the helper installed by packaging/linux.cmake, also named in the polkit action.
 if(NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK})

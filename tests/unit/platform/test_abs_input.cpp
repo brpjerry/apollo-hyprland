@@ -1,6 +1,7 @@
 /**
- * @file tests/unit/platform/test_inputtino_abs.cpp
- * @brief Test the absolute input mapping in src/platform/linux/input/inputtino_abs.*.
+ * @file tests/unit/platform/test_abs_input.cpp
+ * @brief Test the Hyprland absolute input helpers in src/platform/linux/input/abs_input.* and the Linux mouse entry
+ * points that use them (src/platform/linux/input/virtualhid.cpp).
  *
  * Layouts are from the development machine: DP-3 3840x2160 at scale 1.5 (logical 2560x1440) at 0,0 and HDMI-A-1
  * 3840x2160 at scale 1.5 with transform 1 (logical 1440x2560) at 2560,-560, plus a 1920x1080 headless output that
@@ -10,8 +11,13 @@
 
 #ifdef __linux__
 
+  // standard includes
+  #include <cmath>
+
+  // local includes
   #include <src/input.h>
-  #include <src/platform/linux/input/inputtino_abs.h>
+  #include <src/platform/linux/input/abs_input.h>
+  #include <src/platform/virtualhid_input.h>
   #include <src/video.h>
 
 namespace video {
@@ -28,18 +34,23 @@ namespace {
   // DP-3 + HDMI-A-1: 4000x2560 at 0,-560. With the headless output: 5920x2560 at 0,-560.
   constexpr layout_t desk_headless {0, -560, 5920, 2560};
 
-  platf::touch_port_t port(int x, int y, int w, int h, const layout_t &layout) {
-    platf::touch_port_t port {x, y, layout.width, layout.height};
-    port.layout_x = layout.x;
-    port.layout_y = layout.y;
-    port.output_width = w;
-    port.output_height = h;
+  // The port input.cpp hands to platf::abs_mouse(): the output at x,y (logical w x h) in a layout box.
+  platf::touch_port_t port(int x, int y, int w, int h, const layout_t &layout, std::string name = {}) {
+    platf::touch_port_t port {x, y, layout.width, layout.height, w, h};
+    port.env_offset_x = layout.x;
+    port.env_offset_y = layout.y;
+    port.output_name = std::move(name);
     return port;
   }
 
   const auto dp3 = port(0, 0, 2560, 1440, desk_headless);
   const auto hdmi = port(2560, -560, 1440, 2560, desk_headless);
   const auto headless = port(4000, 0, 1920, 1080, desk_headless);
+
+  // layout_target() for a display-local point.
+  target_t local_target(const platf::touch_port_t &port, double local_x, double local_y) {
+    return layout_target(port, port.offset_x + local_x, port.offset_y + local_y);
+  }
 
   // Where libinput puts a device value: units / (max + 1) of the box.
   double landed(int units, int axis_max, double origin, double size) {
@@ -112,35 +123,60 @@ namespace {
       return 0;
     }
   };
+
+  /**
+   * @brief Linux platform input on libvirtualhid's fake backend, with a fake Hyprland (or none) behind it.
+   */
+  class LinuxMouseTest: public ::testing::Test {
+  protected:
+    void start(std::shared_ptr<compositor_t> compositor) {
+      set_compositor_for_testing(compositor);
+      input = platf::input();
+      ASSERT_TRUE(input);
+      platf::virtualhid::get_input_context(input) = platf::virtualhid::input_context_t {lvh::BackendKind::fake};
+      ASSERT_NE(context().mouse, nullptr);
+    }
+
+    void TearDown() override {
+      input.reset();
+      set_compositor_for_testing(nullptr);
+    }
+
+    platf::virtualhid::input_context_t &context() {
+      return platf::virtualhid::get_input_context(input);
+    }
+
+    platf::input_t input;
+  };
 }  // namespace
 
 // Bugs caught: 0, False positives: 0
 TEST(AbsInputTest, LayoutTargetAddsOutputOffsetAndNegativeOrigin) {
   // DP-3's top-left is 560 px below the top of the layout, because HDMI-A-1 reaches up to y = -560.
-  auto t = layout_target(dp3, 0, 0);
+  auto t = local_target(dp3, 0, 0);
   EXPECT_DOUBLE_EQ(t.at.x, 0.0);
   EXPECT_DOUBLE_EQ(t.at.y, 560.0 / 2560.0);
   EXPECT_DOUBLE_EQ(t.min.y, 560.0 / 2560.0);
   EXPECT_DOUBLE_EQ(t.max.x, 2560.0 / 5920.0);
   EXPECT_DOUBLE_EQ(t.max.y, 2000.0 / 2560.0);
 
-  t = layout_target(dp3, 1280, 720);
+  t = local_target(dp3, 1280, 720);
   EXPECT_DOUBLE_EQ(t.at.x, 1280.0 / 5920.0);
   EXPECT_DOUBLE_EQ(t.at.y, (720.0 + 560.0) / 2560.0);
 
   // HDMI-A-1 starts at the top of the layout.
-  t = layout_target(hdmi, 0, 0);
+  t = local_target(hdmi, 0, 0);
   EXPECT_DOUBLE_EQ(t.at.x, 2560.0 / 5920.0);
   EXPECT_DOUBLE_EQ(t.at.y, 0.0);
-  t = layout_target(hdmi, 1440, 2560);
+  t = local_target(hdmi, 1440, 2560);
   EXPECT_DOUBLE_EQ(t.at.x, 4000.0 / 5920.0);
   EXPECT_DOUBLE_EQ(t.at.y, 1.0);
 
   // The headless output is the right end of the layout.
-  t = layout_target(headless, 960, 540);
+  t = local_target(headless, 960, 540);
   EXPECT_DOUBLE_EQ(t.at.x, 4960.0 / 5920.0);
   EXPECT_DOUBLE_EQ(t.at.y, 1100.0 / 2560.0);
-  t = layout_target(headless, 1920, 1080);
+  t = local_target(headless, 1920, 1080);
   EXPECT_DOUBLE_EQ(t.at.x, 1.0);
 }
 
@@ -151,20 +187,20 @@ TEST(AbsInputTest, LayoutTargetWithOutputLeftOfAndAboveOrigin) {
   const auto left = port(-1920, -200, 1920, 1080, layout);
   const auto main = port(0, 0, 2560, 1440, layout);
 
-  auto t = layout_target(left, 0, 0);
+  auto t = local_target(left, 0, 0);
   EXPECT_DOUBLE_EQ(t.at.x, 0.0);
   EXPECT_DOUBLE_EQ(t.at.y, 0.0);
-  t = layout_target(left, 1920, 1080);
+  t = local_target(left, 1920, 1080);
   EXPECT_DOUBLE_EQ(t.at.x, 1920.0 / 4480.0);
   EXPECT_DOUBLE_EQ(t.at.y, 1080.0 / 1640.0);
-  t = layout_target(main, 0, 0);
+  t = local_target(main, 0, 0);
   EXPECT_DOUBLE_EQ(t.at.x, 1920.0 / 4480.0);
   EXPECT_DOUBLE_EQ(t.at.y, 200.0 / 1640.0);
 }
 
 // Bugs caught: 0, False positives: 0
 TEST(AbsInputTest, TargetsAreClampedAndSafe) {
-  auto t = layout_target(dp3, -50, 99999);
+  auto t = local_target(dp3, -50, 99999);
   EXPECT_DOUBLE_EQ(t.at.x, 0.0);
   EXPECT_DOUBLE_EQ(t.at.y, 1.0);
 
@@ -172,25 +208,19 @@ TEST(AbsInputTest, TargetsAreClampedAndSafe) {
   t = layout_target(empty, 10, 10);
   EXPECT_DOUBLE_EQ(t.at.x, 0.0);
   EXPECT_DOUBLE_EQ(t.at.y, 0.0);
-  EXPECT_FALSE(output_target(empty, 10, 10));
 
   // Without the output size the whole layout is allowed.
   platf::touch_port_t sizeless {4000, 0, 5920, 2560};
-  t = layout_target(sizeless, 0, 0);
+  t = layout_target(sizeless, 4000, 0);
   EXPECT_DOUBLE_EQ(t.min.x, 0.0);
   EXPECT_DOUBLE_EQ(t.max.x, 1.0);
-
-  auto o = output_target(headless, 960, 2000);
-  ASSERT_TRUE(o);
-  EXPECT_DOUBLE_EQ(o->at.x, 0.5);
-  EXPECT_DOUBLE_EQ(o->at.y, 1.0);
 }
 
 // Bugs caught: 1, False positives: 0
 TEST(AbsInputTest, LibinputUnitsLandOnTheTargetPixel) {
   // libinput divides by (max + 1): a naive round(fraction * max) lands up to a pixel short on wide layouts.
   // Rounding up puts an integer target inside its pixel.
-  for (int axis_max : {mouse_max_x, mouse_max_y, touch_max_y}) {
+  for (int axis_max : {mouse_axis_max, touch_axis_max_x, touch_axis_max_y}) {
     for (double size : {1080.0, 1440.0, 1920.0, 2560.0, 5920.0, 10480.0}) {
       const double unit = size / (axis_max + 1);
       for (double pixel : {0.0, 1.0, 560.0, size / 4, size / 2, size * 0.75, size - 1}) {
@@ -198,7 +228,7 @@ TEST(AbsInputTest, LibinputUnitsLandOnTheTargetPixel) {
         EXPECT_GE(at, pixel) << "max " << axis_max << " size " << size << " pixel " << pixel;
         EXPECT_LT(at, pixel + unit) << "max " << axis_max << " size " << size << " pixel " << pixel;
 
-        // With float noise like the touch path's (local / layout width * layout width): off by at most a unit.
+        // With float noise like the mouse path's (float layout coordinates): off by at most a unit.
         at = landed(libinput_units(double(float(pixel / size)), axis_max), axis_max, 0, size);
         EXPECT_GT(at, pixel - unit / 100) << "max " << axis_max << " size " << size << " pixel " << pixel;
         EXPECT_LT(at, pixel + unit * 1.01) << "max " << axis_max << " size " << size << " pixel " << pixel;
@@ -212,38 +242,40 @@ TEST(AbsInputTest, LibinputUnitsLandOnTheTargetPixel) {
   EXPECT_EQ(libinput_units(-1.0, 19200), 0);
   EXPECT_EQ(libinput_units(std::nan(""), 19200), 0);
   EXPECT_EQ(libinput_units(0.25, 19200), 4801);  // 4800.25 rounds up
-  EXPECT_FLOAT_EQ(libinput_fraction(1.0, 0.0, 1.0, 19200), 1.0f);
+  EXPECT_FLOAT_EQ(libinput_fraction(1.0, 19200), 1.0f);
+  EXPECT_FLOAT_EQ(libinput_fraction(0.25, 19200), 4801.0f / 19200);
 }
 
 // Bugs caught: 0, False positives: 0
 TEST(AbsInputTest, LibinputUnitsStayOnTheOutput) {
-  // 10480 px wide layout: one mouse unit is 0.55 px. The output starts at 2560 (4690.3 units): unit 4690 would be on
+  // 40000 px wide layout: one mouse unit is 0.61 px. The output starts at 2560 (4194.3 units): unit 4194 would be on
   // the neighbouring output.
-  const double n = mouse_max_x + 1;
-  const double size = 10480;
+  const double n = mouse_axis_max + 1;
+  const double size = 40000;
   const double start = 2560 / size;
   const double end = 4000 / size;
-  int u = libinput_units(start, start, end, mouse_max_x);
-  EXPECT_GE(landed(u, mouse_max_x, 0, size), 2560);
-  EXPECT_LT(landed(u, mouse_max_x, 0, size), 2560 + size / n);
+  int u = libinput_units(start, start, end, mouse_axis_max);
+  EXPECT_GE(landed(u, mouse_axis_max, 0, size), 2560);
+  EXPECT_LT(landed(u, mouse_axis_max, 0, size), 2560 + size / n);
   // A point slightly left of the output (float noise, or a clamped client coordinate) is pulled onto it.
-  u = libinput_units(start - 0.4 / size, start, end, mouse_max_x);
-  EXPECT_GE(landed(u, mouse_max_x, 0, size), 2560);
+  u = libinput_units(start - 0.4 / size, start, end, mouse_axis_max);
+  EXPECT_GE(landed(u, mouse_axis_max, 0, size), 2560);
 
   // The far edge belongs to the next output: stay before it.
-  u = libinput_units(end, start, end, mouse_max_x);
-  EXPECT_LT(landed(u, mouse_max_x, 0, size), 4000);
-  EXPECT_GE(landed(u, mouse_max_x, 0, size), 4000 - size / n);
+  u = libinput_units(end, start, end, mouse_axis_max);
+  EXPECT_LT(landed(u, mouse_axis_max, 0, size), 4000);
+  EXPECT_GE(landed(u, mouse_axis_max, 0, size), 4000 - size / n);
 
   // Degenerate output narrower than a unit: still a valid value.
-  u = libinput_units(0.5, 0.5, 0.5, mouse_max_x);
+  u = libinput_units(0.5, 0.5, 0.5, mouse_axis_max);
   EXPECT_GE(u, 0);
-  EXPECT_LE(u, mouse_max_x);
+  EXPECT_LE(u, mouse_axis_max);
 }
 
 // Bugs caught: 0, False positives: 3
 TEST(AbsInputTest, ClientPointLandsOnStreamedPixel) {
-  // End to end through video::make_port() and the client_to_touchport() maths, for each output of the layout.
+  // End to end through video::make_port() and the client_to_touchport() / platform_touch_port() /
+  // monitor_touch_port() maths of input.cpp, for each output of the layout.
   struct case_t {
     const char *name;
     int frame_w, frame_h, logical_w, logical_h, x, y;
@@ -266,65 +298,79 @@ TEST(AbsInputTest, ClientPointLandsOnStreamedPixel) {
     display.logical_height = c.logical_h;
     display.offset_x = c.x;
     display.offset_y = c.y;
-    display.env_x = desk_headless.x;
-    display.env_y = desk_headless.y;
+    display.env_offset_x = desk_headless.x;
+    display.env_offset_y = desk_headless.y;
     display.env_width = desk_headless.width;
     display.env_height = desk_headless.height;
+    display.env_logical_width = desk_headless.width;
+    display.env_logical_height = desk_headless.height;
+    display.output_name = c.name;
 
     video::config_t config {};
     config.width = c.stream_w;
     config.height = c.stream_h;
     const auto tp = video::make_port(&display, config);
-    const auto abs = input::make_abs_port(tp);
-    EXPECT_EQ(abs.layout_x, desk_headless.x) << c.name;
-    EXPECT_EQ(abs.layout_y, desk_headless.y) << c.name;
-    EXPECT_EQ(abs.output_width, c.logical_w) << c.name;
-    EXPECT_EQ(abs.output_height, c.logical_h) << c.name;
+    // input.cpp's platform_touch_port(): the port platf::abs_mouse() gets.
+    const auto abs = port(tp.offset_x, tp.offset_y, tp.logical_width, tp.logical_height, {tp.env_offset_x, tp.env_offset_y, tp.env_logical_width, tp.env_logical_height});
+    EXPECT_EQ(abs.width, desk_headless.width) << c.name;
+    EXPECT_EQ(abs.logical_width, c.logical_w) << c.name;
+    EXPECT_EQ(abs.logical_height, c.logical_h) << c.name;
 
     // The last point is the bottom-right stream pixel.
     const double last_x = (c.stream_w - 1.0) / c.stream_w;
     const double last_y = (c.stream_h - 1.0) / c.stream_h;
     for (auto [sx, sy] : {std::pair {0.0, 0.0}, {0.25, 0.75}, {0.5, 0.5}, {last_x, last_y}}) {
-      // What input::client_to_touchport() returns for a client point at (sx, sy) of the stream.
-      double local_x = (sx * c.stream_w - tp.client_offsetX) * tp.scalar_inv;
-      double local_y = (sy * c.stream_h - tp.client_offsetY) * tp.scalar_inv;
+      // What input::client_to_touchport() returns for a client point at (sx, sy) of the stream, in float as there.
+      const float x = (float(sx * c.stream_w) - tp.client_offsetX) * tp.scalar_inv / tp.scalar_tpcoords + tp.offset_x;
+      const float y = (float(sy * c.stream_h) - tp.client_offsetY) * tp.scalar_inv / tp.scalar_tpcoords + tp.offset_y;
       const double want_x = c.x + sx * c.logical_w;
       const double want_y = c.y + sy * c.logical_h;
 
-      // Absolute mouse: fraction of the layout box, less than a unit past the target (0.31 px here). The local
+      // Absolute mouse: fraction of the layout box, less than a unit past the target (0.09 px here). The layout
       // coordinates carry float noise, hence the hundredth of a pixel.
-      auto t = layout_target(abs, local_x, local_y);
-      EXPECT_GE(landed_x(t, mouse_max_x, abs.layout_x, abs.width), want_x - 0.01) << c.name;
-      EXPECT_LT(landed_x(t, mouse_max_x, abs.layout_x, abs.width), want_x + 0.31) << c.name;
-      EXPECT_GE(landed_y(t, mouse_max_y, abs.layout_y, abs.height), want_y - 0.01) << c.name;
-      EXPECT_LT(landed_y(t, mouse_max_y, abs.layout_y, abs.height), want_y + 0.22) << c.name;
+      auto t = layout_target(abs, x, y);
+      const double unit_x = abs.width / (mouse_axis_max + 1.0);
+      const double unit_y = abs.height / (mouse_axis_max + 1.0);
+      EXPECT_GE(landed_x(t, mouse_axis_max, desk_headless.x, abs.width), want_x - 0.01) << c.name;
+      EXPECT_LT(landed_x(t, mouse_axis_max, desk_headless.x, abs.width), want_x + unit_x + 0.01) << c.name;
+      EXPECT_GE(landed_y(t, mouse_axis_max, desk_headless.y, abs.height), want_y - 0.01) << c.name;
+      EXPECT_LT(landed_y(t, mouse_axis_max, desk_headless.y, abs.height), want_y + unit_y + 0.01) << c.name;
 
-      // Touch and pen bound to the output: fraction of the output's logical box. input.cpp divides local
-      // coordinates by the layout size and the backend multiplies back.
-      auto o = output_target(abs, float(local_x / abs.width) * abs.width, float(local_y / abs.height) * abs.height);
-      ASSERT_TRUE(o) << c.name;
-      EXPECT_GE(landed_x(*o, touch_max_x, c.x, c.logical_w), want_x - 0.01) << c.name;
-      EXPECT_LT(landed_x(*o, touch_max_x, c.x, c.logical_w), want_x + c.logical_w / (touch_max_x + 1.0) + 0.01) << c.name;
-      EXPECT_GE(landed_y(*o, touch_max_y, c.y, c.logical_h), want_y - 0.01) << c.name;
-      EXPECT_LT(landed_y(*o, touch_max_y, c.y, c.logical_h), want_y + c.logical_h / (touch_max_y + 1.0) + 0.01) << c.name;
+      // Touch and pen bound to the output: input.cpp's monitor_touch_port() normalizes to the output, the input
+      // entry points place that in libinput units, and libvirtualhid rounds it to the nearest of 19200 x 10800.
+      const double fx = (x - tp.offset_x) / double(c.logical_w);
+      const double fy = (y - tp.offset_y) / double(c.logical_h);
+      const auto device_x = [](float f, int axis_max) {
+        return int(std::lround(std::clamp(f, 0.0f, 1.0f) * float(axis_max)));
+      };
+      const auto touch_x = landed(device_x(libinput_fraction(fx, touch_axis_max_x), touch_axis_max_x), touch_axis_max_x, c.x, c.logical_w);
+      const auto touch_y = landed(device_x(libinput_fraction(fy, touch_axis_max_y), touch_axis_max_y), touch_axis_max_y, c.y, c.logical_h);
+      EXPECT_GE(touch_x, want_x - 0.01) << c.name;
+      EXPECT_LT(touch_x, want_x + c.logical_w / (touch_axis_max_x + 1.0) + 0.01) << c.name;
+      EXPECT_GE(touch_y, want_y - 0.01) << c.name;
+      EXPECT_LT(touch_y, want_y + c.logical_h / (touch_axis_max_y + 1.0) + 0.01) << c.name;
+      // Unbound, Sunshine's coordinates go to the device as they are: up to one and a half units short.
+      const auto plain_y = landed(device_x(float(fy), touch_axis_max_y), touch_axis_max_y, c.y, c.logical_h);
+      EXPECT_NEAR(plain_y, want_y, 1.5 * c.logical_h / (touch_axis_max_y + 1.0) + 0.01) << c.name;
     }
   }
 }
 
 // Bugs caught: 0, False positives: 0
 TEST(AbsInputTest, CompositorDeviceNames) {
-  EXPECT_EQ(compositor_device_name("Mouse passthrough (absolute)"), "mouse-passthrough-(absolute)");
-  EXPECT_EQ(compositor_device_name("Touch passthrough (client 3)"), "touch-passthrough-(client-3)");
+  EXPECT_EQ(compositor_device_name("libvirtualhid Mouse (Absolute)"), "libvirtualhid-mouse-(absolute)");
+  EXPECT_EQ(compositor_device_name("libvirtualhid Touchscreen (client 3)"), "libvirtualhid-touchscreen-(client-3)");
 
-  const std::string touch = "touch-passthrough-(client-3)";
+  const std::string touch = "libvirtualhid-touchscreen-(client-3)";
   EXPECT_TRUE(is_instance_of(touch, touch));
   EXPECT_TRUE(is_instance_of(touch + "-1", touch));
   EXPECT_TRUE(is_instance_of(touch + "-12", touch));
-  EXPECT_FALSE(is_instance_of("touch-passthrough-(client-31)", touch));
+  EXPECT_FALSE(is_instance_of("libvirtualhid-touchscreen-(client-31)", touch));
   EXPECT_FALSE(is_instance_of(touch + "-", touch));
   EXPECT_FALSE(is_instance_of(touch + "-1a", touch));
-  EXPECT_FALSE(is_instance_of("mouse-passthrough-(absolute)", "mouse-passthrough"));
-  EXPECT_TRUE(is_instance_of("mouse-passthrough-2", "mouse-passthrough"));
+  // Flat acceleration for the relative mouse must not reach its absolute twin.
+  EXPECT_FALSE(is_instance_of("libvirtualhid-mouse-(absolute)", "libvirtualhid-mouse"));
+  EXPECT_TRUE(is_instance_of("libvirtualhid-mouse-2", "libvirtualhid-mouse"));
   EXPECT_FALSE(is_instance_of("anything", ""));
 }
 
@@ -353,6 +399,10 @@ TEST(AbsInputTest, FindsOutputAndBoundingBox) {
   EXPECT_EQ(find_output(fake->monitors, "HDMI-A-1")->x, 2560);
   EXPECT_FALSE(find_output(fake->monitors, "nope"));
 
+  // The port's output name wins over its position; an unknown name falls back to the position.
+  EXPECT_EQ(find_output(fake->monitors, port(0, 0, 2560, 1440, desk_headless, "HDMI-A-1"))->name, "HDMI-A-1");
+  EXPECT_EQ(find_output(fake->monitors, port(0, 0, 2560, 1440, desk_headless, "GONE"))->name, "DP-3");
+
   // A mirror at the same position: the size decides.
   std::vector<output_rect_t> mirrored {{"MIRROR", 0, 0, 1920, 1080}, {"DP-3", 0, 0, 2560, 1440}};
   EXPECT_EQ(find_output(mirrored, dp3)->name, "DP-3");
@@ -372,155 +422,219 @@ TEST(AbsInputTest, LayoutMapperFollowsLiveLayout) {
   layout_mapper_t mapper {fake};
 
   // Matches the port's own layout while nothing changed.
-  auto t = mapper.map(headless, 960, 540);
+  auto t = mapper.map(headless, 4960, 540);
+  ASSERT_TRUE(t);
   EXPECT_EQ(fake->refreshes, 1);
-  EXPECT_DOUBLE_EQ(t.at.x, 4960.0 / 5920.0);
-  EXPECT_DOUBLE_EQ(t.at.y, 1100.0 / 2560.0);
+  EXPECT_DOUBLE_EQ(t->at.x, 4960.0 / 5920.0);
+  EXPECT_DOUBLE_EQ(t->at.y, 1100.0 / 2560.0);
 
   // Another client's virtual display appears at 5920,0 and the layout grows, but this stream's port is not rebuilt.
   fake->monitors.push_back({"APOLLO-OTHER", 5920, 0, 1920, 1080});
-  t = mapper.map(headless, 960, 540);
+  t = mapper.map(headless, 4960, 540);
+  ASSERT_TRUE(t);
   EXPECT_EQ(fake->refreshes, 1);  // a cached read: no forced refresh for an unchanged port
-  EXPECT_DOUBLE_EQ(t.at.x, 4960.0 / 7840.0);
-  EXPECT_DOUBLE_EQ(t.min.x, 4000.0 / 7840.0);
-  EXPECT_DOUBLE_EQ(t.max.x, 5920.0 / 7840.0);
+  EXPECT_DOUBLE_EQ(t->at.x, 4960.0 / 7840.0);
+  EXPECT_DOUBLE_EQ(t->min.x, 4000.0 / 7840.0);
+  EXPECT_DOUBLE_EQ(t->max.x, 5920.0 / 7840.0);
 
   // The streamed output is rescaled (1920x1080 at scale 1.5): the old port's coordinates are rescaled with it.
   fake->monitors[2] = {"APOLLO-TEST-1", 4000, 0, 1280, 720};
-  t = mapper.map(headless, 960, 540);
-  EXPECT_DOUBLE_EQ(t.at.x, (4000.0 + 640.0) / 7840.0);
-  EXPECT_DOUBLE_EQ(t.at.y, (560.0 + 360.0) / 2560.0);
+  t = mapper.map(headless, 4960, 540);
+  ASSERT_TRUE(t);
+  EXPECT_DOUBLE_EQ(t->at.x, (4000.0 + 640.0) / 7840.0);
+  EXPECT_DOUBLE_EQ(t->at.y, (560.0 + 360.0) / 2560.0);
 
   // The output disappears: fall back to the port.
   fake->monitors.pop_back();
   fake->monitors.pop_back();
-  t = mapper.map(headless, 960, 540);
-  EXPECT_DOUBLE_EQ(t.at.x, 4960.0 / 5920.0);
+  t = mapper.map(headless, 4960, 540);
+  ASSERT_TRUE(t);
+  EXPECT_DOUBLE_EQ(t->at.x, 4960.0 / 5920.0);
 
-  // Unreachable compositor or none at all: the port.
+  // A port that names its output is followed by that name, wherever the output is.
+  auto named = port(4000, 0, 1920, 1080, desk_headless, "HDMI-A-1");
+  t = mapper.map(named, 4000, 0);
+  ASSERT_TRUE(t);
+  EXPECT_DOUBLE_EQ(t->min.x, 2560.0 / 4000.0);
+
+  // Unreachable compositor or none at all: Sunshine's own mapping.
   fake->reachable = false;
   layout_mapper_t offline {fake};
-  t = offline.map(dp3, 0, 0);
-  EXPECT_DOUBLE_EQ(t.at.y, 560.0 / 2560.0);
+  EXPECT_FALSE(offline.map(dp3, 0, 0));
   layout_mapper_t none {nullptr};
-  t = none.map(dp3, 0, 0);
-  EXPECT_DOUBLE_EQ(t.at.y, 560.0 / 2560.0);
+  EXPECT_FALSE(none.map(dp3, 0, 0));
 }
 
 // Bugs caught: 0, False positives: 0
-TEST(AbsInputTest, OutputMapperBindsToStreamedOutputAndUsesOutputCoordinates) {
+TEST(AbsInputTest, OutputBinderBindsToStreamedOutput) {
   auto fake = fake_hyprland();
-  output_mapper_t mapper {"Touch passthrough (client 1)", fake};
+  output_binder_t binder {"libvirtualhid Touchscreen (client 1)", fake};
 
-  auto t = mapper.map(headless, 960, 540);
-  EXPECT_EQ(mapper.bound_output(), "APOLLO-TEST-1");
+  // input.cpp's touch port: monitor-local, named after the output.
+  auto touch_port = [](std::string name, int x, int y, int w, int h) {
+    platf::touch_port_t port {x, y, w, h, w, h};
+    port.output_name = std::move(name);
+    return port;
+  };
+  const auto test1 = touch_port("APOLLO-TEST-1", 4000, 0, 1920, 1080);
+  EXPECT_TRUE(binder.update(test1));
+  EXPECT_EQ(binder.bound_output(), "APOLLO-TEST-1");
   ASSERT_EQ(fake->binds.size(), 1u);
-  EXPECT_EQ(fake->binds[0], (std::pair<std::string, std::string> {"Touch passthrough (client 1)", "APOLLO-TEST-1"}));
-  EXPECT_DOUBLE_EQ(t.at.x, 0.5);
-  EXPECT_DOUBLE_EQ(t.at.y, 0.5);
+  EXPECT_EQ(fake->binds[0], (std::pair<std::string, std::string> {"libvirtualhid Touchscreen (client 1)", "APOLLO-TEST-1"}));
 
   // Same port: no more compositor traffic.
-  mapper.map(headless, 0, 0);
-  mapper.map(headless, 1920, 1080);
+  EXPECT_TRUE(binder.update(test1));
+  EXPECT_TRUE(binder.update(test1));
   EXPECT_EQ(fake->binds.size(), 1u);
   EXPECT_EQ(fake->reads, 1);
 
   // The stream moves to another output: rebind.
-  t = mapper.map(hdmi, 0, 2560);
-  EXPECT_EQ(mapper.bound_output(), "HDMI-A-1");
+  EXPECT_TRUE(binder.update(touch_port("HDMI-A-1", 2560, -560, 1440, 2560)));
+  EXPECT_EQ(binder.bound_output(), "HDMI-A-1");
   EXPECT_EQ(fake->binds.size(), 2u);
-  EXPECT_DOUBLE_EQ(t.at.x, 0.0);
-  EXPECT_DOUBLE_EQ(t.at.y, 1.0);
 
   // Settings may have been lost (config reload): bind again.
   fake->gen++;
-  mapper.map(hdmi, 0, 0);
+  binder.update(touch_port("HDMI-A-1", 2560, -560, 1440, 2560));
   EXPECT_EQ(fake->binds.size(), 3u);
   EXPECT_EQ(fake->binds.back().second, "HDMI-A-1");
+
+  // A port without a name (another capture backend) is found by position.
+  output_binder_t unnamed {"libvirtualhid Pen Tablet (client 1)", fake};
+  EXPECT_TRUE(unnamed.update(touch_port({}, 0, 0, 2560, 1440)));
+  EXPECT_EQ(unnamed.bound_output(), "DP-3");
+
+  // The client goes away: the binding is removed.
+  unnamed.unbind();
+  EXPECT_TRUE(unnamed.bound_output().empty());
+  EXPECT_EQ(fake->binds.back(), (std::pair<std::string, std::string> {"libvirtualhid Pen Tablet (client 1)", ""}));
+  const auto binds = fake->binds.size();
+  unnamed.unbind();
+  EXPECT_EQ(fake->binds.size(), binds);
 }
 
 // Bugs caught: 0, False positives: 0
-TEST(AbsInputTest, OutputMapperFallsBackToLayout) {
-  // No compositor (X11, or no Wayland support compiled in).
-  output_mapper_t none {"Pen passthrough (client 1)", nullptr};
-  auto t = none.map(headless, 960, 540);
-  EXPECT_TRUE(none.bound_output().empty());
-  EXPECT_DOUBLE_EQ(t.at.x, 4960.0 / 5920.0);
-  EXPECT_DOUBLE_EQ(t.at.y, 1100.0 / 2560.0);
+TEST(AbsInputTest, OutputBinderFailures) {
+  platf::touch_port_t test1 {4000, 0, 1920, 1080, 1920, 1080};
+  test1.output_name = "APOLLO-TEST-1";
 
-  // A compositor that cannot bind: layout, and no retry before retry_interval.
+  // No compositor (X11, or no Wayland support compiled in), or no device.
+  output_binder_t none {"libvirtualhid Pen Tablet (client 1)", nullptr};
+  EXPECT_FALSE(none.update(test1));
+  output_binder_t nameless {"", fake_hyprland()};
+  EXPECT_FALSE(nameless.update(test1));
+
+  // A compositor that cannot bind: not bound, and no retry before retry_interval.
   auto fake = fake_hyprland();
   fake->bind_ok = false;
-  output_mapper_t failing {"Pen passthrough (client 2)", fake};
-  t = failing.map(headless, 960, 540);
+  output_binder_t failing {"libvirtualhid Pen Tablet (client 2)", fake};
+  EXPECT_FALSE(failing.update(test1));
   EXPECT_TRUE(failing.bound_output().empty());
-  EXPECT_DOUBLE_EQ(t.at.x, 4960.0 / 5920.0);
-  failing.map(headless, 0, 0);
+  EXPECT_FALSE(failing.update(test1));
   EXPECT_EQ(fake->binds.size(), 1u);
 
-  // No output at the port's position (e.g. a stale port): layout, and an earlier binding is removed.
+  // No such output (e.g. a stale port): not bound, and an earlier binding is removed.
   fake->bind_ok = true;
-  output_mapper_t mapper {"Pen passthrough (client 3)", fake};
-  mapper.map(headless, 0, 0);
-  EXPECT_EQ(mapper.bound_output(), "APOLLO-TEST-1");
+  output_binder_t binder {"libvirtualhid Pen Tablet (client 3)", fake};
+  EXPECT_TRUE(binder.update(test1));
   fake->binds.clear();
-  auto stale = port(9000, 0, 1920, 1080, desk_headless);
-  t = mapper.map(stale, 0, 0);
-  EXPECT_TRUE(mapper.bound_output().empty());
+  platf::touch_port_t stale {9000, 0, 1920, 1080, 1920, 1080};
+  stale.output_name = "APOLLO-GONE";
+  EXPECT_FALSE(binder.update(stale));
+  EXPECT_TRUE(binder.bound_output().empty());
   ASSERT_EQ(fake->binds.size(), 1u);
   EXPECT_EQ(fake->binds[0].second, "");
-  EXPECT_DOUBLE_EQ(t.at.x, 1.0);
-
-  // A port without the output size (backends that don't report it): layout.
-  auto sizeless = headless;
-  sizeless.output_width = sizeless.output_height = 0;
-  output_mapper_t old {"Pen passthrough (client 4)", fake};
-  t = old.map(sizeless, 960, 540);
-  EXPECT_TRUE(old.bound_output().empty());
-  EXPECT_DOUBLE_EQ(t.at.x, 4960.0 / 5920.0);
-}
-
-// Bugs caught: 0, False positives: 0
-TEST(AbsInputTest, OutputMapperBoxSizeFollowsTheMapping) {
-  // Bound: device axes span the streamed output.
-  auto fake = fake_hyprland();
-  output_mapper_t mapper {"Touch passthrough (client 5)", fake};
-  mapper.map(headless, 0, 0);
-  auto box = mapper.box_size(headless);
-  EXPECT_DOUBLE_EQ(box.x, 1920.0);
-  EXPECT_DOUBLE_EQ(box.y, 1080.0);
-
-  // Unbound: they span the layout box.
-  output_mapper_t none {"Touch passthrough (client 6)", nullptr};
-  none.map(headless, 0, 0);
-  box = none.box_size(headless);
-  EXPECT_DOUBLE_EQ(box.x, 5920.0);
-  EXPECT_DOUBLE_EQ(box.y, 2560.0);
 }
 
 // Bugs caught: 0, False positives: 0
 TEST(AbsInputTest, FlatAccelOncePerGeneration) {
   auto fake = fake_hyprland();
-  flat_accel_t accel {"Mouse passthrough", fake};
-  accel.ensure();
-  accel.ensure();
+  flat_accel_t accel {fake};
+  accel.ensure("libvirtualhid Mouse");
+  accel.ensure("libvirtualhid Mouse");
   ASSERT_EQ(fake->flat.size(), 1u);
-  EXPECT_EQ(fake->flat[0], "Mouse passthrough");
+  EXPECT_EQ(fake->flat[0], "libvirtualhid Mouse");
 
   fake->gen++;
-  accel.ensure();
-  accel.ensure();
+  accel.ensure("libvirtualhid Mouse");
+  accel.ensure("libvirtualhid Mouse");
   EXPECT_EQ(fake->flat.size(), 2u);
+
+  // A new device name is set up at once.
+  accel.ensure("libvirtualhid Mouse (seat1)");
+  EXPECT_EQ(fake->flat.size(), 3u);
+  EXPECT_EQ(fake->flat.back(), "libvirtualhid Mouse (seat1)");
 
   // Failure: retried only after retry_interval.
   fake->bind_ok = false;
   fake->gen++;
-  accel.ensure();
-  accel.ensure();
-  EXPECT_EQ(fake->flat.size(), 3u);
+  accel.ensure("libvirtualhid Mouse (seat1)");
+  accel.ensure("libvirtualhid Mouse (seat1)");
+  EXPECT_EQ(fake->flat.size(), 4u);
 
-  flat_accel_t none {"Mouse passthrough", nullptr};
-  none.ensure();
+  // No device or no compositor: nothing to do.
+  accel.ensure("");
+  EXPECT_EQ(fake->flat.size(), 4u);
+  flat_accel_t none {nullptr};
+  none.ensure("libvirtualhid Mouse");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(LinuxMouseTest, AbsoluteMouseFollowsTheLiveHyprlandLayout) {
+  auto fake = fake_hyprland();
+  start(fake);
+
+  // A point on the left edge of the headless output, which starts at 4000 of 5920 px.
+  platf::abs_mouse(input, headless, 4000.0F, 540.0F);
+  auto event = context().mouse->last_submitted_event();
+  EXPECT_EQ(event.kind, lvh::MouseEventKind::absolute_motion);
+  EXPECT_FALSE(event.has_fractional_absolute_coordinates);
+  EXPECT_EQ(event.width, mouse_axis_max);
+  EXPECT_EQ(event.height, mouse_axis_max);
+  EXPECT_EQ(event.x, libinput_units(4000.0 / 5920.0, 4000.0 / 5920.0, 1.0, mouse_axis_max));
+  EXPECT_GE(landed(event.x, mouse_axis_max, 0, 5920), 4000.0);  // never on HDMI-A-1
+  EXPECT_EQ(event.y, libinput_units(1100.0 / 2560.0, mouse_axis_max));
+  // The device keeps libvirtualhid's default pointer area, the whole layout.
+  EXPECT_EQ(context().mouse_viewport.width, 0);
+  EXPECT_EQ(context().mouse_desktop.width, 0);
+
+  // Relative motion does not retarget (and so recreate) the mouse, and is made 1:1.
+  const auto mouse_id = context().mouse->device_id();
+  platf::move_mouse(input, headless, 5, -3);
+  EXPECT_EQ(context().mouse->device_id(), mouse_id);
+  EXPECT_EQ(context().mouse->last_submitted_event().kind, lvh::MouseEventKind::relative_motion);
+  ASSERT_EQ(fake->flat.size(), 1u);
+  EXPECT_EQ(fake->flat[0], context().mouse->profile().name);
+
+  // The layout grows; the port does not change, the mapping does.
+  fake->monitors.push_back({"APOLLO-OTHER", 5920, 0, 1920, 1080});
+  platf::abs_mouse(input, headless, 4960.0F, 540.0F);
+  EXPECT_EQ(context().mouse->last_submitted_event().x, libinput_units(4960.0 / 7840.0, 4000.0 / 7840.0, 5920.0 / 7840.0, mouse_axis_max));
+  EXPECT_EQ(context().mouse->device_id(), mouse_id);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(LinuxMouseTest, MouseUsesSunshineMappingWithoutHyprland) {
+  auto fake = fake_hyprland();
+  fake->reachable = false;
+  start(fake);
+
+  platf::abs_mouse(input, headless, 4960.0F, 540.0F);
+  auto event = context().mouse->last_submitted_event();
+  EXPECT_TRUE(event.has_fractional_absolute_coordinates);
+  EXPECT_FLOAT_EQ(event.absolute_x, 960.0F);
+  EXPECT_EQ(event.width, 1920);
+  EXPECT_EQ(context().mouse_viewport.offset_x, 4000);
+  EXPECT_EQ(context().mouse_desktop.width, 5920);
+
+  // Hyprland comes up: the mouse goes back to the default pointer area once, then stays.
+  fake->reachable = true;
+  platf::abs_mouse(input, headless, 4960.0F, 540.0F);
+  EXPECT_EQ(context().mouse_viewport.width, 0);
+  const auto mouse_id = context().mouse->device_id();
+  platf::abs_mouse(input, headless, 4000.0F, 0.0F);
+  platf::move_mouse(input, headless, 1, 1);
+  EXPECT_EQ(context().mouse->device_id(), mouse_id);
 }
 
 #endif

@@ -4,7 +4,7 @@
  * @details Moonlight clients normally send Windows virtual-key codes for US-layout key positions. With
  *          SS_KBE_FLAG_NON_NORMALIZED the code names the character in the client's layout instead (VK_A is "the key
  *          that types a"). Windows then asks the host layout which key that is (MapVirtualKey); here the Hyprland
- *          keymap of Apollo's uinput keyboard answers the same question for letters and digits.
+ *          keymap of Apollo's virtual keyboard answers the same question for letters and digits.
  */
 #pragma once
 
@@ -19,10 +19,32 @@
 // lib includes
 #include <nlohmann/json_fwd.hpp>
 
+// local includes
+#include "src/platform/common.h"
+
 struct xkb_context;
 struct xkb_keymap;
 
 namespace platf::keyboard_layout {
+  /**
+   * @brief How a keyboard event's virtual-key code becomes a host key.
+   */
+  enum class key_mapping_e {
+    us_position,  ///< The code is a US-layout key position (normalized codes, the default)
+    host_layout,  ///< The code names a character; type it with the host key that has it
+  };
+
+  /**
+   * @brief Non-normalized codes (SS_KBE_FLAG_NON_NORMALIZED) go through the host layout when always_send_scancodes
+   *        is on, like MapVirtualKey on Windows; with it off, they keep their US position.
+   * @param flags Keyboard event flags.
+   * @param always_send_scancodes The always_send_scancodes option.
+   * @return How to map the code.
+   */
+  inline key_mapping_e key_mapping(std::uint8_t flags, bool always_send_scancodes) {
+    return (flags & SS_KBE_FLAG_NON_NORMALIZED) && always_send_scancodes ? key_mapping_e::host_layout : key_mapping_e::us_position;
+  }
+
   /**
    * @brief The keysym a non-normalized virtual-key code stands for: letters (lower case) and digits only, whose
    *        virtual-key codes are layout independent. Other keys keep their US position.
@@ -101,7 +123,10 @@ namespace platf::keyboard_layout {
   };
 
   /**
-   * @brief The virtual-key code that inputtino's keyboard maps to evdev key code @p code, if any.
+   * @brief The virtual-key code that libvirtualhid's keyboard maps to evdev key code @p code, for the keys that can
+   *        carry a letter or digit.
+   * @param code evdev key code.
+   * @return The virtual-key code, or nullopt.
    */
   std::optional<std::uint16_t> vk_for_evdev(int code);
 }  // namespace platf::keyboard_layout

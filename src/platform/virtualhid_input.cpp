@@ -462,6 +462,9 @@ namespace platf::virtualhid {
       std::lock_guard lock {gamepad->feedback_mutex};
       switch (output.kind) {
         case lvh::GamepadOutputKind::rumble:
+          if (!config::input.forward_rumble) {
+            return;
+          }
           if (gamepad->has_last_rumble && gamepad->last_low_frequency_rumble == output.low_frequency_rumble && gamepad->last_high_frequency_rumble == output.high_frequency_rumble) {
             return;
           }
@@ -471,6 +474,9 @@ namespace platf::virtualhid {
           raise_feedback_unlocked(gamepad, gamepad_feedback_msg_t::make_rumble(gamepad->client_relative_index, output.low_frequency_rumble, output.high_frequency_rumble));
           break;
         case lvh::GamepadOutputKind::trigger_rumble:
+          if (!config::input.forward_rumble) {
+            return;
+          }
           if (gamepad->has_last_trigger_rumble && gamepad->last_left_trigger_rumble == output.left_trigger_rumble && gamepad->last_right_trigger_rumble == output.right_trigger_rumble) {
             return;
           }
@@ -590,7 +596,7 @@ namespace platf::virtualhid {
     refresh_mouse(desktop, viewport);
   }
 
-  client_context_t::client_context_t(input_context_t &input):
+  client_context_t::client_context_t(input_context_t &input, std::string_view device_suffix):
       global {&input} {
     if (!global->runtime) {
       return;
@@ -600,6 +606,7 @@ namespace platf::virtualhid {
     if (capabilities.supports_touchscreen) {
       lvh::CreateTouchscreenOptions options;
       options.profile = lvh::profiles::touchscreen();
+      options.profile.name += device_suffix;
       apply_target_seat(options.profile);
       options.stable_id = "sunshine-touchscreen";
       auto created = global->runtime->create_touchscreen(options);
@@ -612,6 +619,7 @@ namespace platf::virtualhid {
     if (capabilities.supports_pen_tablet) {
       lvh::CreatePenTabletOptions options;
       options.profile = lvh::profiles::pen_tablet();
+      options.profile.name += device_suffix;
       apply_target_seat(options.profile);
       options.stable_id = "sunshine-pen-tablet";
       auto created = global->runtime->create_pen_tablet(options);
@@ -1128,7 +1136,10 @@ namespace platf::virtualhid {
 
 namespace platf {
 
-#ifndef _WIN32
+  // Linux has its own copy of these in src/platform/linux/input/virtualhid.cpp: it binds touch and pen to the
+  // streamed output and follows the live layout through Hyprland, keeps relative motion 1:1, and types keys and text
+  // through the host layout.
+#if !defined(_WIN32) && !defined(__linux__)
   /**
    * @brief Global libvirtualhid devices shared by clients.
    */
@@ -1181,6 +1192,7 @@ namespace platf {
   }
 #endif
 
+#ifndef __linux__
   void move_mouse(input_t &input, int deltaX, int deltaY) {
     virtualhid::move_mouse(virtualhid::get_input_context(input), deltaX, deltaY);
   }
@@ -1220,6 +1232,7 @@ namespace platf {
   void pen_update(client_input_t *input, const touch_port_t &touch_port, const pen_input_t &pen) {
     virtualhid::pen_update(virtualhid::get_client_context(input), touch_port, pen);
   }
+#endif
 
 #ifndef _WIN32
   int alloc_gamepad(input_t &input, const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t feedback_queue) {

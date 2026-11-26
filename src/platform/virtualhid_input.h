@@ -77,8 +77,10 @@ namespace platf::virtualhid {
      * @brief Create per-client libvirtualhid devices.
      *
      * @param input Global input context.
+     * @param device_suffix Appended to the touchscreen and pen tablet names, so compositors that configure devices by
+     *                      name can tell clients apart (e.g. `" (client 3)"`).
      */
-    explicit client_context_t(input_context_t &input);
+    explicit client_context_t(input_context_t &input, std::string_view device_suffix = {});
 
     input_context_t *global = nullptr;  ///< Shared global input context.
     std::unique_ptr<lvh::Touchscreen> touch;  ///< Per-client touchscreen.

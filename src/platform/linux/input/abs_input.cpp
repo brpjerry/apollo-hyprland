@@ -1,6 +1,6 @@
 /**
- * @file src/platform/linux/input/inputtino_abs.cpp
- * @brief Definitions for mapping absolute mouse, touch and pen input onto the streamed output.
+ * @file src/platform/linux/input/abs_input.cpp
+ * @brief Definitions for absolute mouse, touch and pen input on Hyprland.
  */
 // standard includes
 #include <algorithm>
@@ -10,7 +10,7 @@
 #include <mutex>
 
 // local includes
-#include "inputtino_abs.h"
+#include "abs_input.h"
 #include "src/logging.h"
 
 #ifdef SUNSHINE_BUILD_WAYLAND
@@ -30,8 +30,8 @@ namespace platf::abs_input {
 
     bool same_port(const touch_port_t &a, const touch_port_t &b) {
       return a.offset_x == b.offset_x && a.offset_y == b.offset_y && a.width == b.width && a.height == b.height &&
-             a.layout_x == b.layout_x && a.layout_y == b.layout_y && a.output_width == b.output_width &&
-             a.output_height == b.output_height;
+             a.logical_width == b.logical_width && a.logical_height == b.logical_height &&
+             a.env_offset_x == b.env_offset_x && a.env_offset_y == b.env_offset_y && a.output_name == b.output_name;
     }
 
     /**
@@ -57,30 +57,17 @@ namespace platf::abs_input {
     }
   }  // namespace
 
-  target_t layout_target(const touch_port_t &port, double local_x, double local_y) {
-    const output_rect_t layout {{}, port.layout_x, port.layout_y, port.width, port.height};
-    return in_layout(
-      port.offset_x,
-      port.offset_y,
-      port.output_width,
-      port.output_height,
-      port.offset_x + local_x,
-      port.offset_y + local_y,
-      layout
-    );
+  target_t layout_target(const touch_port_t &port, double x, double y) {
+    const output_rect_t layout {{}, port.env_offset_x, port.env_offset_y, port.width, port.height};
+    return in_layout(port.offset_x, port.offset_y, port.logical_width, port.logical_height, x, y, layout);
   }
 
-  target_t layout_target(const touch_port_t &port, const output_rect_t &output, const output_rect_t &layout, double local_x, double local_y) {
-    double sx = port.output_width > 0 ? double(output.width) / port.output_width : 1.0;
-    double sy = port.output_height > 0 ? double(output.height) / port.output_height : 1.0;
-    return in_layout(output.x, output.y, output.width, output.height, output.x + local_x * sx, output.y + local_y * sy, layout);
-  }
-
-  std::optional<target_t> output_target(const touch_port_t &port, double local_x, double local_y) {
-    if (port.output_width <= 0 || port.output_height <= 0) {
-      return std::nullopt;
-    }
-    return target_t {{clamp01(local_x / port.output_width), clamp01(local_y / port.output_height)}};
+  target_t layout_target(const touch_port_t &port, const output_rect_t &output, const output_rect_t &layout, double x, double y) {
+    const double sx = port.logical_width > 0 ? double(output.width) / port.logical_width : 1.0;
+    const double sy = port.logical_height > 0 ? double(output.height) / port.logical_height : 1.0;
+    const double px = output.x + (x - port.offset_x) * sx;
+    const double py = output.y + (y - port.offset_y) * sy;
+    return in_layout(output.x, output.y, output.width, output.height, px, py, layout);
   }
 
   int libinput_units(double at, double min, double max, int axis_max) {
@@ -103,8 +90,8 @@ namespace platf::abs_input {
     return libinput_units(fraction, 0.0, 1.0, axis_max);
   }
 
-  float libinput_fraction(double at, double min, double max, int axis_max) {
-    return float(double(libinput_units(at, min, max, axis_max)) / axis_max);
+  float libinput_fraction(double fraction, int axis_max) {
+    return float(double(libinput_units(fraction, axis_max)) / axis_max);
   }
 
   std::string compositor_device_name(std::string_view evdev_name) {
@@ -149,12 +136,17 @@ namespace platf::abs_input {
   }
 
   std::optional<output_rect_t> find_output(const std::vector<output_rect_t> &outputs, const touch_port_t &port) {
+    if (!port.output_name.empty()) {
+      if (auto output = find_output(outputs, port.output_name)) {
+        return output;
+      }
+    }
     const output_rect_t *found = nullptr;
     for (const auto &output : outputs) {
       if (output.x != port.offset_x || output.y != port.offset_y) {
         continue;
       }
-      bool same_size = output.width == port.output_width && output.height == port.output_height;
+      bool same_size = output.width == port.logical_width && output.height == port.logical_height;
       if (!found || same_size) {
         found = &output;
       }
@@ -198,77 +190,77 @@ namespace platf::abs_input {
       compositor_ {std::move(compositor)} {
   }
 
-  target_t layout_mapper_t::map(const touch_port_t &port, double local_x, double local_y) {
+  std::optional<target_t> layout_mapper_t::map(const touch_port_t &port, double x, double y) {
     if (!compositor_) {
-      return layout_target(port, local_x, local_y);
+      return std::nullopt;
     }
 
     outputs_t outputs;
     if (!port_ || !same_port(*port_, port)) {
       // A new port describes the layout as it is now: find the output it is for, then follow that output by name.
-      port_ = port;
       outputs = compositor_->outputs(true);
-      auto output = outputs ? find_output(*outputs, port) : std::nullopt;
+      if (!outputs) {
+        port_.reset();
+        return std::nullopt;
+      }
+      port_ = port;
+      auto output = find_output(*outputs, port);
       output_ = output ? output->name : std::string {};
       if (output_.empty()) {
-        BOOST_LOG(debug) << "Absolute mouse: no output at "sv << port.offset_x << ',' << port.offset_y << "; using the stream's layout"sv;
+        BOOST_LOG(debug) << "Absolute mouse: no output ["sv << port.output_name << "] at "sv << port.offset_x << ','
+                         << port.offset_y << "; using the stream's layout"sv;
       }
-    } else if (!output_.empty()) {
+    } else {
       outputs = compositor_->outputs(false);
+      if (!outputs) {
+        return std::nullopt;
+      }
     }
 
-    if (outputs && !output_.empty()) {
+    if (!output_.empty()) {
       auto output = find_output(*outputs, output_);
       auto layout = bounding_box(*outputs);
       if (output && layout) {
-        return layout_target(port, *output, *layout, local_x, local_y);
+        return layout_target(port, *output, *layout, x, y);
       }
     }
-    return layout_target(port, local_x, local_y);
+    return layout_target(port, x, y);
   }
 
-  output_mapper_t::output_mapper_t(std::string evdev_name, std::shared_ptr<compositor_t> compositor):
+  output_binder_t::output_binder_t(std::string evdev_name, std::shared_ptr<compositor_t> compositor):
       evdev_name_ {std::move(evdev_name)},
       compositor_ {std::move(compositor)} {
   }
 
-  target_t output_mapper_t::map(const touch_port_t &port, double local_x, double local_y) {
-    if (compositor_) {
-      bool changed = !port_ || !same_port(*port_, port) || generation_ != compositor_->generation();
-      bool retry = bound_output_.empty() && std::chrono::steady_clock::now() >= retry_at_;
-      if (changed || retry) {
-        rebind(port);
-      }
+  bool output_binder_t::update(const touch_port_t &port) {
+    if (!compositor_ || evdev_name_.empty()) {
+      return false;
     }
-
-    if (!bound_output_.empty()) {
-      if (auto target = output_target(port, local_x, local_y)) {
-        return *target;
-      }
+    bool changed = !port_ || !same_port(*port_, port) || generation_ != compositor_->generation();
+    bool retry = bound_output_.empty() && std::chrono::steady_clock::now() >= retry_at_;
+    if (changed || retry) {
+      rebind(port);
     }
-    return layout_target(port, local_x, local_y);
+    return !bound_output_.empty();
   }
 
-  point_t output_mapper_t::box_size(const touch_port_t &port) const {
-    // Mirrors map(): output_target() while bound (if the port has the output size), else layout_target().
-    if (!bound_output_.empty() && port.output_width > 0 && port.output_height > 0) {
-      return {double(port.output_width), double(port.output_height)};
+  void output_binder_t::unbind() {
+    if (compositor_ && !bound_output_.empty()) {
+      compositor_->bind_to_output(evdev_name_, {});
     }
-    return {double(std::max(port.width, 1)), double(std::max(port.height, 1))};
+    bound_output_.clear();
   }
 
-  const std::string &output_mapper_t::bound_output() const {
+  const std::string &output_binder_t::bound_output() const {
     return bound_output_;
   }
 
-  void output_mapper_t::rebind(const touch_port_t &port) {
+  void output_binder_t::rebind(const touch_port_t &port) {
     port_ = port;
 
     std::optional<output_rect_t> output;
-    if (port.output_width > 0 && port.output_height > 0) {
-      if (auto outputs = compositor_->outputs(true)) {
-        output = find_output(*outputs, port);
-      }
+    if (auto outputs = compositor_->outputs(true)) {
+      output = find_output(*outputs, port);
     }
 
     bool bound = output && compositor_->bind_to_output(evdev_name_, output->name);
@@ -288,18 +280,22 @@ namespace platf::abs_input {
       compositor_->bind_to_output(evdev_name_, {});
       bound_output_.clear();
     }
-    BOOST_LOG(debug) << "Not binding ["sv << evdev_name_ << "] to an output; mapping it onto the whole desktop"sv;
+    BOOST_LOG(debug) << "Not binding ["sv << evdev_name_ << "] to an output"sv;
     retry_at_ = std::chrono::steady_clock::now() + retry_interval;
   }
 
-  flat_accel_t::flat_accel_t(std::string evdev_name, std::shared_ptr<compositor_t> compositor):
-      evdev_name_ {std::move(evdev_name)},
+  flat_accel_t::flat_accel_t(std::shared_ptr<compositor_t> compositor):
       compositor_ {std::move(compositor)} {
   }
 
-  void flat_accel_t::ensure() {
-    if (!compositor_) {
+  void flat_accel_t::ensure(const std::string &evdev_name) {
+    if (!compositor_ || evdev_name.empty()) {
       return;
+    }
+    if (evdev_name != evdev_name_) {
+      evdev_name_ = evdev_name;
+      applied_generation_.reset();
+      retry_at_ = {};
     }
     if (applied_generation_ == compositor_->generation()) {
       return;
@@ -313,7 +309,7 @@ namespace platf::abs_input {
       applied_generation_ = compositor_->generation();
     } else {
       applied_generation_.reset();
-      retry_at_ = now + output_mapper_t::retry_interval;
+      retry_at_ = now + output_binder_t::retry_interval;
     }
   }
 
@@ -464,14 +460,50 @@ namespace platf::abs_input {
     };
   }  // namespace
 
+  namespace {
+    std::shared_ptr<compositor_t> real_compositor() {
+      // Never destroyed: its event listener thread may still be running at exit.
+      static auto *instance = new std::shared_ptr<compositor_t> {std::make_shared<hyprland_compositor_t>()};
+      return *instance;
+    }
+  }  // namespace
+#else
+  namespace {
+    std::shared_ptr<compositor_t> real_compositor() {
+      return nullptr;
+    }
+  }  // namespace
+#endif
+
+#ifdef SUNSHINE_TESTS
+  namespace {
+    std::mutex test_compositor_mutex;
+    std::shared_ptr<compositor_t> test_compositor;
+    bool test_virtual_keyboard = false;
+  }  // namespace
+
+  void set_compositor_for_testing(std::shared_ptr<compositor_t> compositor, bool virtual_keyboard) {
+    std::lock_guard lock {test_compositor_mutex};
+    test_compositor = std::move(compositor);
+    test_virtual_keyboard = virtual_keyboard;
+  }
+
+  bool virtual_keyboard_for_testing() {
+    std::lock_guard lock {test_compositor_mutex};
+    return test_virtual_keyboard;
+  }
+
+  std::shared_ptr<compositor_t> real_hyprland_compositor() {
+    return real_compositor();
+  }
+
   std::shared_ptr<compositor_t> hyprland_compositor() {
-    // Never destroyed: its event listener thread may still be running at exit.
-    static auto *instance = new std::shared_ptr<compositor_t> {std::make_shared<hyprland_compositor_t>()};
-    return *instance;
+    std::lock_guard lock {test_compositor_mutex};
+    return test_compositor;
   }
 #else
   std::shared_ptr<compositor_t> hyprland_compositor() {
-    return nullptr;
+    return real_compositor();
   }
 #endif
 }  // namespace platf::abs_input
