@@ -640,8 +640,17 @@ namespace platf::clipboard {
         return;
       }
       int fds[2];
-      if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) < 0) {
+      if (pipe2(fds, O_CLOEXEC) < 0) {
         BOOST_LOG(warning) << "Clipboard: pipe2 failed: "sv << std::strerror(errno);
+        result->set_value(std::nullopt);
+        return;
+      }
+      // Only our end is nonblocking. O_NONBLOCK belongs to the open file, which the owner shares through the
+      // descriptor we pass it: a source writing with plain blocking writes would get EAGAIN and stop early.
+      if (int flags = fcntl(fds[0], F_GETFL); flags < 0 || fcntl(fds[0], F_SETFL, flags | O_NONBLOCK) < 0) {
+        BOOST_LOG(warning) << "Clipboard: cannot make the pipe nonblocking: "sv << std::strerror(errno);
+        close(fds[0]);
+        close(fds[1]);
         result->set_value(std::nullopt);
         return;
       }

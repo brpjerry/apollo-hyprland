@@ -15,9 +15,12 @@
   #include <src/platform/linux/clipboard_logic.h>
 
   #include <ext-data-control-v1.h>
+  #include <fcntl.h>
   #include <filesystem>
+  #include <future>
   #include <fstream>
   #include <sstream>
+  #include <poll.h>
   #include <sys/wait.h>
   #include <thread>
   #include <wayland-client.h>
@@ -136,6 +139,95 @@ namespace {
 
     bool ok() const {
       return source != nullptr;
+    }
+  };
+
+  /**
+   * @brief A selection owner that serves its text with plain blocking writes and gives up on the first short or
+   *        failed one, as a simple client does. It records whether the descriptor it was given is nonblocking.
+   */
+  struct blocking_owner_t {
+    wl_display *display = nullptr;
+    wl_seat *seat = nullptr;
+    ext_data_control_manager_v1 *manager = nullptr;
+    ext_data_control_device_v1 *device = nullptr;
+    ext_data_control_source_v1 *source = nullptr;
+    std::string text;
+    bool served = false;
+    bool nonblocking = false;
+
+    blocking_owner_t(const std::string &socket, std::string text):
+        text {std::move(text)} {
+      display = wl_display_connect(socket.c_str());
+      if (!display) {
+        return;
+      }
+      auto registry = wl_display_get_registry(display);
+      static constexpr wl_registry_listener listener {
+        .global = [](void *data, wl_registry *registry, uint32_t name, const char *interface, uint32_t) {
+          auto self = static_cast<blocking_owner_t *>(data);
+          if (std::string_view {interface} == wl_seat_interface.name && !self->seat) {
+            self->seat = static_cast<wl_seat *>(wl_registry_bind(registry, name, &wl_seat_interface, 1));
+          } else if (std::string_view {interface} == ext_data_control_manager_v1_interface.name) {
+            self->manager = static_cast<ext_data_control_manager_v1 *>(wl_registry_bind(registry, name, &ext_data_control_manager_v1_interface, 1));
+          }
+        },
+        .global_remove = [](void *, wl_registry *, uint32_t) {},
+      };
+      wl_registry_add_listener(registry, &listener, this);
+      wl_display_roundtrip(display);
+      wl_registry_destroy(registry);
+      if (!seat || !manager) {
+        return;
+      }
+      static constexpr ext_data_control_source_v1_listener source_listener {
+        .send = [](void *data, ext_data_control_source_v1 *, const char *, int32_t fd) {
+          auto self = static_cast<blocking_owner_t *>(data);
+          int flags = fcntl(fd, F_GETFL);
+          self->nonblocking = flags >= 0 && (flags & O_NONBLOCK);
+          std::size_t off = 0;
+          while (off < self->text.size()) {
+            auto n = write(fd, self->text.data() + off, self->text.size() - off);
+            if (n <= 0) {
+              break;
+            }
+            off += n;
+          }
+          close(fd);
+          self->served = true;
+        },
+        .cancelled = [](void *, ext_data_control_source_v1 *) {},
+      };
+      device = ext_data_control_manager_v1_get_data_device(manager, seat);
+      source = ext_data_control_manager_v1_create_data_source(manager);
+      ext_data_control_source_v1_add_listener(source, &source_listener, this);
+      ext_data_control_source_v1_offer(source, "text/plain;charset=utf-8");
+      ext_data_control_device_v1_set_selection(device, source);
+      wl_display_roundtrip(display);
+    }
+
+    ~blocking_owner_t() {
+      if (display) {
+        wl_display_disconnect(display);
+      }
+    }
+
+    bool ok() const {
+      return source != nullptr;
+    }
+
+    /// Dispatches until a paste target was served or @p timeout passes.
+    bool serve(std::chrono::milliseconds timeout) {
+      auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (!served && std::chrono::steady_clock::now() < deadline) {
+        wl_display_flush(display);
+        pollfd pfd {.fd = wl_display_get_fd(display), .events = POLLIN};
+        if (poll(&pfd, 1, 50) > 0 && wl_display_dispatch(display) < 0) {
+          return false;
+        }
+        wl_display_dispatch_pending(display);
+      }
+      return served;
     }
   };
 
@@ -336,6 +428,30 @@ TEST_P(ClipboardLiveTest, OwnerThatNeverAnswersTimesOut) {
   EXPECT_TRUE(clipboard->alive());
   ASSERT_TRUE(clipboard->set("after timeout"));
   EXPECT_EQ(get_until("after timeout"), "after timeout");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_P(ClipboardLiveTest, OwnerWithBlockingWritesDeliversLargeText) {
+  // More than a pipe holds (64 KiB by default), so the owner's writes block until we read.
+  auto text = large_text("\n", "blocking");
+  blocking_owner_t owner {socket, text};
+  if (!owner.ok()) {
+    GTEST_SKIP() << "the compositor lacks ext-data-control-v1 for the test owner";
+  }
+  // The owner's selection reaches our event thread asynchronously: read until its send event came.
+  std::optional<std::string> got;
+  for (int attempt = 0; attempt < 20 && !owner.served; ++attempt) {
+    auto reading = std::async(std::launch::async, [&] {
+      return clipboard->get();
+    });
+    owner.serve(500ms);
+    got = reading.get();
+  }
+  ASSERT_TRUE(owner.served) << "the owner was never asked for its text";
+  EXPECT_FALSE(owner.nonblocking) << "the owner was handed a nonblocking pipe";
+  ASSERT_TRUE(got);
+  EXPECT_EQ(got->size(), text.size());
+  EXPECT_TRUE(*got == text) << "selection read from a blocking writer differs";
 }
 
 // Bugs caught: 0, False positives: 0
