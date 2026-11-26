@@ -861,3 +861,31 @@ TEST(HyprlandVdisplayTest, HdrIsNotRememberedAsAUserSetting) {
   EXPECT_TRUE(vd.remove(client_identity()));
   EXPECT_FALSE(fs::exists(hypr.settings_file()));
 }
+
+// Bugs caught: 1, False positives: 0
+// Found with a real client (2026-11-25): terminate() restores the initial HDR state before remove(). set_hdr re-applied
+// the rule built from the stored settings, which put back scale 1 over the scale the user had set during the stream,
+// so remove() saw nothing to remember.
+TEST(HyprlandVdisplayTest, RestoringHdrStateKeepsTheUsersChanges) {
+  fake_hyprland_t hypr;
+  {
+    hyprland::vdisplay_t vd {hypr.options()};
+    ASSERT_EQ(vd.init(), status_e::ok);
+    hypr.wait_for_listener();
+    ASSERT_EQ(vd.create(client_identity(), "Living Room", {2560, 1600, 120000}), client_output);
+
+    hypr.update_monitor(client_output, [](fake_monitor_t &m) {
+      m.scale = 2.0;
+    });
+    // process.cpp's terminate: restore the initial (SDR) state, then remove the display.
+    ASSERT_TRUE(vd.set_hdr(client_output, false));
+    auto m = hypr.monitor(client_output);
+    ASSERT_TRUE(m);
+    EXPECT_DOUBLE_EQ(m->scale, 2.0) << "set_hdr must not undo the user's scale";
+    EXPECT_TRUE(vd.remove(client_identity()));
+  }
+  ASSERT_TRUE(fs::exists(hypr.settings_file()));
+  std::ifstream in {hypr.settings_file()};
+  auto json = nlohmann::json::parse(in);
+  EXPECT_EQ(json["displays"][client_output]["scale"], 2.0);
+}
