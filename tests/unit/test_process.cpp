@@ -881,3 +881,73 @@ TEST(ProcessTest, VdisplayIdentityDerivesStableUuidsForNonUuidIds) {
   app.uuid = "12345678-9abc-def0-1234-56789abcdef0";
   EXPECT_EQ(proc::vdisplay_identity(app, session).uuid_str, app.uuid);
 }
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ProcessRefreshTest, Refresh_KeepsAppsWhenTheFileIsUnreadable) {
+  // An editor that is still writing apps.json must not wipe the running server's app list.
+  const fs::path apps_file = test_dir / "apps_broken.json";
+  writeAppsJson(apps_file, {"Good"});
+
+  auto saved = std::move(proc::proc);
+  proc::proc = proc::proc_t {};
+  proc::refresh(apps_file.string());
+  ASSERT_EQ(proc::proc.get_apps().size(), 1u);
+
+  {
+    std::ofstream file(apps_file);
+    file << R"({"env": {}, "apps": [ { "name": "Half)";
+  }
+  fs::last_write_time(apps_file, fs::file_time_type::clock::now() + std::chrono::hours(2));
+  proc::refresh(apps_file.string());
+  ASSERT_EQ(proc::proc.get_apps().size(), 1u);
+  EXPECT_EQ(proc::proc.get_apps()[0].name, "Good");
+
+  // Once the file is complete again it is read, even though it was seen before.
+  writeAppsJson(apps_file, {"Repaired"});
+  fs::last_write_time(apps_file, fs::file_time_type::clock::now() + std::chrono::hours(3));
+  proc::refresh(apps_file.string());
+  ASSERT_EQ(proc::proc.get_apps().size(), 1u);
+  EXPECT_EQ(proc::proc.get_apps()[0].name, "Repaired");
+
+  proc::proc = std::move(saved);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ProcessRefreshTest, StringElevatedStateCommandsAreMigrated) {
+  // Older Web UIs saved "elevated" as a string in state-cmd too; the app must load, not fall back to Desktop.
+  for (const int version : {1, 2}) {
+    SCOPED_TRACE(version);
+    const fs::path apps_file = test_dir / std::format("apps_state_cmd_{}.json", version);
+    {
+      std::ofstream file(apps_file);
+      file << nlohmann::json {
+        {"version", version},
+        {"env", nlohmann::json::object()},
+        {"apps", nlohmann::json::array({{
+                   {"name", "Stateful"},
+                   {"uuid", "0123abcd-0000-4000-8000-000000000010"},
+                   {"prep-cmd", nlohmann::json::array({{{"do", "a"}, {"undo", "b"}, {"elevated", "true"}}})},
+                   {"state-cmd", nlohmann::json::array({{{"do", "c"}, {"undo", "d"}, {"elevated", "true"}}})},
+                 }})},
+      }.dump();
+    }
+    auto parsed = proc::parse(apps_file.string());
+    ASSERT_TRUE(parsed);
+    const auto &apps = parsed->get_apps();
+    ASSERT_FALSE(apps.empty());
+    EXPECT_EQ(apps[0].name, "Stateful");
+    ASSERT_FALSE(apps[0].state_cmds.empty());
+    EXPECT_TRUE(apps[0].state_cmds.back().elevated);
+  }
+
+  nlohmann::json tree {{"apps", nlohmann::json::array({{{"name", "x"}, {"state-cmd", nlohmann::json::array({{{"do", "c"}, {"elevated", "false"}}})}}})}};
+  proc::migration_v2(tree);
+  EXPECT_EQ(tree["apps"][0]["state-cmd"][0]["elevated"], false);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ProcessTest, CompatibleClientFpsIsAWholeNumber) {
+  EXPECT_EQ(proc::compatible_client_fps(60000), "60");
+  EXPECT_EQ(proc::compatible_client_fps(59940), "60");
+  EXPECT_EQ(proc::compatible_client_fps(119880), "120");
+}

@@ -9,6 +9,7 @@
 
 // test includes
 #include "../tests_common.h"
+#include "../tests_log_checker.h"
 
 // standard includes
 #include <array>
@@ -2299,4 +2300,119 @@ TEST_F(ConfigHttpTest, LogoutEndsTheLoginSession) {
 
   // The old cookie no longer opens pages.
   EXPECT_EQ(client->request("GET", "/page-test", "", session_headers)->status_code, "307 Temporary Redirect");
+}
+
+/**
+ * @brief Sign in through POST /api/login and return the `auth=...` cookie pair.
+ *
+ * @param client HTTPS client of the test server.
+ * @param set_cookie Receives the whole Set-Cookie header.
+ */
+static std::string login_cookie(SimpleWeb::Client<SimpleWeb::HTTPS> &client, std::string *set_cookie = nullptr) {
+  SimpleWeb::CaseInsensitiveMultimap json_headers;
+  json_headers.emplace("Content-Type", "application/json");
+  const auto login = client.request("POST", "/login-test", R"({"username":"testuser","password":"testpass"})", json_headers);
+  EXPECT_EQ(login->status_code, "200 OK");
+  const auto header = login->header.find("Set-Cookie");
+  if (header == login->header.end()) {
+    ADD_FAILURE() << "login set no cookie";
+    return {};
+  }
+  if (set_cookie) {
+    *set_cookie = header->second;
+  }
+  return header->second.substr(0, header->second.find(';'));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, DebugLogRedactsSessionCookieAndCredentials) {
+  // The request log must not hand out a credential that opens the Web UI: the login cookie, or Basic credentials sent
+  // with a lower-case header name.
+  const auto cookie = login_cookie(*client);
+  ASSERT_FALSE(cookie.empty());
+  const auto token = cookie.substr(cookie.find('=') + 1);
+
+  SimpleWeb::CaseInsensitiveMultimap session_headers;
+  session_headers.emplace("Cookie", cookie);
+  session_headers.emplace("Accept", "text/html");
+  ASSERT_EQ(client->request("GET", "/page-test", "", session_headers)->status_code, "200 OK");
+
+  const auto basic = create_auth_header("testuser", "testpass");
+  SimpleWeb::CaseInsensitiveMultimap basic_headers;
+  basic_headers.emplace("authorization", basic);
+  ASSERT_EQ(client->request("GET", "/page-test", "", basic_headers)->status_code, "200 OK");
+
+  EXPECT_FALSE(log_checker::line_contains("test_sunshine.log", token));
+  EXPECT_FALSE(log_checker::line_contains("test_sunshine.log", basic.substr("Basic "sv.size())));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, SessionCookieIsHttpOnlyAndOtherCookiesKeepTheBasicPrompt) {
+  std::string set_cookie;
+  ASSERT_FALSE(login_cookie(*client, &set_cookie).empty());
+  EXPECT_NE(set_cookie.find("HttpOnly"), std::string::npos) << set_cookie;
+
+  // A cookie of another app on the same host is not a login session: an API client still gets the Basic challenge.
+  SimpleWeb::CaseInsensitiveMultimap headers;
+  headers.emplace("Cookie", "theme=dark; xauth=1");
+  const auto response = client->request("GET", "/page-test", "", headers);
+  ASSERT_EQ(response->status_code, "401 Unauthorized");
+  EXPECT_NE(response->header.find("WWW-Authenticate"), response->header.end());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, BasicLogoutKeepsAnotherBrowsersSession) {
+  const auto cookie = login_cookie(*client);
+  ASSERT_FALSE(cookie.empty());
+
+  // Another browser, signed in with Basic credentials, logs out.
+  SimpleWeb::CaseInsensitiveMultimap basic_headers;
+  basic_headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
+  ASSERT_EQ(client->request("POST", "/logout-test", "", basic_headers)->status_code, "200 OK");
+
+  SimpleWeb::CaseInsensitiveMultimap session_headers;
+  session_headers.emplace("Cookie", cookie);
+  session_headers.emplace("Accept", "text/html");
+  EXPECT_EQ(client->request("GET", "/page-test", "", session_headers)->status_code, "200 OK");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, LoginRedirectKeepsTheQuery) {
+  SimpleWeb::CaseInsensitiveMultimap headers;
+  headers.emplace("Accept", "text/html");
+  const auto response = client->request("GET", "/page-test?tab=otp", "", headers);
+  ASSERT_EQ(response->status_code, "307 Temporary Redirect");
+  const auto location = response->header.find("Location");
+  ASSERT_NE(location, response->header.end());
+  EXPECT_EQ(location->second, "/login?redir=%2Fpage-test%3Ftab%3Dotp");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, SaveAppRejectsAStaleIndex) {
+  // Editing app 3 of a two-app list (another admin removed it) must fail, not create a new app.
+  using json = nlohmann::json;
+  ScopedSaveAppAppsFile apps_file("save_app_stale_index");
+  const json initial {{"env", json::object()}, {"apps", json::array({json {{"name", "A"}, {"uuid", "11111111-1111-1111-1111-111111111111"}}, json {{"name", "B"}, {"uuid", "22222222-2222-2222-2222-222222222222"}}})}};
+  {
+    std::ofstream file(config::stream.file_apps);
+    file << initial.dump();
+  }
+  const auto headers = authenticated_json_headers();
+
+  for (const json &index : {json(2), json(-2), json("0")}) {
+    SCOPED_TRACE(index.dump());
+    const auto response = client->request("POST", "/api/apps", json {{"name", "Edited"}, {"index", index}}.dump(), headers);
+    EXPECT_EQ(response->status_code, "400 Bad Request");
+    std::ifstream file(config::stream.file_apps);
+    EXPECT_EQ(json::parse(file).at("apps").size(), 2U);
+  }
+
+  // A valid index still edits that app in place.
+  const auto response = client->request("POST", "/api/apps", json {{"name", "Edited"}, {"index", 1}}.dump(), headers);
+  ASSERT_EQ(response->status_code, "200 OK");
+  std::ifstream file(config::stream.file_apps);
+  const auto saved = json::parse(file).at("apps");
+  ASSERT_EQ(saved.size(), 2U);
+  EXPECT_EQ(saved.at(1).at("name"), "Edited");
+  EXPECT_EQ(saved.at(1).at("uuid"), "22222222-2222-2222-2222-222222222222");
 }

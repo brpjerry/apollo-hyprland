@@ -10,6 +10,7 @@
 // standard includes
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -310,12 +311,12 @@ namespace proc {
         identity.uuid_str = identity.uuid.string();
       } else {
         identity.uuid = identity_uuid(app.uuid);
-        identity.uuid_str = app.uuid.size() == 36 ? app.uuid : identity.uuid.string();
+        identity.uuid_str = uuid_util::uuid_t::valid_text(app.uuid) ? app.uuid : identity.uuid.string();
       }
     } else {
       identity.name = launch_session.device_name;
       identity.uuid = identity_uuid(launch_session.unique_id);
-      identity.uuid_str = launch_session.unique_id.size() == 36 ? launch_session.unique_id : identity.uuid.string();
+      identity.uuid_str = uuid_util::uuid_t::valid_text(launch_session.unique_id) ? launch_session.unique_id : identity.uuid.string();
     }
 
     return identity;
@@ -409,6 +410,11 @@ namespace proc {
 #else
     return !display_attempted && status == platf::vdisplay::status_e::unavailable;
 #endif
+  }
+
+  std::string compatible_client_fps(int fps_millihz) {
+    // An integer, rounded: std::round() returns a float, which std::to_string() prints as "60.000000".
+    return std::to_string(std::lround(fps_millihz / 1000.0));
   }
 
   int proc_t::execute(const ctx_t& app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
@@ -531,7 +537,7 @@ namespace proc {
     _env["SUNSHINE_CLIENT_NAME"] = launch_session->client_name;
     _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(render_width);
     _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(render_height);
-    _env["SUNSHINE_CLIENT_FPS"] = config::sunshine.envvar_compatibility_mode ? std::to_string(std::round((float)launch_session->fps / 1000.0f)) : fps_str;
+    _env["SUNSHINE_CLIENT_FPS"] = config::sunshine.envvar_compatibility_mode ? compatible_client_fps(launch_session->fps) : fps_str;
     _env["SUNSHINE_CLIENT_HDR"] = launch_session->enable_hdr ? "true" : "false";
     _env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
     _env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
@@ -1482,12 +1488,15 @@ namespace proc {
           }
         }
 
-        // For each entry in the "prep-cmd" array, convert "elevated" if necessary.
-        if (app.contains("prep-cmd") && app["prep-cmd"].is_array()) {
-          for (auto &prep : app["prep-cmd"]) {
-            if (prep.contains("elevated") && prep["elevated"].is_string()) {
-              std::string s = prep["elevated"].get<std::string>();
-              prep["elevated"] = (s == "true");
+        // For each entry in the "prep-cmd" and "state-cmd" arrays, convert "elevated" if necessary. Older Web UIs saved
+        // it as a string in both, and the reader only takes a boolean.
+        for (const auto *commands : {"prep-cmd", "state-cmd"}) {
+          if (app.contains(commands) && app[commands].is_array()) {
+            for (auto &prep : app[commands]) {
+              if (prep.is_object() && prep.contains("elevated") && prep["elevated"].is_string()) {
+                std::string s = prep["elevated"].get<std::string>();
+                prep["elevated"] = (s == "true");
+              }
             }
           }
         }
@@ -1510,7 +1519,10 @@ namespace proc {
 
     if (file_version < last_version) {
       migration_v2(fileTree);
-      file_handler::write_file(fileName.c_str(), fileTree.dump(4));
+      // The migrated list is used either way; a failed write only means migrating again next time.
+      if (file_handler::write_file(fileName.c_str(), fileTree.dump(4)) != 0) {
+        BOOST_LOG(warning) << "Couldn't save the migrated app list to "sv << fileName;
+      }
     }
   }
 
@@ -1531,8 +1543,10 @@ namespace proc {
         std::string content = file_handler::read_file(file_name.c_str());
         tree = nlohmann::json::parse(content);
       } catch (const std::exception& e) {
-        BOOST_LOG(warning) << "Couldn't read apps.json properly! Apps will not be loaded."sv;
-        break;
+        // No app list rather than an empty one: refresh() then keeps the apps it has and tries the file again later
+        // (e.g. while an editor is still writing it).
+        BOOST_LOG(warning) << "Couldn't read apps.json properly ("sv << e.what() << "), keeping the current app list"sv;
+        return std::nullopt;
       }
 
       try {
@@ -1896,14 +1910,22 @@ namespace proc {
       platf::vdisplay::cleanup_stale();
     }
 
+    // parse() may rewrite the file (Apollo migrates app ids to UUIDs), and someone else may replace it meanwhile. Only
+    // record a timestamp the parsed list was read at: when the file changed during the read, read it again.
     auto proc_opt = proc::parse(file_name);
+    for (int reread = 0; proc_opt && reread < 3; ++reread) {
+      std::error_code after_ec;
+      const auto after_read = std::filesystem::last_write_time(file_name, after_ec);
+      if (after_ec || ec || after_read == current_time) {
+        break;
+      }
+      current_time = after_read;
+      proc_opt = proc::parse(file_name);
+    }
 
     if (proc_opt) {
       proc.update_apps_and_env(std::move(*proc_opt));
-      // parse() may have rewritten the file (Apollo migrates app ids to UUIDs), so record the time after parsing.
-      // Otherwise the next refresh sees a newer file and parses it again.
-      const auto parsed_time = std::filesystem::last_write_time(file_name, ec);
-      last_apps_file_update = ec ? current_time : parsed_time;
+      last_apps_file_update = current_time;
     }
   }
 }  // namespace proc

@@ -356,6 +356,21 @@ namespace proc {
   std::optional<proc::proc_t> parse(const std::string &file_name);
 
   /**
+   * @brief Migrate a v1 app list to v2 (Apollo): legacy string values become booleans and integers, apps get UUIDs.
+   *
+   * @param fileTree The apps.json document, changed in place.
+   */
+  void migration_v2(nlohmann::json &fileTree);
+
+  /**
+   * @brief SUNSHINE_CLIENT_FPS in environment-variable compatibility mode: the rate as a whole number.
+   *
+   * @param fps_millihz Frame rate of the launch session in mHz (60 fps is 60000).
+   * @return The rounded rate, e.g. "60".
+   */
+  std::string compatible_client_fps(int fps_millihz);
+
+  /**
    * @brief Initialize proc functions
    * @return Unique pointer to `deinit_t` to manage cleanup
    */

@@ -4,14 +4,26 @@
  */
 
 // standard includes
+#include <atomic>
+#include <cerrno>
+#include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
+
+#ifndef _WIN32
+  #include <fcntl.h>
+  #include <sys/stat.h>
+  #include <unistd.h>
+#endif
 
 // local includes
 #include "file_handler.h"
 #include "logging.h"
 
 namespace file_handler {
+  using namespace std::literals;
+
   std::string get_parent_directory(const std::string &path) {
     // remove any trailing path separators
     std::string trimmed_path = path;
@@ -43,6 +55,7 @@ namespace file_handler {
   }
 
   int write_file(const char *path, const std::string_view &contents) {
+#ifdef _WIN32
     std::ofstream out(path);
 
     if (!out.is_open()) {
@@ -50,7 +63,61 @@ namespace file_handler {
     }
 
     out << contents;
+    out.close();
+    return out ? 0 : -1;
+#else
+    namespace fs = std::filesystem;
 
-    return 0;
+    // Write a sibling file and rename it over the target, so a full disk, a read-only directory or a crash midway
+    // leaves the old file intact rather than truncated. Write through a symlink to the file it points at.
+    std::error_code ec;
+    fs::path target {path};
+    if (fs::is_symlink(target, ec)) {
+      target = fs::weakly_canonical(target, ec);
+      if (ec) {
+        BOOST_LOG(error) << "Couldn't resolve "sv << path << ": "sv << ec.message();
+        return -1;
+      }
+    }
+
+    static std::atomic<unsigned> counter {0};
+    auto temporary = target;
+    temporary += std::format(".tmp-{}-{}", ::getpid(), counter++);
+
+    const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+    if (fd < 0) {
+      BOOST_LOG(error) << "Couldn't write "sv << path << ": "sv << std::strerror(errno);
+      return -1;
+    }
+
+    int failure = 0;
+    // Keep the permissions of the file being replaced (a new file gets the usual umask-based ones).
+    if (struct stat existing {}; ::stat(target.c_str(), &existing) == 0 && ::fchmod(fd, existing.st_mode & 07777) != 0) {
+      failure = errno;
+    }
+    for (std::size_t written = 0; !failure && written < contents.size();) {
+      const auto n = ::write(fd, contents.data() + written, contents.size() - written);
+      if (n > 0) {
+        written += static_cast<std::size_t>(n);
+      } else if (n < 0 && errno != EINTR) {
+        failure = errno;
+      } else if (n == 0) {
+        failure = EIO;
+      }
+    }
+    if (!failure && ::fsync(fd) != 0) {
+      failure = errno;
+    }
+    if (::close(fd) != 0 && !failure) {
+      failure = errno;
+    }
+    if (!failure && ::rename(temporary.c_str(), target.c_str()) == 0) {
+      return 0;
+    }
+
+    BOOST_LOG(error) << "Couldn't write "sv << path << ": "sv << std::strerror(failure ? failure : errno);
+    ::unlink(temporary.c_str());
+    return -1;
+#endif
   }
 }  // namespace file_handler

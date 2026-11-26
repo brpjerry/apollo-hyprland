@@ -99,3 +99,40 @@ TEST(FileHandlerTests, ReadMissingFileTest) {
   // read missing file
   EXPECT_EQ(file_handler::read_file("non-existing-file.txt"), "");
 }
+
+#ifndef _WIN32
+  #include <filesystem>
+  #include <unistd.h>
+
+// Bugs caught: 0, False positives: 0
+TEST(FileHandlerTests, WriteFileReplacesAtomicallyAndKeepsPermissionsAndSymlinks) {
+  namespace fs = std::filesystem;
+  const auto dir = fs::path {SUNSHINE_TEST_BIN_DIR} / "write_file_atomic";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  const auto target = dir / "apps.json";
+
+  ASSERT_EQ(file_handler::write_file(target.c_str(), "old"), 0);
+  fs::permissions(target, fs::perms::owner_read | fs::perms::owner_write);
+  ASSERT_EQ(file_handler::write_file(target.c_str(), "new"), 0);
+  EXPECT_EQ(file_handler::read_file(target.c_str()), "new");
+  EXPECT_EQ(fs::status(target).permissions() & fs::perms::all, fs::perms::owner_read | fs::perms::owner_write);
+
+  // A symlinked file (e.g. kept in a dotfiles repository) stays a symlink.
+  const auto link = dir / "link.json";
+  fs::create_symlink(target.filename(), link);
+  ASSERT_EQ(file_handler::write_file(link.c_str(), "through link"), 0);
+  EXPECT_TRUE(fs::is_symlink(link));
+  EXPECT_EQ(file_handler::read_file(target.c_str()), "through link");
+
+  // A failed write reports the failure and leaves the old contents (root can write anywhere, so skip that part).
+  if (::geteuid() != 0) {
+    fs::permissions(dir, fs::perms::owner_read | fs::perms::owner_exec);
+    EXPECT_NE(file_handler::write_file(target.c_str(), "lost"), 0);
+    EXPECT_EQ(file_handler::read_file(target.c_str()), "through link");
+    fs::permissions(dir, fs::perms::owner_all);
+  }
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+#endif

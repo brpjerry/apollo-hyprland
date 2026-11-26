@@ -583,7 +583,9 @@ namespace confighttp {
     BOOST_LOG(debug) << "DESTINATION :: "sv << request->path;
 
     for (auto &[name, val] : request->header) {
-      BOOST_LOG(debug) << name << " -- " << (name == "Authorization" ? "CREDENTIALS REDACTED" : val);
+      // Header names are case-insensitive. The Cookie header carries the Web UI login session.
+      const bool credentials = boost::iequals(name, "Authorization") || boost::iequals(name, "Cookie");
+      BOOST_LOG(debug) << name << " -- " << (credentials ? "CREDENTIALS REDACTED" : val);
     }
 
     BOOST_LOG(debug) << " [--] "sv;
@@ -609,6 +611,29 @@ namespace confighttp {
   }
 
   /**
+   * @brief Retrieve the value of a key from a cookie string (Apollo).
+   * @param cookieString The cookie header string.
+   * @param key The key to search.
+   * @return The value if found, empty string otherwise.
+   */
+  std::string getCookieValue(const std::string &cookieString, const std::string &key) {
+    // Match whole cookie names only, so "xauth=..." is not read as "auth".
+    std::size_t pos = 0;
+    while (pos < cookieString.size()) {
+      const auto end = std::min(cookieString.find(';', pos), cookieString.size());
+      auto pair = std::string_view {cookieString}.substr(pos, end - pos);
+      while (!pair.empty() && pair.front() == ' ') {
+        pair.remove_prefix(1);
+      }
+      if (pair.size() > key.size() && pair.starts_with(key) && pair[key.size()] == '=') {
+        return std::string {pair.substr(key.size() + 1)};
+      }
+      pos = end + 1;
+    }
+    return "";
+  }
+
+  /**
    * @brief Send a 401 Unauthorized response.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
@@ -630,31 +655,12 @@ namespace confighttp {
       {"Content-Security-Policy", "frame-ancestors 'none';"}
     };
     // A browser that signs in through Apollo's login page (session cookie) must not get the Basic credentials prompt.
-    if (request->header.find("cookie") == request->header.end()) {
+    // Only Apollo's own cookie counts: unrelated cookies of the same host must not hide the prompt from Basic clients.
+    if (const auto cookies = request->header.find("cookie"); cookies == request->header.end() || getCookieValue(cookies->second, "auth").empty()) {
       headers.emplace("WWW-Authenticate", R"(Basic realm="Apollo Gamestream Host", charset="UTF-8")");
     }
 
     response->write(code, tree.dump(), headers);
-  }
-
-  /**
-   * @brief Retrieve the value of a key from a cookie string (Apollo).
-   * @param cookieString The cookie header string.
-   * @param key The key to search.
-   * @return The value if found, empty string otherwise.
-   */
-  std::string getCookieValue(const std::string &cookieString, const std::string &key) {
-    std::string keyWithEqual = key + "=";
-    std::size_t startPos = cookieString.find(keyWithEqual);
-    if (startPos == std::string::npos) {
-      return "";
-    }
-    startPos += keyWithEqual.length();
-    std::size_t endPos = cookieString.find(';', startPos);
-    if (endPos == std::string::npos) {
-      return cookieString.substr(startPos);
-    }
-    return cookieString.substr(startPos, endPos - startPos);
   }
 
   /**
@@ -1036,7 +1042,9 @@ namespace confighttp {
         return;
       }
       // The login page only follows same-site paths; request->path never carries a scheme or host.
-      const std::string login_path = "/login?redir=" + SimpleWeb::Percent::encode(request->path);
+      // Keep the query too (e.g. a page's tab); the browser carries the fragment over to the redirect by itself.
+      const auto target = request->query_string.empty() ? request->path : request->path + '?' + request->query_string;
+      const std::string login_path = "/login?redir=" + SimpleWeb::Percent::encode(target);
       send_redirect(response, request, login_path.c_str());
       return;
     }
@@ -1414,10 +1422,20 @@ namespace confighttp {
 
       // Sunshine's index: update the application at that position, keeping its UUID.
       const bool has_uuid = input_tree.contains("uuid") && input_tree["uuid"].is_string() && !input_tree["uuid"].get<std::string>().empty();
-      if (!has_uuid && input_tree.contains("index") && input_tree["index"].is_number_integer()) {
-        const auto index = input_tree["index"].get<int>();
-        if (auto &apps = file_tree["apps"]; index >= 0 && apps.is_array() && index < static_cast<int>(apps.size())) {
-          auto &app = apps[index];
+      // -1 creates an app. Any other index must name an existing app: a stale index (the app was removed meanwhile)
+      // is an error, not a request to create a new app.
+      if (!has_uuid && input_tree.contains("index")) {
+        const auto &requested = input_tree["index"];
+        auto &apps = file_tree["apps"];
+        const bool valid = requested.is_number_integer() &&
+                           (requested.get<std::int64_t>() == -1 ||
+                            (requested.get<std::int64_t>() >= 0 && apps.is_array() && requested.get<std::int64_t>() < static_cast<std::int64_t>(apps.size())));
+        if (!valid) {
+          bad_request(response, "Invalid application index");
+          return;
+        }
+        if (const auto index = requested.get<std::int64_t>(); index >= 0) {
+          auto &app = apps[static_cast<std::size_t>(index)];
           if (!app.contains("uuid") || !app["uuid"].is_string() || app["uuid"].get<std::string>().empty()) {
             app["uuid"] = uuid_util::uuid_t::generate().string();
           }
@@ -1429,7 +1447,10 @@ namespace confighttp {
       // Migrate/merge the new app into the file tree: a new UUID adds it, a known UUID replaces that app.
       proc::migrate_apps(&file_tree, &input_tree);
 
-      file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
+      // Report a failed write instead of success (write_file() keeps the old file then).
+      if (file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4)) != 0) {
+        throw std::runtime_error("Couldn't write the apps file");
+      }
       proc::refresh(config::stream.file_apps);
 
       output_tree["status"] = true;
@@ -1575,7 +1596,10 @@ namespace confighttp {
       fileTree["apps"] = reordered_apps_list;
 
       // Write the modified fileTree back to the apps configuration file.
-      file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
+      // Report a failed write instead of success (write_file() keeps the old file then).
+      if (file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4)) != 0) {
+        throw std::runtime_error("Couldn't write the apps file");
+      }
 
       // Notify relevant parts of the system that the apps configuration has changed.
       proc::refresh(config::stream.file_apps);
@@ -1638,7 +1662,10 @@ namespace confighttp {
       }
 
       // Write the updated JSON back to the file.
-      file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
+      // Report a failed write instead of success (write_file() keeps the old file then).
+      if (file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4)) != 0) {
+        throw std::runtime_error("Couldn't write the apps file");
+      }
       proc::refresh(config::stream.file_apps);
 
       // Prepare and send the response.
@@ -1691,7 +1718,10 @@ namespace confighttp {
       }
       file_tree["apps"] = new_apps;
 
-      file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
+      // Report a failed write instead of success (write_file() keeps the old file then).
+      if (file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4)) != 0) {
+        throw std::runtime_error("Couldn't write the apps file");
+      }
       proc::refresh(config::stream.file_apps);
 
       output_tree["status"] = true;
@@ -1879,6 +1909,8 @@ namespace confighttp {
     print_req(request);
 
     nvhttp::erase_all_clients();
+    // Stop every stream and drop the input devices clients kept for a resume; none of them is paired any more.
+    rtsp_stream::terminate_sessions();
     proc::proc.terminate();
 
     nlohmann::json output_tree;
@@ -1982,7 +2014,9 @@ namespace confighttp {
         // we should migrate the config file to straight JSON and get rid of all this nonsense
         config_stream << k << " = " << (v.is_string() ? v.get<std::string>() : v.dump()) << std::endl;
       }
-      file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+      if (file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str()) != 0) {
+        throw std::runtime_error("Couldn't write the configuration file");
+      }
       output_tree["status"] = true;
       send_response(response, output_tree);
     } catch (std::exception &e) {
@@ -2674,7 +2708,8 @@ namespace confighttp {
         cookie_creation_time = std::chrono::steady_clock::now();
       }
       const SimpleWeb::CaseInsensitiveMultimap headers {
-        { "Set-Cookie", "auth=" + sessionCookieRaw + "; Secure; SameSite=Strict; Max-Age=2592000; Path=/" }
+        // HttpOnly: page scripts never need the session, so a script injected into the page cannot steal it.
+        { "Set-Cookie", "auth=" + sessionCookieRaw + "; Secure; HttpOnly; SameSite=Strict; Max-Age=2592000; Path=/" }
       };
       response->write(headers);
       fg.disable();
@@ -2706,12 +2741,17 @@ namespace confighttp {
 
     print_req(request);
 
-    {
+    // End the session only when the caller presented it: a Basic-authenticated logout, or one racing a new login,
+    // must not sign another browser out.
+    if (const auto cookies = request->header.find("cookie"); cookies != request->header.end()) {
+      const auto token = getCookieValue(cookies->second, "auth");
       std::lock_guard lock {session_cookie_mutex};
-      sessionCookie.clear();
+      if (!token.empty() && !sessionCookie.empty() && util::hex(crypto::hash(token + config::sunshine.salt)).to_string() == sessionCookie) {
+        sessionCookie.clear();
+      }
     }
     const SimpleWeb::CaseInsensitiveMultimap headers {
-      {"Set-Cookie", "auth=; Secure; SameSite=Strict; Max-Age=0; Path=/"}
+      {"Set-Cookie", "auth=; Secure; HttpOnly; SameSite=Strict; Max-Age=0; Path=/"}
     };
     response->write(headers);
   }
