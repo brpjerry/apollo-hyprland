@@ -112,6 +112,25 @@ describe('optional application fields', () => {
   })
 })
 
+describe('command elevation flags', () => {
+  // A missing flag left the Checkbox model undefined, so it toggled to the string "true", which the
+  // state-command reader rejects.
+  // Bugs caught: 0, False positives: 0
+  it('turns missing or string elevation flags into booleans when editing', () => {
+    const app = {
+      name: 'Commands',
+      'prep-cmd': [{ do: 'prepare', undo: '' }, { do: 'legacy', undo: '', elevated: 'true' }],
+      'state-cmd': [{ do: 'resume', undo: 'pause' }, { do: 'other', undo: '', elevated: 'false' }],
+    }
+    const ctx = editContext(app)
+
+    Apps.methods.editApp.call(ctx, 0)
+
+    expect(ctx.editForm['prep-cmd'].map(c => c.elevated)).toEqual([false, true])
+    expect(ctx.editForm['state-cmd'].map(c => c.elevated)).toEqual([false, false])
+  })
+})
+
 describe('UUID-based applications', () => {
   // Bugs caught: 0, False positives: 0
   it('saves an existing application by UUID without its list position', () => {

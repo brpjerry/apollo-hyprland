@@ -958,6 +958,13 @@
         for (const [key, value] of Object.entries(APP_FIELD_DEFAULTS)) {
           this.editForm[key] ??= structuredClone(value);
         }
+        // The elevation Checkbox emits values of its model's type: a missing flag would toggle to the string
+        // "true", which the server's command reader rejects. Give it a boolean.
+        if (this.canElevate) {
+          for (const command of [...this.editForm["prep-cmd"], ...this.editForm["state-cmd"]]) {
+            command.elevated = command.elevated === true || command.elevated === "true";
+          }
+        }
         this.editFormError = "";
         this.actionError = "";
         this.openEditModal();
