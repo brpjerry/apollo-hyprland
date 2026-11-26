@@ -60,7 +60,8 @@ namespace {
       0.0163916 * lin[0] + 0.0880132 * lin[1] + 0.8955950 * lin[2],
     };
     auto vectors = video::color_vectors_from_colorspace(colorspace, true);  // as the GL converter (graphics.cpp)
-    double y = 0;
+    // color_vec_y[3] is the limited-range offset; the luma shader adds it since Sunshine #4404.
+    double y = vectors->color_vec_y[3];
     for (int i = 0; i < 3; ++i) {
       y += vectors->color_vec_y[i] * pq_encode(bt2020[i]);
     }
