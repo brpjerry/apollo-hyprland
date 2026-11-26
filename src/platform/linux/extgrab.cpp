@@ -766,6 +766,18 @@ namespace platf {
     return wl::make_ext_display(hwdevice_type, display_name, config, {});
   }
 
+  bool ext_capture_supported() {
+    wl::display_t display;
+    if (display.init()) {
+      return false;
+    }
+    wl::interface_t interface;
+    interface.listen(display.registry());
+    display.roundtrip();
+    return interface[wl::interface_t::XDG_OUTPUT] && interface[wl::interface_t::EXT_IMAGE_COPY_CAPTURE] &&
+           interface[wl::interface_t::EXT_OUTPUT_CAPTURE_SOURCE];
+  }
+
   std::vector<std::string> ext_display_names() {
     wl::display_t display;
     if (display.init()) {

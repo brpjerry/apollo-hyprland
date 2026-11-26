@@ -411,6 +411,17 @@ namespace platf {
     return wlr;
   }
 
+  bool wl_capture_supported() {
+    wl::display_t display;
+    if (display.init()) {
+      return false;
+    }
+    wl::interface_t interface;
+    interface.listen(display.registry());
+    display.roundtrip();
+    return interface[wl::interface_t::XDG_OUTPUT] && interface[wl::interface_t::WLR_EXPORT_DMABUF];
+  }
+
   std::vector<std::string> wl_display_names() {
     wl::display_t display;
     if (display.init()) {
