@@ -187,6 +187,11 @@ namespace wl {
 
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
         if (remaining.count() < 0 || !display.dispatch(remaining)) {
+          if (display.broken()) {
+            // The pending frame will never complete.
+            BOOST_LOG(error) << "Lost the Wayland connection; reinitializing capture"sv;
+            return platf::capture_e::reinit;
+          }
           return platf::capture_e::timeout;
         }
 

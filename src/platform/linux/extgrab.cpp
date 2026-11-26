@@ -393,6 +393,12 @@ namespace wl {
         }
         auto timeout = std::chrono::ceil<std::chrono::milliseconds>(wake - now);
         display.dispatch(std::max(timeout, 0ms));
+        if (display.broken()) {
+          // The frame in flight will never complete.
+          BOOST_LOG(error) << "Lost the Wayland connection; reinitializing capture"sv;
+          abandon_frame();
+          return platf::capture_e::reinit;
+        }
 
         // The output switched between SDR and HDR (or its HDR metadata changed): the encoder has to be recreated
         // with the new colorspace. The loop wakes at least every idle_repeat_interval, which bounds the delay.
