@@ -903,7 +903,7 @@
     "restart_apollo_success": "Apollo is restarting",
     "quit_apollo": "Quit Apollo",
     "quit_apollo_desc": "Exit Apollo. This will terminate any running sessions.",
-    "quit_apollo_success": "Apollo has exited.",
+    "quit_apollo_disconnected": "The connection to Apollo closed, so it has most likely exited. Check the host to be sure.",
     "quit_apollo_success_ongoing": "Apollo is quitting...",
     "quit_apollo_confirm": "Do you really want to quit Apollo? You'll not be able to start Apollo again if you have no other methods to operate your computer.",
     "manage_clients": "Manage paired clients",

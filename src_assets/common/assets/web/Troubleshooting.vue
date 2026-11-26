@@ -390,7 +390,7 @@
         <p>{{ $t('troubleshooting.quit_apollo_desc') }}</p>
         <div class="alert alert-success" v-if="serverQuit">
           <check-circle :size="18" class="icon"></check-circle>
-          {{ $t('troubleshooting.quit_apollo_success') }}
+          {{ $t('troubleshooting.quit_apollo_disconnected') }}
         </div>
         <div class="alert alert-info" v-if="serverQuitting">
           {{ $t('troubleshooting.quit_apollo_success_ongoing') }}
@@ -944,7 +944,8 @@
             });
             this.serverQuitFailed = true;
           } catch (e) {
-            // The server exits without answering.
+            // The server exits without answering, but a network failure looks the same, so the message only says
+            // that the connection closed.
             this.serverQuit = true;
           } finally {
             this.serverQuitting = false;

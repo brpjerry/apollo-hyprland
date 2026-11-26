@@ -323,6 +323,20 @@ describe('quit Apollo', () => {
     expect(ctx).toMatchObject({ serverQuit: true, serverQuitFailed: false, serverQuitting: false })
   })
 
+  // A dropped connection is also what a network failure looks like, so the page must not claim Apollo exited.
+  // Bugs caught: 0, False positives: 0
+  it('says the connection closed rather than that Apollo exited', async () => {
+    const wrapper = await mountTroubleshooting('linux', 'none')
+
+    wrapper.vm.serverQuit = true
+    await flushPromises()
+
+    expect(en.troubleshooting.quit_apollo_disconnected).toBeTruthy()
+    expect(wrapper.text()).toContain('troubleshooting.quit_apollo_disconnected')
+    expect(wrapper.text()).not.toContain('troubleshooting.quit_apollo_success')
+    wrapper.unmount()
+  })
+
   // Bugs caught: 0, False positives: 0
   it('reports a failure when the server answers, and does nothing without confirmation', async () => {
     vi.stubGlobal('confirm', vi.fn(() => true))
