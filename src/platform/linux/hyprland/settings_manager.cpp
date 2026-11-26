@@ -354,14 +354,13 @@ namespace hyprland::dd {
     }
     auto monitors = ipc->request_json("monitors all"sv);
     auto workspaces = ipc->request_json("workspaces"sv);
-    if (!monitors || !monitors->is_array()) {
+    // Without the workspaces the layout would be saved, or compared on revert, as one that has none.
+    if (!monitors || !monitors->is_array() || !workspaces || !workspaces->is_array()) {
       return std::nullopt;
     }
     layout_t layout;
     layout.outputs = parse_outputs(*monitors);
-    if (workspaces) {
-      layout.workspaces = parse_workspaces(*workspaces);
-    }
+    layout.workspaces = parse_workspaces(*workspaces);
     return layout;
   }
 
@@ -384,11 +383,11 @@ namespace hyprland::dd {
   }
 
   bool hyprland_compositor_t::set_monitor(const monitor_rule_t &rule) {
-    const auto *ipc = connected();
-    if (!ipc || !allowed(rule.output)) {
+    // allowed() may reconnect, replacing ipc_: take the connection only after it.
+    if (!connected() || !allowed(rule.output)) {
       return false;
     }
-    return ipc->set_monitor(rule);
+    return ipc_->set_monitor(rule);
   }
 
   bool hyprland_compositor_t::focus_monitor(const std::string &name) {
@@ -403,15 +402,33 @@ namespace hyprland::dd {
   }
 
   bool hyprland_compositor_t::show_workspace(const std::string &monitor, const std::string &workspace) {
-    const auto *ipc = connected();
-    if (!ipc || !allowed(monitor)) {
+    // allowed() and layout() may reconnect, replacing ipc_: take the connection only after them.
+    if (!connected() || !allowed(monitor)) {
       return false;
     }
-    if (ipc->dialect() == config_dialect_e::lua) {
-      const auto reply = ipc->eval(lua_show_workspace(monitor, workspace));
+    if (ipc_->dialect() == config_dialect_e::lua) {
+      const auto reply = ipc_->eval(lua_show_workspace(monitor, workspace));
       return reply && *reply == "ok"sv;
     }
-    return ipc->dispatch_legacy("moveworkspacetomonitor", workspace_selector(workspace) + " " + monitor);
+    // hyprlang has no dispatcher that shows a workspace on a monitor without focusing it. moveworkspacetomonitor only
+    // moves it (nothing at all when it is already there); `workspace` then shows it, focusing its monitor, so focus
+    // goes back to where it was afterwards.
+    const auto current = layout();
+    if (!current) {
+      return false;
+    }
+    std::string focused;
+    for (const auto &o : current->outputs) {
+      if (o.focused) {
+        focused = o.name;
+      }
+    }
+    const auto *ipc = ipc_.get();
+    const auto selector = workspace_selector(workspace);
+    if (!ipc->dispatch_legacy("moveworkspacetomonitor", selector + " " + monitor) || !ipc->dispatch_legacy("workspace", selector)) {
+      return false;
+    }
+    return focused.empty() || focused == monitor || ipc->dispatch_legacy("focusmonitor", focused);
   }
 
   std::optional<bool> hyprland_compositor_t::virtual_hdr(const std::string &name) {
