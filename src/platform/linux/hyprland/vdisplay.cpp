@@ -180,6 +180,11 @@ namespace hyprland {
       return ipc_t::connect();
     };
     options.instance_exists = []() {
+      // A session that names its Hyprland instance is Hyprland even when the control socket stays silent. Report the
+      // backend as failed rather than unavailable, so a launch is refused instead of capturing the physical desktop.
+      if (const char *sig = std::getenv("HYPRLAND_INSTANCE_SIGNATURE"); sig != nullptr && *sig != '\0') {
+        return true;
+      }
       return find_instance_signature().has_value();
     };
     options.output_visible = [](const std::string &name) -> std::optional<bool> {

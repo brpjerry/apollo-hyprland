@@ -446,6 +446,41 @@ TEST(HyprlandVdisplayTest, AnyMonitorActiveUnknownWithoutHyprland) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, SilentSocketOfANamedInstanceIsAFailureNotAbsence) {
+  // No answering instance anywhere: an empty runtime dir hides the desktop's own Hyprland from the scan.
+  auto empty_runtime = std::filesystem::temp_directory_path() / ("apollo-silent-hypr-" + std::to_string(getpid()));
+  std::filesystem::create_directories(empty_runtime / "hypr");
+  const char *saved_runtime = std::getenv("XDG_RUNTIME_DIR");
+  const std::string saved_runtime_value = saved_runtime ? saved_runtime : "";
+  setenv("XDG_RUNTIME_DIR", empty_runtime.c_str(), 1);
+  const char *saved = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
+  const std::string saved_value = saved ? saved : "";
+  setenv("HYPRLAND_INSTANCE_SIGNATURE", "0000000000000000000000000000000000000000_1_1", 1);
+
+  auto options = hyprland::vdisplay_t::default_options();
+  options.connect = []() {
+    return std::unique_ptr<hyprland::ipc_t> {};
+  };
+  options.state_dir.clear();
+  hyprland::vdisplay_t vd {options};
+  const auto status = vd.init();
+
+  if (saved) {
+    setenv("HYPRLAND_INSTANCE_SIGNATURE", saved_value.c_str(), 1);
+  } else {
+    unsetenv("HYPRLAND_INSTANCE_SIGNATURE");
+  }
+  if (saved_runtime) {
+    setenv("XDG_RUNTIME_DIR", saved_runtime_value.c_str(), 1);
+  } else {
+    unsetenv("XDG_RUNTIME_DIR");
+  }
+  std::filesystem::remove_all(empty_runtime);
+  // unavailable would let a launch fall back to capturing the physical desktop.
+  EXPECT_EQ(status, status_e::failed);
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(HyprlandVdisplayTest, CreateAppliesModeAndRemoveCleansUp) {
   fake_hyprland_t hypr;
   std::vector<std::string> visible_checks;
