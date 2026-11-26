@@ -14,7 +14,8 @@ Major features:
 
 Refer to LizardByte's documentation hosted on [Read the Docs](https://docs.lizardbyte.dev/projects/sunshine) for now.
 
-Currently Virtual Display support is Windows only, Linux support is planned and will be implemented in the future.
+Virtual displays are supported on Windows (SudoVDA) and on Linux with Hyprland. For Linux setup, see
+[Running on Hyprland](docs/getting_started.md#running-on-hyprland).
 
 ## About Permission System
 
@@ -31,7 +32,7 @@ Check out the [Wiki](https://github.com/ClassicOldSong/Apollo/wiki/Permission-Sy
 > [!NOTE]
 > **TL;DR** Just treat your Artemis/Moonlight client like a dedicated PnP monitor with Apollo.
 
-Apollo uses SudoVDA for virtual display. It features auto resolution and framerate matching for your Artemis/Moonlight clients. The virtual display is created upon the stream starts and removed once the app quits. **If you do not see a new virtual display added or removed when the stream starts or stops, there may be a driver misconfiguration, or another persistent virtual display might still be active.**
+On Windows, Apollo uses SudoVDA for virtual display (on Linux, a Hyprland headless output). It features auto resolution and framerate matching for your Artemis/Moonlight clients. The virtual display is created upon the stream starts and removed once the app quits. **If you do not see a new virtual display added or removed when the stream starts or stops, there may be a driver misconfiguration, or another persistent virtual display might still be active.**
 
 The virtual display works just like any physically attached monitors with SudoVDA, there's completely no need for a super complicated solution to "fix" resolution configurations for your devices. Unlike all other solutions that reuses one identity or generate a random one each time for any virtual display sessions, **Apollo assigns a fixed identity for each Artemis/Moonlight client, so your display configuration will be automatically remembered and managed by Windows natively.**
 
