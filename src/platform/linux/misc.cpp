@@ -43,6 +43,7 @@
 #include "graphics.h"
 #include "misc.h"
 #include "src/config.h"
+#include "src/display_device.h"
 #include "src/entry_handler.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -465,9 +466,10 @@ std::string get_local_ip_for_gateway() {
      */
     void wake_stream_output() {
 #ifdef SUNSHINE_BUILD_WAYLAND
-      const auto output = config::video.output_name;
+      // The connector capture will use: output_name may be empty (the default output) or a description.
+      const auto output = display_device::map_output_name(config::video.output_name);
       if (output.empty()) {
-        BOOST_LOG(debug) << "No output configured by name; not checking DPMS"sv;
+        BOOST_LOG(debug) << "Could not resolve the stream output; not checking DPMS"sv;
         return;
       }
       auto ipc = hyprland::ipc_t::connect();
