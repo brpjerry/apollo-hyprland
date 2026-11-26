@@ -100,6 +100,23 @@ describe('login target', () => {
   ])('maps redir %s to %s', (redir, target) => {
     expect(loginTarget(redir)).toBe(target)
   })
+
+  // Browsers drop tabs and newlines and resolve dot segments while parsing a URL, so these become `//host` paths.
+  // Bugs caught: 0, False positives: 0
+  it.each([
+    '/\t/evil.example/',
+    '/\n/evil.example/',
+    '/\r\n/evil.example/',
+    '/\t\\evil.example',
+    '/.//evil.example/',
+    '/apps/..//evil.example/',
+    '/%09/evil.example/',
+  ])('refuses the return path %j, which a browser reads as another host', redir => {
+    const target = loginTarget(redir)
+
+    expect(new URL(target, 'https://apollo.local:47990').origin).toBe('https://apollo.local:47990')
+    expect(target.startsWith('//')).toBe(false)
+  })
 })
 
 describe('Login page', () => {
@@ -148,18 +165,29 @@ describe('Login page', () => {
   })
 
   // Bugs caught: 0, False positives: 0
-  it('remembers the credentials when asked and fills them in next time', async () => {
+  it('never keeps the password in browser storage', async () => {
     vi.stubGlobal('location', fakeLocation('/login'))
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }))
     const ctx = loginContext()
     ctx.credentials = { username: 'apollo', password: 'secret' }
-    ctx.savePassword = true
+    ctx.savePassword = true // The removed "Remember Password" option must not bring the storage back.
 
     await Login.methods.login.call(ctx)
 
-    const next = Login.data()
-    expect(next.savePassword).toBe(true)
-    expect(next.credentials).toEqual({ username: 'apollo', password: 'secret' })
+    expect(ctx.success).toBe(true)
+    expect(Object.values({ ...localStorage }).join()).not.toContain('secret')
+    expect(Login.data().credentials).toEqual({ username: '', password: '' })
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('removes a password that an older version remembered', () => {
+    localStorage.setItem(SAVED_LOGIN_KEY, JSON.stringify({ username: 'apollo', password: 'secret' }))
+    const ctx = loginContext()
+
+    Login.created.call(ctx)
+
+    expect(localStorage.getItem(SAVED_LOGIN_KEY)).toBeNull()
+    expect(ctx.credentials.password).toBe('')
   })
 
   // Bugs caught: 0, False positives: 0

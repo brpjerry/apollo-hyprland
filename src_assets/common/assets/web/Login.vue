@@ -20,10 +20,6 @@
                 <input type="password" class="form-control" id="passwordInput" autocomplete="current-password"
                        v-model="credentials.password" required />
               </div>
-              <div class="mb-3 form-check">
-                <input type="checkbox" class="form-check-input" id="savePassword" v-model="savePassword" />
-                <label for="savePassword" class="form-check-label">{{ $t('login.save_password') }}</label>
-              </div>
               <button type="submit" class="btn btn-primary w-100" :disabled="loading">
                 <log-in :size="18" class="icon"></log-in>
                 {{ $t('welcome.login') }}
@@ -46,13 +42,23 @@
   import { LogIn } from '@lucide/vue'
   import NavbarSimple from './NavbarSimple.vue'
 
-  /** @brief localStorage key of the remembered credentials (Apollo's "Remember Password"). */
+  /**
+   * @brief localStorage key where Apollo's former "Remember Password" option kept the credentials in clear text.
+   *
+   * The option is gone (the browser's password manager does that job through the autocomplete fields); the login
+   * page only removes what an older version left behind.
+   */
   export const SAVED_LOGIN_KEY = 'login'
+
+  /** @brief Placeholder origin used to resolve a return path the way the browser will. */
+  const TARGET_BASE = 'http://apollo.invalid'
 
   /**
    * @brief Pick the page to open after signing in.
    *
-   * Only same-site paths are accepted so the `redir` parameter cannot send the browser to another site.
+   * Only same-site paths are accepted so the `redir` parameter cannot send the browser to another site. The path is
+   * resolved as the browser resolves it (tabs and newlines dropped, backslashes and dot segments normalized), and the
+   * normalized form is returned, so what was checked is what the browser opens.
    *
    * @param {?string} redir Value of the `redir` query parameter.
    * @return {string} Absolute path inside the Web UI.
@@ -61,34 +67,21 @@
     if (typeof redir !== 'string') {
       return '/'
     }
-    let target = redir.startsWith('./') ? redir.substring(1) : redir
-    if (!target.startsWith('/') || target.startsWith('//') || target.startsWith('/\\')) {
+    const target = redir.startsWith('./') ? redir.substring(1) : redir
+    if (!target.startsWith('/')) {
       return '/'
     }
-    if (target === '/login' || target.startsWith('/login?') || target.startsWith('/login#')) {
-      return '/'
-    }
-    return target
-  }
-
-  /**
-   * @brief Read the remembered credentials, if any.
-   *
-   * @param {Storage} storage Browser storage.
-   * @return {?{username: string, password: string}} Saved credentials.
-   */
-  function readSavedLogin(storage) {
+    let url
     try {
-      const saved = storage.getItem(SAVED_LOGIN_KEY)
-      if (!saved) {
-        return null
-      }
-      const { username, password } = JSON.parse(saved)
-      return { username: username ?? '', password: password ?? '' }
-    } catch (e) {
-      console.error('Reading the saved login failed', e)
-      return null
+      url = new URL(target, TARGET_BASE)
+    } catch {
+      return '/'
     }
+    const path = url.pathname + url.search + url.hash
+    if (url.origin !== TARGET_BASE || path.startsWith('//') || url.pathname === '/login') {
+      return '/'
+    }
+    return path
   }
 
   export default {
@@ -97,15 +90,20 @@
       NavbarSimple,
     },
     data() {
-      const saved = readSavedLogin(globalThis.localStorage)
       return {
-        credentials: saved ?? { username: '', password: '' },
+        credentials: { username: '', password: '' },
         error: null,
         loading: false,
         // Served by the server itself (confighttp's logo route), so it is not bundled.
         logo: '/images/logo-apollo-45.png',
-        savePassword: saved !== null,
         success: false,
+      }
+    },
+    created() {
+      try {
+        globalThis.localStorage.removeItem(SAVED_LOGIN_KEY)
+      } catch (e) {
+        console.error('Removing the saved login failed', e)
       }
     },
     methods: {
@@ -118,9 +116,6 @@
         this.error = null
         this.success = false
         this.loading = true
-        if (!this.savePassword) {
-          globalThis.localStorage.removeItem(SAVED_LOGIN_KEY)
-        }
 
         let response
         try {
@@ -148,9 +143,6 @@
         }
 
         this.success = true
-        if (this.savePassword) {
-          globalThis.localStorage.setItem(SAVED_LOGIN_KEY, JSON.stringify(this.credentials))
-        }
         const params = new URLSearchParams(globalThis.location.search)
         globalThis.location.assign(loginTarget(params.get('redir')))
       },
