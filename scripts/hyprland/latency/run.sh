@@ -45,6 +45,13 @@ cleanup() {
   ssh_client "WAYLAND_DISPLAY=wayland-1 $CLIENT_BIN quit $HOST_IP >/dev/null 2>&1; systemctl --user stop apollo-latency-client 2>/dev/null" || true
   systemctl --user stop apollo-latency-sync apollo-latency-reactor 2>/dev/null || true
 }
+# The reactor goes on the stream's output, found as the one Apollo output that appears: refuse to start when one is
+# there already (another stream, a leftover), before the trap, so refusing does not quit someone else's session.
+stream_outputs='[.[] | select(.name | test("^APOLLO-[0-9a-f]{8}$")) | .name]'
+if [[ "$(hypr -j monitors | jq -r "$stream_outputs | length")" != 0 ]]; then
+  log "an Apollo stream output already exists; end that stream first"
+  exit 1
+fi
 trap cleanup EXIT
 
 stream_args=(stream "$HOST_IP" "$APP" --resolution "$RES" --fps "$FPS" --display-mode fullscreen --quit-after --no-performance-overlay "$@")
@@ -56,7 +63,7 @@ ssh_client "systemctl --user reset-failed apollo-latency-client 2>/dev/null; sys
 
 vout=""
 for _ in $(seq 1 150); do
-  vout="$(hypr -j monitors | jq -r '[.[] | select(.name | startswith("APOLLO-"))][0].name // empty')"
+  vout="$(hypr -j monitors | jq -r "$stream_outputs | if length == 1 then .[0] else empty end")"
   [[ -n "$vout" ]] && break
   timeout 0.2 tail -f /dev/null || true
 done
@@ -67,11 +74,17 @@ hypr -j monitors | jq -r ".[] | select(.name == \"$vout\") | \"virtual display \
 # make it fullscreen explicitly (CLIENT_FULLSCREEN is a hyprctl dispatch argument; Lua-config syntax by default).
 CLIENT_STREAM_CLASS="${CLIENT_STREAM_CLASS:-com.moonlight_stream.Moonlight}"
 CLIENT_FULLSCREEN="${CLIENT_FULLSCREEN:-hl.dsp.window.fullscreen({ mode = \"fullscreen\" \})}"
+focused=""
 for _ in $(seq 1 75); do
-  if ssh_client 'hyprctl -j activewindow' | jq -e --arg c "$CLIENT_STREAM_CLASS" '.class == $c' >/dev/null 2>&1; then break; fi
+  if ssh_client 'hyprctl -j activewindow' | jq -e --arg c "$CLIENT_STREAM_CLASS" '.class == $c' >/dev/null 2>&1; then
+    focused=1
+    break
+  fi
   timeout 0.2 tail -f /dev/null || true
 done
-if ! ssh_client 'hyprctl -j activewindow' | jq -e '.fullscreen > 0' >/dev/null 2>&1; then
+# Never fullscreen whatever else has focus on the client.
+[[ -n "$focused" ]] || { log "client stream window ($CLIENT_STREAM_CLASS) did not take focus"; exit 1; }
+if ! ssh_client 'hyprctl -j activewindow' | jq -e --arg c "$CLIENT_STREAM_CLASS" '.class == $c and .fullscreen > 0' >/dev/null 2>&1; then
   ssh_client "hyprctl dispatch $(printf '%q' "$CLIENT_FULLSCREEN")" >/dev/null
   timeout 1 tail -f /dev/null || true
 fi
