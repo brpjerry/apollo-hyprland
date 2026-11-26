@@ -482,6 +482,11 @@ int main(int argc, char **argv) {
     fprintf(stderr, "missing globals (compositor %p shm %p layer_shell %p presentation %p seat %p)\n", (void *) st.compositor, (void *) st.shm, (void *) st.layer_shell, (void *) st.presentation, (void *) st.seat);
     return 1;
   }
+  // analyze.py compares presentation times with CLOCK_MONOTONIC input times and clock offsets.
+  if (st.pres_clock != CLOCK_MONOTONIC) {
+    fprintf(stderr, "presentation clock %u is not CLOCK_MONOTONIC; timings would not be comparable\n", st.pres_clock);
+    return 1;
+  }
   struct output *target = NULL;
   for (struct output *o = st.outputs; o; o = o->next) {
     if (!strcmp(o->name, output_name)) {
