@@ -819,9 +819,9 @@ namespace display_device {
                                   {.m_sleep_durations = {DEFAULT_RETRY_INTERVAL}});
   }
 
-  void revert_configuration() {
+  void revert_configuration(bool delay_first_attempt) {
     std::lock_guard lock {DD_DATA.mutex};
-    revert_configuration_unlocked(revert_option_e::try_indefinitely_with_delay);
+    revert_configuration_unlocked(delay_first_attempt ? revert_option_e::try_indefinitely_with_delay : revert_option_e::try_indefinitely);
   }
 
   bool reset_persistence() {

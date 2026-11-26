@@ -826,15 +826,17 @@ namespace proc {
       }
     }
 
+    bool used_virtual_display = platf::vdisplay::status() == platf::vdisplay::status_e::ok && _launch_session && _launch_session->virtual_display;
+
 #ifndef _WIN32
     // Revert before removing the virtual display: monitors disabled for the stream come back while it still exists,
-    // so their workspaces return to them and remove() can give focus back to the monitor that had it.
+    // so their workspaces return to them and remove() can give focus back to the monitor that had it. That needs the
+    // first attempt now, not after dd_config_revert_delay; retries (Hyprland not answering) still come later.
     if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
-      display_device::revert_configuration();
+      display_device::revert_configuration(!used_virtual_display);
     }
 #endif
 
-    bool used_virtual_display = platf::vdisplay::status() == platf::vdisplay::status_e::ok && _launch_session && _launch_session->virtual_display;
     if (used_virtual_display) {
       if (platf::vdisplay::remove(_launch_session->display_guid)) {
         BOOST_LOG(info) << "Virtual Display removed successfully";
