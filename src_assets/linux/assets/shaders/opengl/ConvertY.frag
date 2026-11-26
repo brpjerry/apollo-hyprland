@@ -55,7 +55,7 @@ layout(location = 0) out float color;
 void main()
 {
 	vec3 rgb = to_stream_rgb(texture(image, tex).rgb);
-	float y = dot(color_vec_y.xyz, rgb);
+	float y = dot(color_vec_y.xyz, rgb) + color_vec_y.w;
 
 	color = y * range_y.x + range_y.y;
 }

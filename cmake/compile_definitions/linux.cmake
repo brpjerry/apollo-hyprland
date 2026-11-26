@@ -1,6 +1,14 @@
 # linux specific compile definitions
 
-add_compile_definitions(SUNSHINE_PLATFORM="linux")
+if(FREEBSD)
+    add_compile_definitions(SUNSHINE_PLATFORM="freebsd")
+    # FreeBSD installs packages to /usr/local/lib, which is not in the default linker search path.
+    # link_directories() is directory-scoped and propagates to all subdirectories (including tests/),
+    # so all targets (sunshine, test_sunshine) can resolve libraries found via pkg_check_modules.
+    link_directories(/usr/local/lib)
+else()
+    add_compile_definitions(SUNSHINE_PLATFORM="linux")
+endif()
 
 # AppImage
 if(${SUNSHINE_BUILD_APPIMAGE})
@@ -65,6 +73,8 @@ if(CUDA_FOUND)
     include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/nvfbc")
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/src/platform/linux/cuda.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/cuda_color.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/cuda_gl_textures.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/cuda.cu"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/cuda.cpp"
             "${CMAKE_SOURCE_DIR}/third-party/nvfbc/NvFBC.h")
@@ -72,36 +82,44 @@ if(CUDA_FOUND)
     add_compile_definitions(SUNSHINE_BUILD_CUDA)
 endif()
 
-# libdrm is required for both DRM (KMS) and Wayland
-if(${SUNSHINE_ENABLE_DRM} OR ${SUNSHINE_ENABLE_WAYLAND})
+# libdrm headers are required for DRM (KMS), Wayland, Vulkan, and PipeWire
+# (KWin, Portal). The library itself is linked for DRM (KMS) and for Wayland,
+# where capture queries the render node's PCI identity to choose between
+# zero-copy VRAM and the RAM bridge.
+if(${SUNSHINE_ENABLE_DRM} OR ${SUNSHINE_ENABLE_WAYLAND} OR ${SUNSHINE_ENABLE_VULKAN}
+   OR ${SUNSHINE_ENABLE_KWIN} OR ${SUNSHINE_ENABLE_PORTAL})
     find_package(LIBDRM REQUIRED)
 else()
     set(LIBDRM_FOUND OFF)
 endif()
 if(LIBDRM_FOUND)
     include_directories(SYSTEM ${LIBDRM_INCLUDE_DIRS})
-    list(APPEND PLATFORM_LIBRARIES ${LIBDRM_LIBRARIES})
+    if(${SUNSHINE_ENABLE_DRM} OR ${SUNSHINE_ENABLE_WAYLAND})
+        list(APPEND PLATFORM_LIBRARIES ${LIBDRM_LIBRARIES})
+    endif()
+    if(${SUNSHINE_ENABLE_DRM})
+        add_compile_definitions(SUNSHINE_BUILD_DRM)
+        list(APPEND PLATFORM_TARGET_FILES
+                "${CMAKE_SOURCE_DIR}/src/platform/linux/kmsgrab.cpp")
+        list(APPEND SUNSHINE_DEFINITIONS EGL_NO_X11=1)
+    endif()
 endif()
 
-# drm
-if(${SUNSHINE_ENABLE_DRM})
+# Capabilities
+if(LINUX)
     find_package(LIBCAP REQUIRED)
-else()
-    set(LIBCAP_FOUND OFF)
-endif()
-if(LIBDRM_FOUND AND LIBCAP_FOUND)
-    add_compile_definitions(SUNSHINE_BUILD_DRM)
     include_directories(SYSTEM ${LIBCAP_INCLUDE_DIRS})
     list(APPEND PLATFORM_LIBRARIES ${LIBCAP_LIBRARIES})
-    list(APPEND PLATFORM_TARGET_FILES
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/kmsgrab.cpp")
-    list(APPEND SUNSHINE_DEFINITIONS EGL_NO_X11=1)
 endif()
 
 # evdev
 include(dependencies/libevdev_Sunshine)
 
 # vaapi
+# FFmpeg's static archives need these compatibility symbols even when Sunshine's
+# VA-API encoder is disabled. The host's core and DRM libraries are always linked.
+include_directories(SYSTEM ${LIBVA_INCLUDE_DIR})
+list(APPEND PLATFORM_TARGET_FILES "${CMAKE_SOURCE_DIR}/src/platform/linux/vaapi_compat.cpp")
 if(${SUNSHINE_ENABLE_VAAPI})
     find_package(Libva REQUIRED)
 else()
@@ -116,6 +134,92 @@ if(LIBVA_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/vaapi.cpp")
 endif()
 
+# vulkan video encoding (via FFmpeg)
+if(${SUNSHINE_ENABLE_VULKAN})
+    if(SUNSHINE_SYSTEM_VULKAN_HEADERS)
+        find_package(VulkanHeaders REQUIRED)
+        get_target_property(VULKAN_HEADERS_DIR Vulkan::Headers INTERFACE_INCLUDE_DIRECTORIES)
+    elseif(EXISTS "${FFMPEG_PREPARED_BINARIES}/include/vulkan/vulkan.h")
+        set(VULKAN_HEADERS_DIR "${FFMPEG_INCLUDE_DIRS}")
+    else()
+        include("${CMAKE_MODULE_PATH}/dependencies/build_deps.cmake")
+        if(DEFINED CPM_DECLARATION_vulkan_headers)
+            # Keep the package declaration owned by build-deps.
+            set(SUNSHINE_CPM_PACKAGE_LOCK_ENABLED "${CPM_PACKAGE_LOCK_ENABLED}")
+            set(CPM_PACKAGE_LOCK_ENABLED OFF)
+            CPMAddPackage(NAME vulkan_headers DOWNLOAD_ONLY YES)
+            set(CPM_PACKAGE_LOCK_ENABLED "${SUNSHINE_CPM_PACKAGE_LOCK_ENABLED}")
+            unset(SUNSHINE_CPM_PACKAGE_LOCK_ENABLED)
+            set(VULKAN_HEADERS_DIR "${vulkan_headers_SOURCE_DIR}/include")
+        else()
+            # Older build-deps releases pin Vulkan Headers as a Git submodule.
+            set(VULKAN_HEADERS_DIR "${build_deps_SOURCE_DIR}/third-party/FFmpeg/Vulkan-Headers/include")
+        endif()
+    endif()
+
+    if(NOT EXISTS "${VULKAN_HEADERS_DIR}/vulkan/vulkan.h")
+        message(FATAL_ERROR "Vulkan headers not found in ${VULKAN_HEADERS_DIR}")
+    endif()
+
+    find_library(VULKAN_LIBRARY NAMES vulkan vulkan-1)
+    if(NOT VULKAN_LIBRARY)
+        message(FATAL_ERROR "libvulkan not found")
+    endif()
+
+    # prefer glslc, fall back to glslangValidator
+    find_program(GLSLC_EXECUTABLE glslc)
+    if(NOT GLSLC_EXECUTABLE)
+        find_program(GLSLANG_EXECUTABLE glslangValidator)
+    endif()
+    if(NOT GLSLC_EXECUTABLE AND NOT GLSLANG_EXECUTABLE)
+        message(FATAL_ERROR "Vulkan shader compiler not found (need glslc or glslangValidator)")
+    endif()
+
+    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_VULKAN=1)
+    include_directories(SYSTEM ${VULKAN_HEADERS_DIR})
+    list(APPEND PLATFORM_LIBRARIES ${VULKAN_LIBRARY})
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/vulkan_encode.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/vulkan_encode.cpp")
+
+    # compile GLSL -> SPIR-V -> C include at build time
+    set(VULKAN_SHADER_DIR "${CMAKE_BINARY_DIR}/generated-src/shaders")
+    set(VULKAN_SHADER_SOURCE "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/assets/shaders/vulkan/rgb2yuv.comp")
+    set(VULKAN_SHADER_SPV "${VULKAN_SHADER_DIR}/rgb2yuv.spv")
+    set(VULKAN_SHADER_DATA "${VULKAN_SHADER_DIR}/rgb2yuv.spv.inc")
+
+    file(MAKE_DIRECTORY "${VULKAN_SHADER_DIR}")
+
+    if(GLSLC_EXECUTABLE)
+        add_custom_command(
+                OUTPUT "${VULKAN_SHADER_SPV}"
+                COMMAND ${GLSLC_EXECUTABLE} -O "${VULKAN_SHADER_SOURCE}" -o "${VULKAN_SHADER_SPV}"
+                DEPENDS "${VULKAN_SHADER_SOURCE}"
+                COMMENT "Compiling Vulkan shader rgb2yuv.comp (glslc)"
+                VERBATIM)
+    else()
+        add_custom_command(
+                OUTPUT "${VULKAN_SHADER_SPV}"
+                COMMAND ${GLSLANG_EXECUTABLE} -V -o "${VULKAN_SHADER_SPV}" "${VULKAN_SHADER_SOURCE}"
+                DEPENDS "${VULKAN_SHADER_SOURCE}"
+                COMMENT "Compiling Vulkan shader rgb2yuv.comp (glslangValidator)"
+                VERBATIM)
+    endif()
+
+    add_custom_command(
+            OUTPUT "${VULKAN_SHADER_DATA}"
+            COMMAND ${CMAKE_COMMAND} -DSPV_FILE=${VULKAN_SHADER_SPV} -DOUT_FILE=${VULKAN_SHADER_DATA}
+                -P "${CMAKE_SOURCE_DIR}/cmake/scripts/binary_to_c.cmake"
+            DEPENDS "${VULKAN_SHADER_SPV}"
+            COMMENT "Generating C include from rgb2yuv.spv"
+            VERBATIM)
+
+    add_custom_target(vulkan_shaders
+            DEPENDS "${VULKAN_SHADER_DATA}"
+            COMMENT "Vulkan shader compilation")
+    set(SUNSHINE_TARGET_DEPENDENCIES ${SUNSHINE_TARGET_DEPENDENCIES} vulkan_shaders)
+endif()
+
 # wayland
 if(${SUNSHINE_ENABLE_WAYLAND})
     find_package(Wayland REQUIRED)
@@ -126,7 +230,8 @@ if(WAYLAND_FOUND)
     add_compile_definitions(SUNSHINE_BUILD_WAYLAND)
 
     if(NOT SUNSHINE_SYSTEM_WAYLAND_PROTOCOLS)
-        set(WAYLAND_PROTOCOLS_DIR "${CMAKE_SOURCE_DIR}/third-party/wayland-protocols")
+        CPMAddPackage(NAME wayland_protocols DOWNLOAD_ONLY YES)
+        set(WAYLAND_PROTOCOLS_DIR "${wayland_protocols_SOURCE_DIR}")
     else()
         # 1.41 for color-management-v1, the newest protocol generated below.
         pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols>=1.41)
@@ -135,7 +240,8 @@ if(WAYLAND_FOUND)
 
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "unstable/xdg-output" xdg-output-unstable-v1)
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "unstable/linux-dmabuf" linux-dmabuf-unstable-v1)
-    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-screencopy-unstable-v1)
+    CPMAddPackage(NAME wlr_protocols DOWNLOAD_ONLY YES)
+    GEN_WAYLAND("${wlr_protocols_SOURCE_DIR}" "unstable" wlr-screencopy-unstable-v1)
     # ext-image-copy-capture-v1 needs wayland-protocols >= 1.37. ext-image-capture-source-v1 references
     # ext_foreign_toplevel_handle_v1, so ext-foreign-toplevel-list-v1 is generated for its interface definition.
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-foreign-toplevel-list" ext-foreign-toplevel-list-v1)
@@ -143,7 +249,7 @@ if(WAYLAND_FOUND)
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-image-copy-capture" ext-image-copy-capture-v1)
     # Clipboard sync: ext-data-control-v1 (wayland-protocols >= 1.39), falling back to wlr-data-control.
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-data-control" ext-data-control-v1)
-    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-data-control-unstable-v1)
+    GEN_WAYLAND("${wlr_protocols_SOURCE_DIR}" "unstable" wlr-data-control-unstable-v1)
     # wp-color-management-v1: HDR state and metadata of the captured output (wayland-protocols >= 1.41).
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/color-management" color-management-v1)
     # Unicode text input (HYP-14). The protocol lives in wlroots' tree, not in wlr-protocols or wayland-protocols.
@@ -154,7 +260,6 @@ if(WAYLAND_FOUND)
             SYSTEM
             ${WAYLAND_INCLUDE_DIRS}
             ${XKBCOMMON_INCLUDE_DIRS}
-            ${CMAKE_BINARY_DIR}/generated-src
     )
 
     list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES} ${XKBCOMMON_LIBRARIES} gbm)
@@ -174,9 +279,6 @@ if(WAYLAND_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.cpp"
-            # Non-normalized key codes through the host layout (HYP-25)
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp"
             # platf::vdisplay: Hyprland headless outputs (HYP-06)
@@ -212,83 +314,80 @@ if(X11_FOUND)
             "${CMAKE_SOURCE_DIR}/src/platform/linux/x11grab.cpp")
 endif()
 
-if(NOT ${CUDA_FOUND}
-        AND NOT ${WAYLAND_FOUND}
-        AND NOT ${X11_FOUND}
-        AND NOT (${LIBDRM_FOUND} AND ${LIBCAP_FOUND})
-        AND NOT ${LIBVA_FOUND})
-    message(FATAL_ERROR "Couldn't find either cuda, wayland, x11, (libdrm and libcap), or libva")
-endif()
-
-# tray icon
-if(${SUNSHINE_ENABLE_TRAY})
-    pkg_check_modules(APPINDICATOR ayatana-appindicator3-0.1)
-    if(APPINDICATOR_FOUND)
-        list(APPEND SUNSHINE_DEFINITIONS TRAY_AYATANA_APPINDICATOR=1)
-    else()
-        pkg_check_modules(APPINDICATOR appindicator3-0.1)
-        if(APPINDICATOR_FOUND)
-            list(APPEND SUNSHINE_DEFINITIONS TRAY_LEGACY_APPINDICATOR=1)
-        endif ()
-    endif()
-    pkg_check_modules(LIBNOTIFY libnotify)
-    if(NOT APPINDICATOR_FOUND OR NOT LIBNOTIFY_FOUND)
-        message(STATUS "APPINDICATOR_FOUND: ${APPINDICATOR_FOUND}")
-        message(STATUS "LIBNOTIFY_FOUND: ${LIBNOTIFY_FOUND}")
-        message(FATAL_ERROR "Couldn't find either appindicator or libnotify")
-    else()
-        include_directories(SYSTEM ${APPINDICATOR_INCLUDE_DIRS} ${LIBNOTIFY_INCLUDE_DIRS})
-        link_directories(${APPINDICATOR_LIBRARY_DIRS} ${LIBNOTIFY_LIBRARY_DIRS})
-
-        list(APPEND PLATFORM_TARGET_FILES "${CMAKE_SOURCE_DIR}/third-party/tray/src/tray_linux.c")
-        list(APPEND SUNSHINE_EXTERNAL_LIBRARIES ${APPINDICATOR_LIBRARIES} ${LIBNOTIFY_LIBRARIES})
-    endif()
-
-    # flatpak icons must be prefixed with the app id or they will not be included in the flatpak
-    if(${SUNSHINE_BUILD_FLATPAK})
-        set(SUNSHINE_TRAY_PREFIX "${PROJECT_FQDN}")
-    else()
-        set(SUNSHINE_TRAY_PREFIX "apollo")
-    endif()
-    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_TRAY_PREFIX="${SUNSHINE_TRAY_PREFIX}")
-else()
-    set(SUNSHINE_TRAY 0)
-    message(STATUS "Tray icon disabled")
-endif()
-
-# keep the session from idling while streaming (HYP-20): org.freedesktop.ScreenSaver and logind over D-Bus
-pkg_check_modules(GIO gio-2.0 gio-unix-2.0)
+# GIO
+pkg_check_modules(GIO gio-2.0 gio-unix-2.0 REQUIRED)
 if(GIO_FOUND)
-    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_GIO=1)
     include_directories(SYSTEM ${GIO_INCLUDE_DIRS})
     list(APPEND PLATFORM_LIBRARIES ${GIO_LIBRARIES})
-    list(APPEND PLATFORM_TARGET_FILES
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.cpp")
-else()
-    message(WARNING "gio-2.0 not found: Apollo will not keep the session from idling or locking while streaming")
 endif()
 
-# These need to be set before adding the inputtino subdirectory in order for them to be picked up
+# Pipewire
+if(${SUNSHINE_ENABLE_KWIN} OR ${SUNSHINE_ENABLE_PORTAL})
+    pkg_check_modules(PIPEWIRE libpipewire-0.3 REQUIRED)
+else()
+    set(PIPEWIRE_FOUND OFF)
+endif()
+if(PIPEWIRE_FOUND)
+    include_directories(SYSTEM ${PIPEWIRE_INCLUDE_DIRS})
+    list(APPEND PLATFORM_LIBRARIES ${PIPEWIRE_LIBRARIES})
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/pipewire.cpp")
+endif()
+
+# XDG portal
+set(PORTAL_FOUND OFF)
+if(PIPEWIRE_FOUND AND GIO_FOUND AND ${SUNSHINE_ENABLE_PORTAL})
+    set(PORTAL_FOUND ON)
+    add_compile_definitions(SUNSHINE_BUILD_PORTAL)
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/portalgrab.cpp")
+endif()
+
+# KWin ScreenCast (direct Wayland protocol, bypasses portal)
+set(KWIN_FOUND OFF)
+if(PIPEWIRE_FOUND AND WAYLAND_FOUND AND ${SUNSHINE_ENABLE_KWIN})
+    set(KWIN_FOUND ON)
+    add_compile_definitions(SUNSHINE_BUILD_KWIN)
+    CPMAddPackage(NAME plasma_wayland_protocols DOWNLOAD_ONLY YES)
+    GEN_WAYLAND("${plasma_wayland_protocols_SOURCE_DIR}/src/protocols" "" kde-output-order-v1)
+    GEN_WAYLAND("${plasma_wayland_protocols_SOURCE_DIR}/src/protocols" "" zkde-screencast-unstable-v1)
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/kwingrab.cpp")
+elseif(${SUNSHINE_ENABLE_KWIN} AND NOT WAYLAND_FOUND)
+    message(FATAL_ERROR "SUNSHINE_ENABLE_KWIN requires SUNSHINE_ENABLE_WAYLAND — KWin capture disabled")
+endif()
+
+if(NOT ${CUDA_FOUND}
+        AND NOT ${LIBDRM_FOUND}
+        AND NOT ${LIBVA_FOUND}
+        AND NOT ${KWIN_FOUND}
+        AND NOT ${PORTAL_FOUND}
+        AND NOT ${WAYLAND_FOUND}
+        AND NOT ${X11_FOUND})
+    message(FATAL_ERROR "Couldn't find either cuda, libdrm, libva, kwin, pipewire, portal, wayland or x11")
+endif()
+
+# These need to be set before common.cmake adds the libvirtualhid subdirectory in order for them to be picked up
 set(LIBEVDEV_CUSTOM_INCLUDE_DIR "${EVDEV_INCLUDE_DIR}")
 set(LIBEVDEV_CUSTOM_LIBRARY "${EVDEV_LIBRARY}")
 
-add_subdirectory("${CMAKE_SOURCE_DIR}/third-party/inputtino")
-list(APPEND SUNSHINE_EXTERNAL_LIBRARIES inputtino::libinputtino)
-file(GLOB_RECURSE INPUTTINO_SOURCES
-        ${CMAKE_SOURCE_DIR}/src/platform/linux/input/inputtino*.h
-        ${CMAKE_SOURCE_DIR}/src/platform/linux/input/inputtino*.cpp)
-list(APPEND PLATFORM_TARGET_FILES ${INPUTTINO_SOURCES})
-# Per-client touch screen and pen tablet (HYP-24) and the input option decisions (HYP-24, HYP-25)
 list(APPEND PLATFORM_TARGET_FILES
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/input_options.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.cpp")
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtualhid.cpp")
 
-# build libevdev before the libinputtino target
-if(EXTERNAL_PROJECT_LIBEVDEV_USED)
-    add_dependencies(libinputtino libevdev)
-endif()
+# keep the session from idling while streaming (HYP-20): org.freedesktop.ScreenSaver and logind over D-Bus.
+# GIO is required above, so this is always built.
+list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_GIO=1)
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.cpp")
+
+# Input option decisions (HYP-24, HYP-25).
+# TODO(libvirtualhid port): touch_pen.* (per-client uinput touch screen and pen tablet, HYP-24), inputtino_abs.*
+# (absolute mouse/touch/pen mapping onto the streamed Hyprland output) and keyboard_layout.* (non-normalized key codes
+# through the host layout, HYP-25; it uses inputtino's key table) were driven by the removed inputtino backend.
+# They stay out of the build until they are ported onto libvirtualhid (src/platform/virtualhid_input.cpp).
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/input_options.h")
 
 # Elevated commands (HYP-23): the helper installed by packaging/linux.cmake, also named in the polkit action.
 if(NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK})
@@ -307,6 +406,9 @@ if (${SUNSHINE_BUILD_FLATPAK})
     list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_FLATPAK=1)
 endif ()
 
+include_directories(SYSTEM
+        ${CMAKE_BINARY_DIR}/generated-src)
+
 list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/publish.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/graphics.h"
@@ -316,19 +418,11 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/audio_sinks.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/audio_sinks.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/vdisplay.h"
-        "${CMAKE_SOURCE_DIR}/third-party/glad/src/egl.c"
-        "${CMAKE_SOURCE_DIR}/third-party/glad/src/gl.c"
-        "${CMAKE_SOURCE_DIR}/third-party/glad/include/EGL/eglplatform.h"
-        "${CMAKE_SOURCE_DIR}/third-party/glad/include/KHR/khrplatform.h"
-        "${CMAKE_SOURCE_DIR}/third-party/glad/include/glad/gl.h"
-        "${CMAKE_SOURCE_DIR}/third-party/glad/include/glad/egl.h")
+        "${CMAKE_SOURCE_DIR}/src/platform/vdisplay.h")
 
 list(APPEND PLATFORM_LIBRARIES
         dl
         pulse
         pulse-simple)
 
-include_directories(
-        SYSTEM
-        "${CMAKE_SOURCE_DIR}/third-party/glad/include")
+list(APPEND SUNSHINE_EXTERNAL_LIBRARIES glad)

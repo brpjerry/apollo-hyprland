@@ -58,12 +58,17 @@ if ! flock -n 9; then
   flock 9
 fi
 
+# The only submodule the build uses; CMake fetches the other dependencies with CPM (package-lock.cmake).
+if [[ ! -f "$src/third-party/lizardbyte-common/CMakeLists.txt" ]]; then
+  git -C "$src" submodule update --init --recursive --depth 1 third-party/lizardbyte-common
+fi
+
 if [[ ! -f "$build/build.ninja" ]]; then
   limited cmake -S "$src" -B "$build" -G Ninja -Wno-dev \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DBUILD_DOCS=OFF \
     -DBUILD_TESTS=ON \
-    -DBOOST_ALLOW_NEWER_SYSTEM=ON \
+    -DSUNSHINE_SYSTEM_WAYLAND_PROTOCOLS=ON \
     -DSUNSHINE_ENABLE_CUDA=ON \
     -DCMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
     -DSUNSHINE_ASSETS_DIR=share/apollo \

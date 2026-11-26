@@ -6,6 +6,10 @@
 #
 # The release version is pkgver: bump it here before tagging, and tag the release v$pkgver
 # (.github/workflows/release.yml refuses a tag that does not match).
+#
+# build() needs network access: CMake fetches the pinned dependencies in package-lock.cmake with CPM (including
+# the Apollo patches in patches/) and the prebuilt FFmpeg from LizardByte/build-deps. Boost, Wayland protocols and
+# Vulkan headers come from the Arch packages below instead.
 
 : "${_run_unit_tests:=false}"
 
@@ -24,16 +28,16 @@ options=('!debug' '!lto')
 depends=(
   'avahi'
   'curl'
+  'gcc-libs'
   'glib2'
-  'gtk3'
+  'hicolor-icon-theme'
   'icu'
-  'libayatana-appindicator'
   'libcap'
   'libdrm'
   'libevdev'
   'libice'
   'libmfx'
-  'libnotify'
+  'libpipewire'
   'libpulse'
   'libsm'
   'libva'
@@ -49,15 +53,20 @@ depends=(
   'numactl'
   'openssl'
   'opus'
+  'qt6-base'
+  'qt6-svg'
   'systemd-libs'
+  'udev'
+  'vulkan-icd-loader'
   'wayland'
   'which'
 )
 
 # CUDA is only needed to build NVENC support: the CUDA runtime is linked statically, and at run time the encoder
-# uses the NVIDIA driver's libcuda.
+# uses the NVIDIA driver's libcuda. Boost is linked statically from boost-libs' archives.
 makedepends=(
   'boost'
+  'boost-libs'
   'cmake'
   'cuda'
   'git'
@@ -65,7 +74,10 @@ makedepends=(
   'nlohmann-json'
   'nodejs'
   'npm'
+  'python-jinja'  # glad OpenGL/EGL loader generator
+  'shaderc'  # glslc, for the Vulkan encoder's shaders
   'systemd'
+  'vulkan-headers'
   'wayland-protocols'
 )
 
@@ -88,7 +100,8 @@ sha256sums=('SKIP')
 
 prepare() {
   cd apollo
-  git submodule update --init --recursive
+  # The only submodule the build uses; the other dependencies come from CPM at configure time.
+  git submodule update --init --recursive --depth 1 third-party/lizardbyte-common
 }
 
 build() {
@@ -101,6 +114,8 @@ build() {
   export CFLAGS="${CFLAGS/-Werror=format-security/}"
   export CXXFLAGS="${CXXFLAGS/-Werror=format-security/}"
   export CUDA_PATH=/opt/cuda
+  # Keep CPM downloads inside the makepkg tree rather than a cache from the environment.
+  export CPM_SOURCE_CACHE="${srcdir}/cpm-cache"
 
   local _tests=OFF
   [[ "${_run_unit_tests::1}" == "t" ]] && _tests=ON
@@ -110,7 +125,8 @@ build() {
     -D CMAKE_INSTALL_PREFIX=/usr \
     -D BUILD_DOCS=OFF \
     -D BUILD_TESTS="${_tests}" \
-    -D BOOST_ALLOW_NEWER_SYSTEM=ON \
+    -D SUNSHINE_SYSTEM_WAYLAND_PROTOCOLS=ON \
+    -D SUNSHINE_SYSTEM_VULKAN_HEADERS=ON \
     -D SUNSHINE_ENABLE_CUDA=ON \
     -D CMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
     -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine \
