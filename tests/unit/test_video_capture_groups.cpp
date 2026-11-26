@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 // local includes
@@ -181,4 +182,39 @@ TEST(VideoCaptureGroupTest, CleansUpFailedStartupBeforeRetry) {
   retry = {};
   EXPECT_EQ(stops, 1);
   EXPECT_EQ(resource.use_count(), 1);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(CaptureDisplaySelectionTest, VirtualDisplaySessionNeverFallsBackToAnotherDisplay) {
+  // A client that asked for its own virtual display gets that display or no stream, never the host desktop.
+  std::vector<std::string> opened;
+  int chosen = 0;
+  auto open_missing_virtual = [&opened](const std::string &name) -> std::shared_ptr<int> {
+    opened.push_back(name);
+    return name == "HOST-1" ? std::make_shared<int>(1) : nullptr;
+  };
+  auto choose_host = [&chosen]() {
+    ++chosen;
+    return std::string {"HOST-1"};
+  };
+
+  EXPECT_EQ(video::open_capture_display<int>("APOLLO-1", 3, open_missing_virtual, choose_host), nullptr);
+  EXPECT_EQ(opened, (std::vector<std::string> {"APOLLO-1", "APOLLO-1", "APOLLO-1"}));
+  EXPECT_EQ(chosen, 0);
+
+  // The virtual display comes back while retrying.
+  opened.clear();
+  int attempts = 0;
+  auto open_late = [&](const std::string &name) -> std::shared_ptr<int> {
+    opened.push_back(name);
+    return ++attempts == 2 ? std::make_shared<int>(2) : nullptr;
+  };
+  ASSERT_NE(video::open_capture_display<int>("APOLLO-1", 3, open_late, choose_host), nullptr);
+  EXPECT_EQ(opened, (std::vector<std::string> {"APOLLO-1", "APOLLO-1"}));
+
+  // Without a virtual display the worker opens what the display list picks.
+  opened.clear();
+  ASSERT_NE(video::open_capture_display<int>("", 3, open_missing_virtual, choose_host), nullptr);
+  EXPECT_EQ(opened, (std::vector<std::string> {"HOST-1"}));
+  EXPECT_EQ(chosen, 1);
 }

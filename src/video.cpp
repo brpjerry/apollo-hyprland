@@ -951,6 +951,9 @@ namespace video {
         {"rc"s, NV_ENC_PARAMS_RC_CBR},
         {"multipass"s, &config::video.nv_legacy.multipass},
         {"spatial-aq"s, &config::video.nv_legacy.spatial_aq},
+        {"intra-refresh"s, []() -> int {
+           return config::video.nv.intra_refresh ? 1 : 0;
+         }},
       },
       {
         // SDR-specific options
@@ -981,6 +984,9 @@ namespace video {
         {"coder"s, &config::video.nv_legacy.h264_coder},
         {"multipass"s, &config::video.nv_legacy.multipass},
         {"spatial-aq"s, &config::video.nv_legacy.spatial_aq},
+        {"intra-refresh"s, []() -> int {
+           return config::video.nv.intra_refresh ? 1 : 0;
+         }},
       },
       {
         // SDR-specific options
@@ -1818,6 +1824,45 @@ namespace video {
   }
 
   /**
+   * @brief How many times open_pinned_display() tries the session's virtual display (each try waits up to ~400 ms).
+   */
+  constexpr int pinned_display_attempts = 10;
+
+  /**
+   * @brief The virtual display the current session streams, or "" when it may capture any display.
+   */
+  std::string pinned_capture_display() {
+    return proc::proc.virtual_display ? proc::proc.display_name : std::string {};
+  }
+
+  /**
+   * @brief Open the session's virtual display, retrying for a few seconds while it (re)appears.
+   *
+   * @param type Encoder device type.
+   * @param pinned_display The session's virtual display.
+   * @param config Stream configuration.
+   * @return The display, or null when it does not come back: the stream then ends instead of capturing another display.
+   */
+  std::shared_ptr<platf::display_t> open_pinned_display(platf::mem_type_e type, const std::string &pinned_display, const config_t &config) {
+    auto disp = open_capture_display<platf::display_t>(
+      pinned_display,
+      pinned_display_attempts,
+      [&](const std::string &name) {
+        std::shared_ptr<platf::display_t> display;
+        reset_display(display, type, name, config);
+        return display;
+      },
+      []() -> std::string {
+        return {};
+      }
+    );
+    if (!disp) {
+      BOOST_LOG(error) << "The session's virtual display ["sv << pinned_display << "] can't be captured; ending the stream rather than capturing another display"sv;
+    }
+    return disp;
+  }
+
+  /**
    * @brief Run the shared display capture thread for asynchronous encoding.
    * @details Capture callbacks share this thread's session queues and reusable image pool.
    *
@@ -1858,7 +1903,16 @@ namespace video {
     std::vector<std::string> display_names;
     int display_p = -1;
     std::shared_ptr<platf::display_t> disp;
-    if (!proc::proc.display_name.empty()) {
+    // A session on a virtual display captures that display and nothing else, also after a reinit; monitor switches
+    // don't apply to it.
+    const auto pinned_display = pinned_capture_display();
+    if (!pinned_display.empty()) {
+      disp = open_pinned_display(encoder.platform_formats->dev_type, pinned_display, capture_ctxs.front().config);
+      if (!disp) {
+        return;
+      }
+      applied_display_generation = capture_display_switches().poll(switch_display_event).generation;
+    } else if (!proc::proc.display_name.empty()) {
       disp = platf::display(encoder.platform_formats->dev_type, proc::proc.display_name, capture_ctxs.front().config);
     }
     if (!disp) {
@@ -1980,7 +2034,7 @@ namespace video {
     while (capture_ctx_queue->running()) {
       bool artificial_reinit = false;
 
-      auto push_captured_image_callback = [&capture_ctxs, &capture_ctx_queue, &switch_display_event, &applied_display_generation, &artificial_reinit](std::shared_ptr<platf::img_t> &&img, bool frame_captured) {
+      auto push_captured_image_callback = [&capture_ctxs, &capture_ctx_queue, &switch_display_event, &applied_display_generation, &artificial_reinit, &pinned_display](std::shared_ptr<platf::img_t> &&img, bool frame_captured) {
         KITTY_WHILE_LOOP(auto capture_ctx = std::begin(capture_ctxs), capture_ctx != std::end(capture_ctxs), {
           if (!capture_ctx->images->running()) {
             capture_ctx = capture_ctxs.erase(capture_ctx);
@@ -2003,9 +2057,14 @@ namespace video {
           capture_ctxs.emplace_back(std::move(*capture_ctx_queue->pop()));
         }
 
-        if (capture_display_switches().poll(switch_display_event).generation != applied_display_generation) {
-          artificial_reinit = true;
-          return false;
+        if (const auto generation = capture_display_switches().poll(switch_display_event).generation; generation != applied_display_generation) {
+          if (!pinned_display.empty()) {
+            // Ignore monitor switches on a virtual display session.
+            applied_display_generation = generation;
+          } else {
+            artificial_reinit = true;
+            return false;
+          }
         }
 
         return true;
@@ -2056,6 +2115,13 @@ namespace video {
               // Release the display before reenumerating displays, since some capture backends
               // only support a single display session per device/application.
               disp.reset();
+
+              if (!pinned_display.empty()) {
+                // Never fall back to another display: that would stream the host's desktop.
+                applied_display_generation = capture_display_switches().poll(switch_display_event).generation;
+                disp = open_pinned_display(encoder.platform_formats->dev_type, pinned_display, capture_ctxs.front().config);
+                break;
+              }
 
               // Refresh display names since a display removal might have caused the reinitialization
               refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, proc::proc.display_name);
@@ -3110,7 +3176,14 @@ namespace video {
 
     const auto &encoder = *synced_session_ctxs.front()->encoder_p;
 
-    while (encode_session_ctx_queue.running()) {
+    // A session on a virtual display captures that display and nothing else (see captureThread()).
+    const auto pinned_display = pinned_capture_display();
+    if (!pinned_display.empty()) {
+      applied_display_generation = capture_display_switches().poll(switch_display_event).generation;
+      disp = open_pinned_display(encoder.platform_formats->dev_type, pinned_display, synced_session_ctxs.front()->config);
+    }
+
+    while (pinned_display.empty() && encode_session_ctx_queue.running()) {
       // Refresh display names since a display removal might have caused the reinitialization
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
 
@@ -3210,9 +3283,14 @@ namespace video {
           ++pos;
         })
 
-        if (capture_display_switches().poll(switch_display_event).generation != applied_display_generation) {
-          ec = platf::capture_e::reinit;
-          return false;
+        if (const auto generation = capture_display_switches().poll(switch_display_event).generation; generation != applied_display_generation) {
+          if (!pinned_display.empty()) {
+            // Ignore monitor switches on a virtual display session.
+            applied_display_generation = generation;
+          } else {
+            ec = platf::capture_e::reinit;
+            return false;
+          }
         }
 
         return true;

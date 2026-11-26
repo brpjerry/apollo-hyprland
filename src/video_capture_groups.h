@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <utility>
 
 // local includes
@@ -86,6 +87,32 @@ namespace video {
     std::size_t workers_ = 0;  ///< Number of active backend capture groups.
     request_t request_;  ///< Latest request shared during this streaming epoch.
   };
+
+  /**
+   * @brief Open the display a capture worker streams, never falling back from a session's virtual display.
+   *
+   * A client that asked for its own virtual display must get that display or no stream: when it is missing, late or
+   * fails to open, capturing whatever refresh_displays() would pick instead would stream the host's desktop.
+   *
+   * @tparam Display Display type.
+   * @param pinned_display The session's virtual display, or "" when any display may be captured.
+   * @param attempts How many times to try opening the pinned display.
+   * @param open Opens a display by name; returns null on failure (and waits a moment, see reset_display()).
+   * @param choose Refreshes the display list and names the display to open; only called when nothing is pinned.
+   * @return The open display, or null.
+   */
+  template<class Display, class Open, class Choose>
+  std::shared_ptr<Display> open_capture_display(const std::string &pinned_display, int attempts, Open &&open, Choose &&choose) {
+    if (pinned_display.empty()) {
+      return open(choose());
+    }
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+      if (auto display = open(pinned_display)) {
+        return display;
+      }
+    }
+    return nullptr;
+  }
 
   /**
    * @brief Maintain independent capture worker lifetimes for encoder backends.
