@@ -686,8 +686,12 @@ namespace wl {
     status = REINIT;
   }
 
-  void screencopy_t::buffer(zwlr_screencopy_frame_v1 *, std::uint32_t format, std::uint32_t width, std::uint32_t height, std::uint32_t stride) {
+  void screencopy_t::buffer(zwlr_screencopy_frame_v1 *frame, std::uint32_t format, std::uint32_t width, std::uint32_t height, std::uint32_t stride) {
     announced.shm = screencopy_constraints_t::shm_t {format, width, height, stride};
+    // Before version 3 there is no buffer_done: this is the only buffer event, so copy now.
+    if (zwlr_screencopy_frame_v1_get_version(frame) < ZWLR_SCREENCOPY_FRAME_V1_BUFFER_DONE_SINCE_VERSION) {
+      buffer_done(frame);
+    }
   }
 
   void screencopy_t::linux_dmabuf(zwlr_screencopy_frame_v1 *, std::uint32_t format, std::uint32_t width, std::uint32_t height) {
