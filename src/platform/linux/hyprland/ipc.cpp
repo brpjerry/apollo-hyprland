@@ -88,6 +88,7 @@
 // platform includes
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -213,6 +214,30 @@ namespace hyprland {
         return std::nullopt;
       }
       return display;
+    }
+
+    /**
+     * @brief Whether an instance directory belongs to a running compositor, answering or not.
+     *
+     * Hyprland removes `.socket.sock` and `hyprland.lock` when it exits; a crash leaves the socket file but the
+     * PID on line 1 of the lock file is then dead.
+     */
+    bool instance_dir_running(const std::filesystem::path &instance_dir) {
+      std::error_code ec;
+      if (!std::filesystem::is_socket(instance_dir / ".socket.sock", ec)) {
+        return false;
+      }
+      std::ifstream in {instance_dir / "hyprland.lock"};
+      std::string pid_line;
+      if (!in || !std::getline(in, pid_line)) {
+        return false;
+      }
+      pid_t pid = 0;
+      auto [end, err] = std::from_chars(pid_line.data(), pid_line.data() + pid_line.size(), pid);
+      if (err != std::errc {} || pid <= 0) {
+        return false;
+      }
+      return ::kill(pid, 0) == 0 || errno == EPERM;
     }
 
     bool is_ok(const std::optional<std::string> &reply) {
@@ -406,6 +431,24 @@ namespace hyprland {
 
   std::optional<std::string> find_instance_signature() {
     return find_instance_signature(runtime_dir(), std::getenv("HYPRLAND_INSTANCE_SIGNATURE"), std::getenv("WAYLAND_DISPLAY"));
+  }
+
+  bool instance_running(const std::filesystem::path &hypr_dir) {
+    std::error_code ec;
+    std::filesystem::directory_iterator it {hypr_dir, std::filesystem::directory_options::skip_permission_denied, ec};
+    if (ec) {
+      return false;
+    }
+    for (const auto &entry : it) {
+      if (entry.is_directory(ec) && valid_signature(entry.path().filename().string()) && instance_dir_running(entry.path())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool instance_running() {
+    return instance_running(runtime_dir());
   }
 
   std::vector<monitor_info_t> parse_monitors(const nlohmann::json &json) {

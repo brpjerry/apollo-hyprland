@@ -180,12 +180,10 @@ namespace hyprland {
       return ipc_t::connect();
     };
     options.instance_exists = []() {
-      // A session that names its Hyprland instance is Hyprland even when the control socket stays silent. Report the
-      // backend as failed rather than unavailable, so a launch is refused instead of capturing the physical desktop.
-      if (const char *sig = std::getenv("HYPRLAND_INSTANCE_SIGNATURE"); sig != nullptr && *sig != '\0') {
-        return true;
-      }
-      return find_instance_signature().has_value();
+      // A running Hyprland whose control socket stays silent is still Hyprland. Report the backend as failed rather
+      // than unavailable, so a launch is refused instead of capturing the physical desktop. A signature left in the
+      // environment by a Hyprland session that has since exited does not count.
+      return instance_running() || find_instance_signature().has_value();
     };
     options.output_visible = [](const std::string &name) -> std::optional<bool> {
       // Capture connects to $WAYLAND_DISPLAY; without it there is nothing to wait for.
@@ -765,7 +763,7 @@ namespace hyprland {
       const bool exists = options_.instance_exists && options_.instance_exists();
       status_ = exists ? status_e::failed : status_e::unavailable;
       if (exists) {
-        BOOST_LOG(warning) << "Hyprland virtual display: a Hyprland instance exists but does not answer"sv;
+        BOOST_LOG(warning) << "Hyprland virtual display: a running Hyprland instance does not answer on its control socket"sv;
       } else {
         BOOST_LOG(debug) << "Hyprland virtual display: not running under Hyprland"sv;
       }

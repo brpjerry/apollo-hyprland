@@ -445,39 +445,98 @@ TEST(HyprlandVdisplayTest, AnyMonitorActiveUnknownWithoutHyprland) {
   EXPECT_EQ(vd.any_monitor_active(), std::nullopt);
 }
 
+namespace {
+  /**
+   * @brief init() with connect() failing, the runtime dir pointed at `runtime` and the given signature in the environment.
+   */
+  status_e init_with_silent_connect(const std::filesystem::path &runtime, const char *signature) {
+    const char *saved_runtime = std::getenv("XDG_RUNTIME_DIR");
+    const std::string saved_runtime_value = saved_runtime ? saved_runtime : "";
+    const char *saved = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    const std::string saved_value = saved ? saved : "";
+    setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
+    if (signature) {
+      setenv("HYPRLAND_INSTANCE_SIGNATURE", signature, 1);
+    } else {
+      unsetenv("HYPRLAND_INSTANCE_SIGNATURE");
+    }
+
+    auto options = hyprland::vdisplay_t::default_options();
+    options.connect = []() {
+      return std::unique_ptr<hyprland::ipc_t> {};
+    };
+    options.state_dir.clear();
+    hyprland::vdisplay_t vd {options};
+    const auto status = vd.init();
+
+    if (saved) {
+      setenv("HYPRLAND_INSTANCE_SIGNATURE", saved_value.c_str(), 1);
+    } else {
+      unsetenv("HYPRLAND_INSTANCE_SIGNATURE");
+    }
+    if (saved_runtime) {
+      setenv("XDG_RUNTIME_DIR", saved_runtime_value.c_str(), 1);
+    } else {
+      unsetenv("XDG_RUNTIME_DIR");
+    }
+    return status;
+  }
+
+  constexpr auto silent_signature = "0000000000000000000000000000000000000000_1_1";
+
+  /**
+   * @brief An instance directory whose socket accepts but never answers, with a lock file naming `pid`.
+   * @return The listening fd, to close when done.
+   */
+  int make_silent_instance(const std::filesystem::path &runtime, pid_t pid) {
+    auto dir = runtime / "hypr" / silent_signature;
+    std::filesystem::create_directories(dir);
+    std::ofstream {dir / "hyprland.lock"} << pid << "\nwayland-1\n";
+    return hyprland_fakes::bind_unix(dir / ".socket.sock");
+  }
+}  // namespace
+
 // Bugs caught: 0, False positives: 0
 TEST(HyprlandVdisplayTest, SilentSocketOfANamedInstanceIsAFailureNotAbsence) {
-  // No answering instance anywhere: an empty runtime dir hides the desktop's own Hyprland from the scan.
-  auto empty_runtime = std::filesystem::temp_directory_path() / ("apollo-silent-hypr-" + std::to_string(getpid()));
-  std::filesystem::create_directories(empty_runtime / "hypr");
-  const char *saved_runtime = std::getenv("XDG_RUNTIME_DIR");
-  const std::string saved_runtime_value = saved_runtime ? saved_runtime : "";
-  setenv("XDG_RUNTIME_DIR", empty_runtime.c_str(), 1);
-  const char *saved = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
-  const std::string saved_value = saved ? saved : "";
-  setenv("HYPRLAND_INSTANCE_SIGNATURE", "0000000000000000000000000000000000000000_1_1", 1);
-
-  auto options = hyprland::vdisplay_t::default_options();
-  options.connect = []() {
-    return std::unique_ptr<hyprland::ipc_t> {};
-  };
-  options.state_dir.clear();
-  hyprland::vdisplay_t vd {options};
-  const auto status = vd.init();
-
-  if (saved) {
-    setenv("HYPRLAND_INSTANCE_SIGNATURE", saved_value.c_str(), 1);
-  } else {
-    unsetenv("HYPRLAND_INSTANCE_SIGNATURE");
-  }
-  if (saved_runtime) {
-    setenv("XDG_RUNTIME_DIR", saved_runtime_value.c_str(), 1);
-  } else {
-    unsetenv("XDG_RUNTIME_DIR");
-  }
-  std::filesystem::remove_all(empty_runtime);
+  // The empty runtime dir also hides the desktop's own Hyprland from discovery.
+  hyprland_fakes::temp_dir_t runtime;
+  const int fd = make_silent_instance(runtime.path(), getpid());
+  const auto status = init_with_silent_connect(runtime.path(), silent_signature);
+  ::close(fd);
   // unavailable would let a launch fall back to capturing the physical desktop.
   EXPECT_EQ(status, status_e::failed);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, SilentSocketFoundByDiscoveryIsAFailureNotAbsence) {
+  hyprland_fakes::temp_dir_t runtime;
+  const int fd = make_silent_instance(runtime.path(), getpid());
+  const auto status = init_with_silent_connect(runtime.path(), nullptr);
+  ::close(fd);
+  EXPECT_EQ(status, status_e::failed);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, SignatureLeftByAnExitedSessionIsAbsence) {
+  // After Hyprland exits, the service environment can still carry its signature. Another desktop must keep the
+  // no-backend fallback instead of refusing every virtual-display launch.
+  hyprland_fakes::temp_dir_t runtime;
+  std::filesystem::create_directories(runtime.path() / "hypr" / silent_signature);
+  EXPECT_EQ(init_with_silent_connect(runtime.path(), silent_signature), status_e::unavailable);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, CrashedInstanceIsAbsence) {
+  // A crash leaves the socket file behind, but the lock file's PID is dead.
+  hyprland_fakes::temp_dir_t runtime;
+  pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    _exit(0);
+  }
+  waitpid(child, nullptr, 0);
+  ::close(make_silent_instance(runtime.path(), child));
+  EXPECT_EQ(init_with_silent_connect(runtime.path(), silent_signature), status_e::unavailable);
 }
 
 // Bugs caught: 0, False positives: 0

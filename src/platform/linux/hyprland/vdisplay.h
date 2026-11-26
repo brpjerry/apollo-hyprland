@@ -110,7 +110,7 @@ namespace hyprland {
       /// Connects to the compositor. Default: ipc_t::connect().
       std::function<std::unique_ptr<ipc_t>()> connect;
       /// Whether a live Hyprland instance exists at all; decides unavailable vs failed when connect() fails.
-      /// Default: find_instance_signature().has_value().
+      /// Default: instance_running() || find_instance_signature().has_value().
       std::function<bool()> instance_exists;
       /// Whether Wayland capture can see an output with this name. nullopt: cannot tell (no Wayland connection),
       /// so creation does not wait for it. Default: looks the name up with wl::monitors().
