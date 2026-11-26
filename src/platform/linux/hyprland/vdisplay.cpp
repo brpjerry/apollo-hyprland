@@ -420,6 +420,11 @@ namespace hyprland {
     // Through the output's rule, so the new state is part of the baseline: remove() must not learn HDR's bit depth
     // as a setting the user chose.
     auto &entry = it->second;
+    // The rule below is built from the stored settings. Take in what the user changed during the session first
+    // (terminate() restores the HDR state just before remove()), or re-applying it would undo those changes.
+    if (const auto current = find_monitor_locked(name)) {
+      learn_locked(name, entry, *current);
+    }
     const auto previous = entry.hdr;
     entry.hdr = enable;
     const auto rule = rule_for_locked(name, entry, entry.mode, entry.isolated ? entry.rule.position : std::nullopt);
@@ -549,7 +554,7 @@ namespace hyprland {
     return rule;
   }
 
-  void vdisplay_t::learn_locked(const std::string &name, const owned_t &entry, const monitor_info_t &now) {
+  void vdisplay_t::learn_locked(const std::string &name, owned_t &entry, const monitor_info_t &now) {
     if (!entry.baseline) {
       return;
     }
@@ -562,6 +567,8 @@ namespace hyprland {
     if (!store_.save(name, learned)) {
       BOOST_LOG(warning) << "Hyprland virtual display: cannot save settings to "sv << store_.path().string();
     }
+    // Rules built later in this session (set_hdr) must carry the user's changes rather than undo them.
+    entry.settings = learned;
   }
 
   bool vdisplay_t::focus_monitor_locked(const std::string &monitor) {
