@@ -6,7 +6,6 @@ import Checkbox from '../../Checkbox.vue'
 const props = defineProps({
   platform: String,
   config: Object,
-  global_prep_cmd: Array,
 })
 
 const config = ref(props.config)
@@ -34,6 +33,38 @@ const config = ref(props.config)
       <input type="number" class="form-control" id="min_threads" placeholder="2" min="1" v-model="config.min_threads" />
       <div class="form-text">{{ $t('config.min_threads_desc') }}</div>
     </div>
+
+    <!-- Limit Framerate -->
+    <Checkbox class="mb-3"
+              id="limit_framerate"
+              locale-prefix="config"
+              v-model="config.limit_framerate"
+              default="true"
+    ></Checkbox>
+
+    <!-- ENVVAR compatibility mode -->
+    <Checkbox class="mb-3"
+              id="envvar_compatibility_mode"
+              locale-prefix="config"
+              v-model="config.envvar_compatibility_mode"
+              default="false"
+    ></Checkbox>
+
+    <!-- Legacy ordering -->
+    <Checkbox class="mb-3"
+              id="legacy_ordering"
+              locale-prefix="config"
+              v-model="config.legacy_ordering"
+              default="false"
+    ></Checkbox>
+
+    <!-- Ignore Encoder Probe Failure -->
+    <Checkbox class="mb-3"
+              id="ignore_encoder_probe_failure"
+              locale-prefix="config"
+              v-model="config.ignore_encoder_probe_failure"
+              default="false"
+    ></Checkbox>
 
     <!-- HEVC Support -->
     <div class="mb-3">
@@ -94,6 +125,7 @@ const config = ref(props.config)
           </template>
           <template #linux>
             <option value="nvfbc">NvFBC</option>
+            <option value="ext">ext-image-copy-capture (Wayland)</option>
             <option value="wlr">wlroots</option>
             <option value="kms">KMS</option>
             <option value="x11">X11</option>

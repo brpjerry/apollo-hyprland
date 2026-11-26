@@ -2,8 +2,8 @@
   <div>
     <nav class="navbar navbar-expand-lg navbar-sunshine">
       <div class="container-fluid">
-        <RouterLink class="navbar-brand" to="/" title="Sunshine">
-          <img src="/images/logo-sunshine-45.png" height="45" alt="Sunshine">
+        <RouterLink class="navbar-brand" to="/" title="Apollo">
+          <img src="/images/logo-apollo-45.png" height="45" alt="Apollo">
         </RouterLink>
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent"
                 aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
@@ -85,6 +85,7 @@
 import { CircleUserRound, Home, Info, Layers, Lock, LogOut, Settings, Shield, Star } from '@lucide/vue'
 import ThemeToggle from './ThemeToggle.vue'
 import Notification from './Notification.vue'
+import { clearSessionCookie } from './fetch_utils'
 
 export default {
   components: {
@@ -101,7 +102,11 @@ export default {
     LogOut
   },
   methods: {
+    /**
+     * @brief End the Web UI session: drop the login cookie and the browser's cached Basic credentials.
+     */
     logout() {
+      clearSessionCookie()
       const cacheBuster = Date.now().toString()
       const logoutPageUrl = new URL('/logout', globalThis.location.href)
       const request = new XMLHttpRequest()
@@ -109,7 +114,7 @@ export default {
         globalThis.location.replace(logoutPageUrl.toString())
       }
 
-      request.open('GET', '/', true, 'sunshine-logout', cacheBuster)
+      request.open('GET', '/', true, 'apollo-logout', cacheBuster)
       request.setRequestHeader('Cache-Control', 'no-store')
       request.onload = finish
       request.onerror = finish
@@ -122,7 +127,7 @@ export default {
 </script>
 
 <style>
-/** @brief Keep the Sunshine toggler icon above Bootstrap's light and dark variants. */
+/** @brief Keep the navbar toggler icon above Bootstrap's light and dark variants. */
 .navbar-sunshine .navbar-toggler .navbar-toggler-icon {
   --bs-navbar-toggler-icon-bg: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba%28255, 255, 255, 0.9%29' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e");
 }

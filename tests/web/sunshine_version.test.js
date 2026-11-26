@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import SunshineVersion from '../../src_assets/common/assets/web/sunshine_version.js'
+import SunshineVersion, { fetchReleaseVersions } from '../../src_assets/common/assets/web/sunshine_version.js'
 
 describe('SunshineVersion', () => {
   it('parses release metadata', () => {
@@ -49,5 +49,55 @@ describe('SunshineVersion', () => {
     expect(version.parseVersion(null)).toBeNull()
     expect(unparsedVersion.isGreater('1.0.0')).toBe(false)
     expect(() => version.isGreater(2)).toThrow(TypeError)
+  })
+})
+
+describe('Apollo Hyprland release versions', () => {
+  // Bugs caught: 0, False positives: 0
+  it('compares the fourth version part of fork tags', () => {
+    const installed = new SunshineVersion(null, '0.4.8.1')
+
+    expect(installed.versionParts).toEqual([0, 4, 8, 1])
+    expect(installed.versionIncremental).toBe(1)
+    expect(new SunshineVersion(null, 'v0.4.8.2').isGreater(installed)).toBe(true)
+    expect(installed.isGreater('v0.4.8')).toBe(true)
+    expect(installed.isGreater('0.4.8.1')).toBe(false)
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('orders pre-releases below the final release of the same version', () => {
+    const beta = new SunshineVersion(null, 'v0.4.9-beta.2')
+
+    expect(beta.versionParts).toEqual([0, 4, 9])
+    expect(beta.isGreater('0.4.8.1')).toBe(true)
+    expect(beta.isGreater('0.4.9-beta.1')).toBe(true)
+    expect(beta.isGreater('0.4.9-alpha.7')).toBe(true)
+    expect(beta.isGreater('0.4.9')).toBe(false)
+    expect(new SunshineVersion(null, '0.4.9').isGreater(beta)).toBe(true)
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('finds the newest stable release and pre-release among v* tags', async () => {
+    const fetchJson = vi.fn(async () => [
+      { tag_name: 'nightly', prerelease: true },
+      { tag_name: 'v0.5.0-beta.1', prerelease: true },
+      { tag_name: 'v0.4.9', prerelease: false, draft: true },
+      { tag_name: 'v0.4.8.1', prerelease: false },
+      { tag_name: 'v0.4.8', prerelease: false },
+    ])
+
+    const { stable, preRelease } = await fetchReleaseVersions(fetchJson)
+
+    expect(fetchJson).toHaveBeenCalledExactlyOnceWith('https://api.github.com/repos/brpjerry/apollo-hyprland/releases')
+    expect(stable.version).toBe('v0.4.8.1')
+    expect(preRelease.version).toBe('v0.5.0-beta.1')
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('returns no versions when GitHub answers with an error object', async () => {
+    const { stable, preRelease } = await fetchReleaseVersions(async () => ({ message: 'Not Found' }))
+
+    expect(stable).toBeNull()
+    expect(preRelease).toBeNull()
   })
 })

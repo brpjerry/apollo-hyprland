@@ -46,7 +46,7 @@
 
 <script>
   import ResourceCard from './ResourceCard.vue'
-  import { apiFetch } from './fetch_utils'
+  import { apiFetch, LOGIN_PATH } from './fetch_utils'
   import Notification from './Notification.vue'
   import NavbarSimple from './NavbarSimple.vue'
   import { LogIn } from '@lucide/vue'
@@ -64,7 +64,7 @@
         success: false,
         loading: false,
         passwordData: {
-          newUsername: "sunshine",
+          newUsername: "apollo",
           newPassword: "",
           confirmNewPassword: "",
         },
@@ -77,6 +77,10 @@
        * @return {Promise<void>} Completion of the credential request and response processing.
        */
       async save() {
+        if (this.passwordData.newPassword !== this.passwordData.confirmNewPassword) {
+          this.error = this.$t('password.password_mismatch');
+          return;
+        }
         this.error = null;
         this.loading = true;
         const response = await apiFetch("./api/password", {
@@ -95,8 +99,9 @@
         const result = await response.json();
         this.success = result.status;
         if (this.success === true) {
+          // The server ends the login session when the credentials change: sign in again.
           setTimeout(() => {
-            document.location.reload();
+            document.location.assign(LOGIN_PATH);
           }, 5000);
         } else {
           this.error = result.error;

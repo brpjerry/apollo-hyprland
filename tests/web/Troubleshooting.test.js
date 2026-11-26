@@ -75,6 +75,7 @@ afterEach(() => {
 })
 
 describe('virtual input troubleshooting', () => {
+  // Bugs caught: 0, False positives: 1
   it.each([
     ['valid', false],
     ['malformed', true],
@@ -85,7 +86,7 @@ describe('virtual input troubleshooting', () => {
     catalog.troubleshooting.permissions_name = malformed ? 'Permissionchar@@0' : 'Translated permission'
     catalog.apps.delete_confirm = 'Delete translated {name}?'
     catalog.troubleshooting.troubleshooting = 'Translated troubleshooting'
-    catalog.troubleshooting.unpair_title = 'Translated unpair'
+    catalog.pin.device_management = 'Translated unpair'
     catalog.troubleshooting.logs = 'Translated logs'
 
     vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -109,7 +110,8 @@ describe('virtual input troubleshooting', () => {
       expect(wrapper.get('.permission-table-shell th').text()).toBe(
         malformed ? en.troubleshooting.permissions_name : catalog.troubleshooting.permissions_name
       )
-      expect(wrapper.get('#unpair').text()).toBe(catalog.troubleshooting.unpair_title)
+      // Paired clients are managed on the pairing page; troubleshooting links there.
+      expect(wrapper.get('#unpair').text()).toBe(catalog.pin.device_management)
       expect(wrapper.get('#logs').text()).toBe(catalog.troubleshooting.logs)
       expect(wrapper.find('.permission-table-shell tbody tr').exists()).toBe(true)
     } finally {
@@ -293,5 +295,46 @@ describe('virtual input troubleshooting', () => {
     ])
     expect(wrapper.findAll('.permission-table-shell tbody button')).toHaveLength(2)
     wrapper.unmount()
+  })
+})
+
+describe('quit Apollo', () => {
+  /**
+   * @brief Build the state used by quit().
+   *
+   * @return {object} Context for Troubleshooting.methods.quit.
+   */
+  function quitContext() {
+    return { serverQuitting: false, serverQuit: false, serverQuitFailed: false, $t: key => key }
+  }
+
+  // Bugs caught: 0, False positives: 0
+  it('reports success when the server exits without answering /api/quit', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    const ctx = quitContext()
+
+    await Troubleshooting.methods.quit.call(ctx)
+
+    expect(fetch).toHaveBeenCalledExactlyOnceWith('./api/quit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    expect(ctx).toMatchObject({ serverQuit: true, serverQuitFailed: false, serverQuitting: false })
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('reports a failure when the server answers, and does nothing without confirmation', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }))
+    const ctx = quitContext()
+
+    await Troubleshooting.methods.quit.call(ctx)
+    expect(ctx).toMatchObject({ serverQuit: false, serverQuitFailed: true })
+
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    vi.mocked(fetch).mockClear()
+    await Troubleshooting.methods.quit.call(quitContext())
+    expect(fetch).not.toHaveBeenCalled()
   })
 })

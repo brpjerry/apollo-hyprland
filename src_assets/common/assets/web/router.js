@@ -9,9 +9,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 const routes = [
   { path: '/', component: () => import('./Home.vue') },
   { path: '/apps', component: () => import('./Apps.vue') },
-  { path: '/clients', redirect: '/' },
+  { path: '/clients', redirect: '/pin' },
   { path: '/config', component: () => import('./Config.vue') },
   { path: '/featured', component: () => import('./Featured.vue') },
+  { path: '/login', component: () => import('./Login.vue') },
   { path: '/logout', component: () => import('./Logout.vue') },
   { path: '/password', component: () => import('./Password.vue') },
   { path: '/pin', component: () => import('./Pin.vue') },

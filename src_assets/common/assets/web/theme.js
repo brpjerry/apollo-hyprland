@@ -114,21 +114,13 @@ export function loadAutoTheme() {
 
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
         const storedTheme = getStoredTheme()
-        if (storedTheme !== 'light' && storedTheme !== 'dark') {
+        // Only auto-switch if theme is set to 'auto'
+        if (storedTheme === 'auto' || !storedTheme) {
             setTheme(getPreferredTheme())
         }
     })
 
-        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-            const storedTheme = getStoredTheme()
-            // Only auto-switch if theme is set to 'auto'
-            if (storedTheme === 'auto' || !storedTheme) {
-                setTheme(getPreferredTheme())
-            }
-        })
-
-        window.addEventListener('DOMContentLoaded', () => {
-            showActiveTheme(getPreferredTheme())
-        })
-    })()
+    window.addEventListener('DOMContentLoaded', () => {
+        showActiveTheme(getPreferredTheme())
+    })
 }

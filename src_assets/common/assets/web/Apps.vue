@@ -3,7 +3,9 @@
   <div id="content" class="container">
     <div class="my-4">
       <h1>{{ $t('apps.applications_title') }}<span v-if="apps.length"> ({{ appCountLabel }})</span></h1>
-      <p>{{ $t('apps.applications_desc') }}</p>
+      <p class="mb-1">{{ $t('apps.applications_desc') }}</p>
+      <p class="mb-1">{{ $t('apps.applications_reorder_desc') }}</p>
+      <p class="pre-wrap text-muted small">{{ $t('apps.applications_tips') }}</p>
     </div>
 
     <!-- Actions toolbar -->
@@ -11,9 +13,14 @@
       <!-- Left side actions -->
       <div class="d-flex align-items-center gap-2">
         <!-- Add new application -->
-        <button class="btn btn-primary" @click="newApp">
+        <button class="btn btn-primary" @click="newApp" :disabled="actionDisabled">
           <layers-plus :size="18" class="icon"></layers-plus>
           {{ $t('apps.add_new') }}
+        </button>
+        <!-- Save the dragged or name-sorted order -->
+        <button class="btn btn-warning" v-if="canSaveOrder" @click="saveOrder" :disabled="actionDisabled">
+          <save :size="18" class="icon"></save>
+          {{ $t('apps.save_order') }}
         </button>
       </div>
       <!-- Right side actions -->
@@ -44,12 +51,19 @@
 
     <!-- Apps Grid -->
     <div class="row g-3" v-if="displayedApps.length > 0">
-      <div class="col-12 col-sm-6 col-md-4 col-lg-3" v-for="{ app, index } in displayedApps" :key="index">
-        <div class="card app-card h-100">
+      <div class="col-12 col-sm-6 col-md-4 col-lg-3" v-for="{ app, index } in displayedApps" :key="app.uuid || index"
+           :class="{ 'app-dragover': dragOverIndex === index }"
+           :draggable="dragEnabled"
+           @dragstart="onDragStart($event, index)"
+           @dragover="onDragOver($event, index)"
+           @dragleave="onDragLeave(index)"
+           @drop="onDrop($event, index)"
+           @dragend="onDragEnd">
+        <div class="card app-card h-100" :class="{ 'border-success': isRunning(app) }">
           <div class="app-poster-container">
             <img
               v-if="app['image-path']"
-              :src="'/api/covers/' + index"
+              :src="coverUrl(app, index)"
               class="app-poster"
               :alt="app.name"
               @error="handleImageError"
@@ -76,13 +90,25 @@
             </div>
           </div>
           <div class="card-body d-flex flex-column">
-            <h5 class="card-title mb-3">{{ app.name }}</h5>
+            <h5 class="card-title mb-3 d-flex align-items-center gap-2" @dblclick="exportLauncherFile(app)">
+              <grip-vertical v-if="dragEnabled" :size="16" class="icon text-muted flex-shrink-0 app-drag-handle"></grip-vertical>
+              <span class="flex-grow-1">{{ app.name }}</span>
+              <span v-if="isRunning(app)" class="badge bg-success">{{ $t('apps.running') }}</span>
+            </h5>
             <div class="mt-auto d-flex gap-2">
-              <button class="btn btn-sm btn-primary flex-fill" @click="editApp(index)">
+              <button class="btn btn-sm btn-primary flex-fill" @click="editApp(index)" :disabled="actionDisabled">
                 <edit :size="16" class="icon"></edit>
                 {{ $t('apps.edit') }}
               </button>
-              <button class="btn btn-sm btn-danger" @click="showDeleteModal(index)">
+              <button v-if="isRunning(app)" class="btn btn-sm btn-warning" :disabled="actionDisabled"
+                      :title="$t('apps.close')" @click="closeApp">
+                <circle-stop :size="16" class="icon"></circle-stop>
+              </button>
+              <a v-else-if="app.uuid" class="btn btn-sm btn-success" :class="{ disabled: actionDisabled }"
+                 :href="launchLink(app)" :title="$t('apps.launch')" @click.prevent="launchApp(app)">
+                <play :size="16" class="icon"></play>
+              </a>
+              <button class="btn btn-sm btn-danger" @click="showDeleteModal(index)" :disabled="actionDisabled">
                 <trash-2 :size="16" class="icon"></trash-2>
               </button>
             </div>
@@ -120,11 +146,29 @@
           <div class="modal-body">
             <!-- Error -->
             <div v-if="editFormError" class="alert alert-danger py-2 small">{{ editFormError }}</div>
+            <div v-if="actionError" class="alert alert-danger py-2 small">{{ actionError }}</div>
             <!-- Application Name -->
             <div class="mb-3">
               <label for="appName" class="form-label">{{ $t('apps.app_name') }}</label>
               <input type="text" class="form-control" id="appName" aria-describedby="appNameHelp" v-model="editForm.name" />
               <div id="appNameHelp" class="form-text">{{ $t('apps.app_name_desc') }}</div>
+            </div>
+            <!-- gamepad override -->
+            <div class="mb-3">
+              <label for="appGamepad" class="form-label">{{ $t('config.gamepad') }}</label>
+              <select id="appGamepad" class="form-select" v-model="editForm.gamepad">
+                <option value="">{{ $t('_common.default_global') }}</option>
+                <option value="disabled">{{ $t('_common.disabled') }}</option>
+                <option value="auto">{{ $t('_common.auto') }}</option>
+                <option value="generic">{{ $t('config.gamepad_generic') }}</option>
+                <option value="x360">{{ $t('config.gamepad_x360') }}</option>
+                <option value="xone">{{ $t('config.gamepad_xone') }}</option>
+                <option value="xseries">{{ $t('config.gamepad_xseries') }}</option>
+                <option value="ds4">{{ $t('config.gamepad_ds4') }}</option>
+                <option value="ds5">{{ $t('config.gamepad_ds5') }}</option>
+                <option value="switch">{{ $t('config.gamepad_switch') }}</option>
+              </select>
+              <div class="form-text">{{ $t('apps.gamepad_desc') }}</div>
             </div>
             <!-- output -->
             <div class="mb-3">
@@ -139,81 +183,91 @@
               </div>
               <div id="appOutputHelp" class="form-text">{{ $t('apps.output_desc') }}</div>
             </div>
-            <!-- prep-cmd -->
+            <!-- allow client commands -->
             <Checkbox class="mb-3"
-                      id="excludeGlobalPrep"
-                      label="apps.global_prep_name"
-                      desc="apps.global_prep_desc"
-                      v-model="editForm['exclude-global-prep-cmd']"
+                      id="clientCommands"
+                      label="apps.allow_client_commands"
+                      desc="apps.allow_client_commands_desc"
+                      v-model="editForm['allow-client-commands']"
                       default="true"
-                      inverse-values
             ></Checkbox>
-            <div class="mb-3">
-              <label for="appName" class="form-label">{{ $t('apps.cmd_prep_name') }}</label>
-              <div class="form-text">{{ $t('apps.cmd_prep_desc') }}</div>
-              <div class="d-flex justify-content-start mb-3 mt-3" v-if="editForm['prep-cmd'].length === 0">
-                <button class="btn btn-success" @click="addPrepCmd">
-                  <plus :size="18" class="icon"></plus>
-                  {{ $t('apps.add_cmds') }}
-                </button>
+            <!-- prep-cmd and state-cmd -->
+            <template v-for="type in ['prep', 'state']" :key="type">
+              <Checkbox class="mb-3"
+                        :id="`excludeGlobal_${type}`"
+                        :label="`apps.global_${type}_name`"
+                        :desc="`apps.global_${type}_desc`"
+                        v-model="editForm[`exclude-global-${type}-cmd`]"
+                        default="true"
+                        inverse-values
+              ></Checkbox>
+              <div class="mb-3">
+                <div class="form-label">{{ $t(`apps.cmd_${type}_name`) }}</div>
+                <div class="form-text pre-wrap">{{ $t(`apps.cmd_${type}_desc`) }}</div>
+                <div class="d-flex justify-content-start mb-3 mt-3" v-if="editForm[`${type}-cmd`].length === 0">
+                  <button class="btn btn-success" @click="addCmd(type)">
+                    <plus :size="18" class="icon"></plus>
+                    {{ $t('apps.add_cmds') }}
+                  </button>
+                </div>
+                <table class="table" v-if="editForm[`${type}-cmd`].length > 0">
+                  <thead>
+                    <tr>
+                      <th scope="col">
+                        <play :size="18" class="icon"></play>
+                        {{ $t('_common.do_cmd') }}
+                      </th>
+                      <th scope="col">
+                        <rotate-ccw :size="18" class="icon"></rotate-ccw>
+                        {{ $t('_common.undo_cmd') }}
+                      </th>
+                      <th scope="col" v-if="canElevate">
+                        <shield :size="18" class="icon"></shield>
+                        {{ $t('_common.run_as') }}
+                      </th>
+                      <th scope="col"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(c, i) in editForm[`${type}-cmd`]" :key="i">
+                      <td>
+                        <div class="input-group">
+                          <label :for="`${type}-cmd-do-${i}`" class="visually-hidden">{{ $t('_common.do_cmd') }}</label>
+                          <input :id="`${type}-cmd-do-${i}`" type="text" class="form-control monospace" v-model="c.do" />
+                          <button class="btn btn-secondary btn-sm" type="button" @click="browseCmd(type, i, 'do')">
+                            <folder-open :size="14" class="icon"></folder-open>
+                          </button>
+                        </div>
+                      </td>
+                      <td>
+                        <div class="input-group">
+                          <label :for="`${type}-cmd-undo-${i}`" class="visually-hidden">{{ $t('_common.undo_cmd') }}</label>
+                          <input :id="`${type}-cmd-undo-${i}`" type="text" class="form-control monospace" v-model="c.undo" />
+                          <button class="btn btn-secondary btn-sm" type="button" @click="browseCmd(type, i, 'undo')">
+                            <folder-open :size="14" class="icon"></folder-open>
+                          </button>
+                        </div>
+                      </td>
+                      <td v-if="canElevate" class="align-middle">
+                        <Checkbox :id="`${type}-cmd-admin-${i}`"
+                                  label="_common.elevated"
+                                  desc=""
+                                  v-model="c.elevated"
+                        ></Checkbox>
+                      </td>
+                      <td class="align-middle text-nowrap">
+                        <button class="btn btn-danger btn-sm ms-2" @click="deleteCmd(type, i)">
+                          <trash-2 :size="16" class="icon"></trash-2>
+                        </button>
+                        <button class="btn btn-success btn-sm ms-2" @click="addCmd(type, i + 1)">
+                          <plus :size="16" class="icon"></plus>
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-              <table class="table" v-if="editForm['prep-cmd'].length > 0">
-                <thead>
-                  <tr>
-                    <th scope="col">
-                      <play :size="18" class="icon"></play>
-                      {{ $t('_common.do_cmd') }}
-                    </th>
-                    <th scope="col">
-                      <rotate-ccw :size="18" class="icon"></rotate-ccw>
-                      {{ $t('_common.undo_cmd') }}
-                    </th>
-                    <th scope="col" v-if="platform === 'windows'">
-                      <shield :size="18" class="icon"></shield>
-                      {{ $t('_common.run_as') }}
-                    </th>
-                    <th scope="col"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(c, i) in editForm['prep-cmd']" :key="i">
-                    <td>
-                      <div class="input-group">
-                        <label :for="`prep-cmd-do-${i}`" class="visually-hidden">{{ $t('_common.do_cmd') }}</label>
-                        <input :id="`prep-cmd-do-${i}`" type="text" class="form-control monospace" v-model="c.do" />
-                        <button class="btn btn-secondary btn-sm" type="button" @click="browsePrep(i, 'do')">
-                          <folder-open :size="14" class="icon"></folder-open>
-                        </button>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="input-group">
-                        <label :for="`prep-cmd-undo-${i}`" class="visually-hidden">{{ $t('_common.undo_cmd') }}</label>
-                        <input :id="`prep-cmd-undo-${i}`" type="text" class="form-control monospace" v-model="c.undo" />
-                        <button class="btn btn-secondary btn-sm" type="button" @click="browsePrep(i, 'undo')">
-                          <folder-open :size="14" class="icon"></folder-open>
-                        </button>
-                      </div>
-                    </td>
-                    <td v-if="platform === 'windows'" class="align-middle">
-                      <Checkbox :id="'prep-cmd-admin-' + i"
-                                label="_common.elevated"
-                                desc=""
-                                v-model="c.elevated"
-                      ></Checkbox>
-                    </td>
-                    <td class="align-middle">
-                      <button class="btn btn-danger btn-sm ms-2" @click="deletePrepCmd(i)">
-                        <trash-2 :size="16" class="icon"></trash-2>
-                      </button>
-                      <button class="btn btn-success btn-sm ms-2" @click="addPrepCmd">
-                        <plus :size="16" class="icon"></plus>
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            </template>
             <!-- detached -->
             <div class="mb-3">
               <label for="appName" class="form-label">{{ $t('apps.detached_cmds') }}</label>
@@ -271,7 +325,7 @@
               <div id="appWorkingDirHelp" class="form-text">{{ $t('apps.working_dir_desc') }}</div>
             </div>
             <!-- elevation -->
-            <Checkbox v-if="platform === 'windows'"
+            <Checkbox v-if="canElevate"
                       class="mb-3"
                       id="appElevation"
                       label="_common.run_as"
@@ -294,6 +348,14 @@
                       desc="apps.wait_all_desc"
                       v-model="editForm['wait-all']"
                       default="true"
+            ></Checkbox>
+            <!-- terminate on pause -->
+            <Checkbox class="mb-3"
+                      id="terminateOnPause"
+                      label="apps.terminate_on_pause"
+                      desc="apps.terminate_on_pause_desc"
+                      v-model="editForm['terminate-on-pause']"
+                      default="false"
             ></Checkbox>
             <!-- exit timeout -->
             <div class="mb-3">
@@ -318,82 +380,85 @@
               </div>
               <div id="appImagePathHelp" class="form-text">{{ $t('apps.image_desc') }}</div>
             </div>
+            <!-- use virtual display -->
+            <Checkbox class="mb-3"
+                      id="virtualDisplay"
+                      label="apps.virtual_display"
+                      :desc="platform === 'linux' ? 'apps.virtual_display_desc_linux' : 'apps.virtual_display_desc'"
+                      v-model="editForm['virtual-display']"
+                      default="false"
+            ></Checkbox>
+            <!-- use app identity -->
+            <Checkbox class="mb-3"
+                      id="useAppIdentity"
+                      label="apps.use_app_identity"
+                      desc="apps.use_app_identity_desc"
+                      v-model="editForm['use-app-identity']"
+                      default="false"
+            ></Checkbox>
+            <!-- per-client app identity -->
+            <Checkbox v-if="editForm['use-app-identity']"
+                      class="mb-3"
+                      id="perClientAppIdentity"
+                      label="apps.per_client_app_identity"
+                      desc="apps.per_client_app_identity_desc"
+                      v-model="editForm['per-client-app-identity']"
+                      default="false"
+            ></Checkbox>
+            <!-- resolution scale factor -->
+            <div class="mb-3" v-if="platform === 'windows' || platform === 'linux'">
+              <label for="resolutionScaleFactor" class="form-label">{{ $t('apps.resolution_scale_factor') }}: {{ editForm['scale-factor'] }}%</label>
+              <input type="range" step="1" min="20" max="200" class="form-range" id="resolutionScaleFactor" v-model.number="editForm['scale-factor']" />
+              <div class="form-text">{{ $t('apps.resolution_scale_factor_desc') }}</div>
+            </div>
             <div class="env-hint alert alert-info">
               <div class="form-text">
                 <h4>{{ $t('apps.env_vars_about') }}</h4>
                 {{ $t('apps.env_vars_desc') }}
               </div>
               <table class="env-table">
-                <tr>
-                  <th scope="col">{{ $t('apps.env_var_name') }}</th>
-                  <th scope="col">{{ $t('apps.env_var_description') }}</th>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_APP_ID</td>
-                  <td>{{ $t('apps.env_app_id') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_APP_NAME</td>
-                  <td>{{ $t('apps.env_app_name') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_CLIENT_NAME</td>
-                  <td>{{ $t('apps.env_client_name') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_CLIENT_WIDTH</td>
-                  <td>{{ $t('apps.env_client_width') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_CLIENT_HEIGHT</td>
-                  <td>{{ $t('apps.env_client_height') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_CLIENT_FPS</td>
-                  <td>{{ $t('apps.env_client_fps') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_CLIENT_HDR</td>
-                  <td>{{ $t('apps.env_client_hdr') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_CLIENT_GCMAP</td>
-                  <td>{{ $t('apps.env_client_gcmap') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_CLIENT_HOST_AUDIO</td>
-                  <td>{{ $t('apps.env_client_host_audio') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_CLIENT_ENABLE_SOPS</td>
-                  <td>{{ $t('apps.env_client_enable_sops') }}</td>
-                </tr>
-                <tr>
-                  <td style="font-family: monospace">SUNSHINE_CLIENT_AUDIO_CONFIGURATION</td>
-                  <td>{{ $t('apps.env_client_audio_config') }}</td>
-                </tr>
+                <thead>
+                  <tr>
+                    <th scope="col">{{ $t('apps.env_var_name') }}</th>
+                    <th scope="col">{{ $t('apps.env_var_description') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="envVar in envVars" :key="envVar.name">
+                    <td style="font-family: monospace">{{ envVar.name }}</td>
+                    <td>{{ $t(envVar.desc) }}</td>
+                  </tr>
+                </tbody>
               </table>
-              <div class="form-text" v-if="platform === 'windows'"><b>{{ $t('apps.env_qres_example') }}</b>
-                <pre>cmd /C &lt;{{ $t('apps.env_qres_path') }}&gt;\QRes.exe /X:%SUNSHINE_CLIENT_WIDTH% /Y:%SUNSHINE_CLIENT_HEIGHT% /R:%SUNSHINE_CLIENT_FPS%</pre>
+              <div class="form-text" v-if="platform === 'windows'"><b>{{ $t('apps.env_rtss_cli_example') }}</b>
+                <pre>cmd /C \path\to\rtss-cli.exe limit:set %APOLLO_CLIENT_FPS%</pre>
               </div>
               <div class="form-text" v-else-if="platform === 'freebsd' || platform === 'linux'"><b>{{ $t('apps.env_xrandr_example') }}</b>
-                <pre>sh -c "xrandr --output HDMI-1 --mode \"${SUNSHINE_CLIENT_WIDTH}x${SUNSHINE_CLIENT_HEIGHT}\" --rate ${SUNSHINE_CLIENT_FPS}"</pre>
+                <pre>sh -c "xrandr --output HDMI-1 --mode \"${APOLLO_CLIENT_WIDTH}x${APOLLO_CLIENT_HEIGHT}\" --rate ${APOLLO_CLIENT_FPS}"</pre>
               </div>
               <div class="form-text" v-else-if="platform === 'macos'"><b>{{ $t('apps.env_displayplacer_example') }}</b>
-                <pre>sh -c "displayplacer "id:&lt;screenId&gt; res:${SUNSHINE_CLIENT_WIDTH}x${SUNSHINE_CLIENT_HEIGHT} hz:${SUNSHINE_CLIENT_FPS} scaling:on origin:(0,0) degree:0""</pre>
+                <pre>sh -c "displayplacer "id:&lt;screenId&gt; res:${APOLLO_CLIENT_WIDTH}x${APOLLO_CLIENT_HEIGHT} hz:${APOLLO_CLIENT_FPS} scaling:on origin:(0,0) degree:0""</pre>
               </div>
               <div class="form-text"><a
                   :href="`${documentationBaseUrl}/md_docs_2app__examples.html`"
                   target="_blank">{{ $t('_common.see_more') }}</a></div>
             </div>
+            <div class="alert alert-info">
+              <info :size="18" class="icon"></info>
+              {{ $t('apps.env_sunshine_compatibility') }}
+            </div>
           </div>
           <!-- Save buttons -->
           <div class="modal-footer">
+            <button class="btn btn-success me-auto" @click="exportLauncherFile(editForm)" :disabled="!editForm.uuid">
+              <download :size="18" class="icon"></download>
+              {{ $t('apps.export_launcher_file') }}
+            </button>
             <button @click="closeEditModal" class="btn btn-secondary">
               <x :size="18" class="icon"></x>
               {{ $t('_common.cancel') }}
             </button>
-            <button class="btn btn-primary" @click="save">
+            <button class="btn btn-primary" @click="save" :disabled="actionDisabled || !(editForm.name || '').trim()">
               <save :size="18" class="icon"></save>
               {{ $t('_common.save') }}
             </button>
@@ -571,7 +636,7 @@
   import Navbar from './Navbar.vue'
   import Checkbox from './Checkbox.vue'
   import { apiFetch } from './fetch_utils'
-  import SunshineVersion from './sunshine_version'
+  import { SUNSHINE_DOCS_URL } from './links'
   import { Modal } from 'bootstrap/dist/js/bootstrap'
   import {
     ArrowDown,
@@ -579,12 +644,16 @@
     ArrowUp,
     ArrowUpDown,
     Check,
+    CircleStop,
+    Download,
     Edit,
     FileText,
     Folder,
     FolderOpen,
     FolderUp,
+    GripVertical,
     HardDrive,
+    Info,
     LayersPlus,
     Play,
     Plus,
@@ -596,6 +665,71 @@
     Trash2,
     X,
   } from '@lucide/vue'
+
+  /**
+   * Values of the optional application fields that the editor shows when an application does not set them.
+   * They match the defaults the server applies in `proc::parse()`.
+   */
+  export const APP_FIELD_DEFAULTS = Object.freeze({
+    "prep-cmd": [],
+    "state-cmd": [],
+    detached: [],
+    "exclude-global-prep-cmd": false,
+    "exclude-global-state-cmd": false,
+    elevated: false,
+    "auto-detach": true,
+    "wait-all": true,
+    "exit-timeout": 5,
+    cmd: "",
+    output: "",
+    "working-dir": "",
+    "image-path": "",
+    gamepad: "",
+    "allow-client-commands": true,
+    "terminate-on-pause": false,
+    "virtual-display": false,
+    "use-app-identity": false,
+    "per-client-app-identity": false,
+    "scale-factor": 100,
+  });
+
+  /** Environment variables Apollo sets for application commands. */
+  const ENV_VARS = [
+    ["APOLLO_APP_ID", "apps.env_app_id"],
+    ["APOLLO_APP_NAME", "apps.env_app_name"],
+    ["APOLLO_APP_UUID", "apps.env_app_uuid"],
+    ["APOLLO_APP_STATUS", "apps.env_app_status"],
+    ["APOLLO_CLIENT_UUID", "apps.env_client_uuid"],
+    ["APOLLO_CLIENT_NAME", "apps.env_client_name"],
+    ["APOLLO_CLIENT_WIDTH", "apps.env_client_width"],
+    ["APOLLO_CLIENT_HEIGHT", "apps.env_client_height"],
+    ["APOLLO_CLIENT_FPS", "apps.env_client_fps"],
+    ["APOLLO_CLIENT_HDR", "apps.env_client_hdr"],
+    ["APOLLO_CLIENT_GCMAP", "apps.env_client_gcmap"],
+    ["APOLLO_CLIENT_HOST_AUDIO", "apps.env_client_host_audio"],
+    ["APOLLO_CLIENT_ENABLE_SOPS", "apps.env_client_enable_sops"],
+    ["APOLLO_CLIENT_AUDIO_CONFIGURATION", "apps.env_client_audio_config"],
+  ].map(([name, desc]) => ({ name, desc }));
+
+  /**
+   * Build the `.art` launcher file Artemis imports to start an application directly.
+   *
+   * @param {{uuid: string, name: string}} app Application.
+   * @param {string} hostUUID Host unique id.
+   * @param {string} hostName Host name.
+   * @returns {string} File contents.
+   */
+  export function launcherFileContent(app, hostUUID, hostName) {
+    return `# Artemis app entry
+# Exported by Apollo
+# https://github.com/ClassicOldSong/Apollo
+
+[host_uuid] ${hostUUID}
+[host_name] ${hostName}
+[app_uuid] ${app.uuid}
+[app_name] ${app.name}
+`;
+  }
 
   /**
    * Return the GameDB bucket for an application name.
@@ -663,12 +797,16 @@
       ArrowUp,
       ArrowUpDown,
       Check,
+      CircleStop,
+      Download,
       Edit,
       FileText,
       Folder,
       FolderOpen,
       FolderUp,
+      GripVertical,
       HardDrive,
+      Info,
       LayersPlus,
       Play,
       Plus,
@@ -705,20 +843,34 @@
         searchQuery: "",
         sortMode: "default",
         deleteTarget: null,
-        version: null,
-        githubVersion: null,
+        // Apollo: running app, host identity for launch links, and reordering.
+        actionDisabled: false,
+        actionError: "",
+        currentApp: "",
+        hostName: "",
+        hostUUID: "",
+        dragIndex: -1,
+        dragOverIndex: -1,
+        orderChanged: false,
+        // Position of each application (by UUID) in the saved list; covers are served by that position.
+        savedPositions: new Map(),
+        envVars: ENV_VARS,
       };
     },
     computed: {
-      installedVersionNotStable() {
-        if (!this.githubVersion || !this.version) {
-          return false;
-        }
-        return this.version.isGreater(this.githubVersion);
-      },
       documentationBaseUrl() {
-        const docsVersion = this.installedVersionNotStable ? 'master' : 'latest'
-        return `https://docs.lizardbyte.dev/projects/sunshine/${docsVersion}`
+        return SUNSHINE_DOCS_URL
+      },
+      canElevate() {
+        return this.platform === 'windows' || this.platform === 'linux';
+      },
+      /** Dragging changes the saved order, so it is only offered on the unfiltered, unsorted list. */
+      dragEnabled() {
+        return this.sortMode === "default" && !this.searchQuery.trim() && !this.actionDisabled;
+      },
+      /** A dragged order, or the name-sorted view of the whole list, can be saved as the app order. */
+      canSaveOrder() {
+        return !this.searchQuery.trim() && (this.orderChanged || (this.sortMode !== "default" && this.apps.length > 1));
       },
       displayedApps() {
         let list = this.apps.map((app, index) => ({ app, index }));
@@ -778,36 +930,22 @@
     created() {
       this.loadApps();
 
-      fetch("./api/config")
+      apiFetch("./api/config")
         .then(r => r.json())
         .then(r => {
           this.platform = r.platform;
-          this.version = new SunshineVersion(null, r.version);
-        });
-
-      fetch("https://api.github.com/repos/SunshineStream/Sunshine/releases/latest")
-        .then((r) => r.json())
-        .then((r) => this.githubVersion = new SunshineVersion(r, null))
+        })
         .catch((e) => console.error(e));
     },
     methods: {
       newApp() {
         this.editForm = {
           name: "",
-          output: "",
-          cmd: "",
           index: -1,
-          "exclude-global-prep-cmd": false,
-          elevated: false,
-          "auto-detach": true,
-          "wait-all": true,
-          "exit-timeout": 5,
-          "prep-cmd": [],
-          detached: [],
-          "working-dir": "",
-          "image-path": ""
+          ...structuredClone(APP_FIELD_DEFAULTS),
         };
         this.editFormError = "";
+        this.actionError = "";
         this.openEditModal();
       },
       /**
@@ -817,27 +955,15 @@
       editApp(id) {
         this.editForm = structuredClone(toRaw(this.apps[id]));
         this.editForm.index = id;
-        const defaults = {
-          "prep-cmd": [],
-          detached: [],
-          "exclude-global-prep-cmd": false,
-          elevated: false,
-          "auto-detach": true,
-          "wait-all": true,
-          "exit-timeout": 5,
-          cmd: "",
-          output: "",
-          "working-dir": "",
-          "image-path": ""
-        };
-        for (const [key, value] of Object.entries(defaults)) {
-          this.editForm[key] ??= value;
+        for (const [key, value] of Object.entries(APP_FIELD_DEFAULTS)) {
+          this.editForm[key] ??= structuredClone(value);
         }
         this.editFormError = "";
+        this.actionError = "";
         this.openEditModal();
       },
       showDeleteModal(id) {
-        this.deleteTarget = { index: id, name: this.apps[id].name };
+        this.deleteTarget = { index: id, uuid: this.apps[id].uuid, name: this.apps[id].name };
         this.$nextTick(() => {
           Modal.getOrCreateInstance(this.$refs.deleteModal).show();
         });
@@ -846,37 +972,267 @@
         const modal = Modal.getInstance(this.$refs.deleteModal);
         if (modal) modal.hide();
       },
+      /**
+       * @brief Load the applications, the running application and the host identity.
+       *
+       * @return {Promise<void>} Completion of the request.
+       */
       loadApps() {
-        return fetch("./api/apps")
+        return apiFetch("./api/apps")
           .then((r) => r.json())
           .then((r) => {
-            this.apps = r.apps;
+            this.apps = r.apps ?? [];
+            this.savedPositions = new Map(this.apps.map((app, i) => [app.uuid, i]).filter(([uuid]) => uuid));
+            this.currentApp = r.current_app ?? "";
+            this.hostName = r.host_name ?? "";
+            this.hostUUID = r.host_uuid ?? "";
+            this.orderChanged = false;
           });
       },
-      confirmDelete() {
-        apiFetch("./api/apps/" + this.deleteTarget.index, {
-          method: "DELETE",
-          headers: {
-            "Content-Type": "application/json"
-          },
-        }).then((r) => {
-          if (r.status === 200) document.location.reload();
-        });
+      /**
+       * @brief Delete the application chosen in the delete dialog: by UUID, or by position for an application
+       * saved before UUIDs existed.
+       *
+       * @return {Promise<void>} Completion of the request.
+       */
+      async confirmDelete() {
+        const target = this.deleteTarget;
+        const request = target.uuid
+          ? apiFetch("./api/apps/delete", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ uuid: target.uuid }),
+          })
+          : apiFetch("./api/apps/" + target.index, {
+            method: "DELETE",
+            headers: {
+              "Content-Type": "application/json"
+            },
+          });
+        const r = await request;
+        this.closeDeleteModal();
+        if (r.status === 200) {
+          await this.loadApps();
+        } else {
+          this.actionError = this.$t('apps.delete_failed') + (await this.errorText(r));
+        }
+      },
+      /**
+       * @brief Read the error message of a failed API response.
+       *
+       * @param {Response} response Failed response.
+       * @return {Promise<string>} Error message.
+       */
+      async errorText(response) {
+        try {
+          const body = await response.json();
+          return body.error || body.message || `HTTP ${response.status}`;
+        } catch (e) {
+          return `HTTP ${response.status}`;
+        }
+      },
+      /**
+       * @brief Insert an empty preparation or state command.
+       *
+       * @param {string} type `prep` or `state`.
+       * @param {number} [index] Insert position; appended when omitted.
+       */
+      addCmd(type, index) {
+        const commands = this.editForm[`${type}-cmd`];
+        const template = { do: "", undo: "" };
+        if (this.canElevate) {
+          template.elevated = false;
+        }
+        commands.splice(index ?? commands.length, 0, template);
+      },
+      deleteCmd(type, index) {
+        this.editForm[`${type}-cmd`].splice(index, 1);
       },
       addPrepCmd() {
-        let template = {
-          do: "",
-          undo: ""
-        };
-
-        if (this.platform === 'windows') {
-          template = { ...template, elevated: false };
-        }
-
-        this.editForm["prep-cmd"].push(template);
+        this.addCmd("prep");
       },
       deletePrepCmd(index) {
-        this.editForm["prep-cmd"].splice(index, 1);
+        this.deleteCmd("prep", index);
+      },
+      /**
+       * @brief Cover image URL. `/api/covers/<n>` takes the position in the saved list, which differs from the
+       * shown position while a dragged order is not saved yet.
+       *
+       * @param {object} app Application.
+       * @param {number} index Position in the shown list.
+       * @return {string} Cover URL.
+       */
+      coverUrl(app, index) {
+        const position = app.uuid ? this.savedPositions.get(app.uuid) : undefined;
+        return `/api/covers/${position ?? index}`;
+      },
+      isRunning(app) {
+        return !!app.uuid && app.uuid === this.currentApp;
+      },
+      /**
+       * @brief Artemis deep link that launches the application from a client.
+       *
+       * @param {{uuid: string, name: string}} app Application.
+       * @return {string} `art://launch` URL.
+       */
+      launchLink(app) {
+        const params = new URLSearchParams({
+          host_uuid: this.hostUUID,
+          host_name: this.hostName,
+          app_uuid: app.uuid,
+          app_name: app.name,
+        });
+        return `art://launch?${params.toString()}`;
+      },
+      /**
+       * @brief Launch an application: through a local Artemis client when the page is opened remotely,
+       * otherwise on the host (`POST /api/apps/launch`).
+       *
+       * @param {object} app Application to launch.
+       * @return {Promise<void>} Completion of the launch.
+       */
+      async launchApp(app) {
+        const isLocalHost = ['localhost', '127.0.0.1', '[::1]'].includes(globalThis.location.hostname);
+        if (!isLocalHost && globalThis.confirm(this.$t('apps.launch_local_client'))) {
+          globalThis.location.assign(this.launchLink(app));
+          return;
+        }
+        if (!globalThis.confirm(this.$t('apps.launch_warning'))) {
+          return;
+        }
+        this.actionDisabled = true;
+        this.actionError = "";
+        try {
+          const r = await apiFetch("./api/apps/launch", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ uuid: app.uuid }),
+          });
+          if (r.status !== 200) {
+            this.actionError = this.$t('apps.launch_failed') + (await this.errorText(r));
+          }
+        } finally {
+          this.actionDisabled = false;
+          await this.loadApps();
+        }
+      },
+      /**
+       * @brief Terminate the running application after confirmation.
+       *
+       * @return {Promise<void>} Completion of the request.
+       */
+      async closeApp() {
+        if (!globalThis.confirm(this.$t('apps.close_warning'))) {
+          return;
+        }
+        this.actionDisabled = true;
+        this.actionError = "";
+        try {
+          const r = await apiFetch("./api/apps/close", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+          });
+          if (r.status !== 200) {
+            this.actionError = this.$t('apps.close_failed');
+          }
+        } finally {
+          this.actionDisabled = false;
+          await this.loadApps();
+        }
+      },
+      /**
+       * @brief Download the `.art` launcher file of an application.
+       *
+       * @param {object} app Application with a UUID.
+       */
+      exportLauncherFile(app) {
+        if (!app.uuid) {
+          return;
+        }
+        const link = document.createElement('a');
+        link.href = `data:text/plain;charset=utf-8,${encodeURIComponent(launcherFileContent(app, this.hostUUID, this.hostName))}`;
+        link.download = `${app.name}.art`;
+        link.click();
+      },
+      onDragStart(event, index) {
+        if (!this.dragEnabled) {
+          event.preventDefault();
+          return;
+        }
+        this.dragIndex = index;
+        event.dataTransfer.effectAllowed = "move";
+      },
+      onDragOver(event, index) {
+        if (this.dragIndex < 0) {
+          return;
+        }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        this.dragOverIndex = index;
+      },
+      onDragLeave(index) {
+        if (this.dragOverIndex === index) {
+          this.dragOverIndex = -1;
+        }
+      },
+      onDrop(event, index) {
+        if (this.dragIndex < 0) {
+          return;
+        }
+        event.preventDefault();
+        this.moveApp(this.dragIndex, index);
+        this.onDragEnd();
+      },
+      onDragEnd() {
+        this.dragIndex = -1;
+        this.dragOverIndex = -1;
+      },
+      /**
+       * @brief Move an application to another position in the list (not saved until "Save Order").
+       *
+       * @param {number} from Current index.
+       * @param {number} to Index of the application it is dropped on.
+       */
+      moveApp(from, to) {
+        if (from === to || from < 0 || to < 0 || from >= this.apps.length || to >= this.apps.length) {
+          return;
+        }
+        const [moved] = this.apps.splice(from, 1);
+        this.apps.splice(to, 0, moved);
+        this.orderChanged = true;
+      },
+      /**
+       * @brief Save the order shown (dragged, or sorted by name) with `POST /api/apps/reorder`.
+       *
+       * @return {Promise<void>} Completion of the request and reload.
+       */
+      async saveOrder() {
+        const order = this.displayedApps.map(({ app }) => app.uuid).filter(Boolean);
+        this.actionDisabled = true;
+        this.actionError = "";
+        try {
+          const r = await apiFetch("./api/apps/reorder", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ order }),
+          });
+          if (r.status !== 200) {
+            this.actionError = this.$t('apps.reorder_failed') + (await this.errorText(r));
+          } else {
+            this.sortMode = "default";
+          }
+        } finally {
+          this.actionDisabled = false;
+          await this.loadApps();
+        }
       },
       addDetached() {
         this.editForm.detached.push("");
@@ -1013,11 +1369,14 @@
       fileBrowserOnTypedInput() {
         this.fileBrowserSelectedPath = this.fileBrowserTypedPath;
       },
-      browsePrep(index, field) {
-        const current = this.editForm['prep-cmd'][index][field] || '';
+      browseCmd(type, index, field) {
+        const current = this.editForm[`${type}-cmd`][index][field] || '';
         this.browseFor('executable', 'file_browser.select_executable', current, (path) => {
-          this.editForm['prep-cmd'][index][field] = path;
+          this.editForm[`${type}-cmd`][index][field] = path;
         });
+      },
+      browsePrep(index, field) {
+        this.browseCmd('prep', index, field);
       },
       browseDetached(index) {
         const current = this.editForm.detached[index] || '';
@@ -1025,8 +1384,24 @@
           this.editForm.detached[index] = path;
         });
       },
+      /**
+       * @brief Save the edited application. Applications are identified by UUID; one saved before UUIDs existed
+       * is identified by its position, and the server gives it a UUID.
+       *
+       * @return {Promise<void>|undefined} Completion of the request, or nothing when validation fails.
+       */
       save() {
         this.editFormError = "";
+        if (typeof this.editForm.name === "string") {
+          this.editForm.name = this.editForm.name.trim();
+        }
+        if (this.editForm["exit-timeout"] !== undefined) {
+          const timeout = Number.parseInt(this.editForm["exit-timeout"], 10);
+          this.editForm["exit-timeout"] = Number.isNaN(timeout) ? 5 : timeout;
+        }
+        if (this.editForm["scale-factor"] !== undefined) {
+          this.editForm["scale-factor"] = Number.parseInt(this.editForm["scale-factor"], 10) || 100;
+        }
         const currentImagePath = this.editForm["image-path"] == null ? "" : String(this.editForm["image-path"]).trim();
         this.editForm["image-path"] = currentImagePath.replaceAll('"', '');
 
@@ -1040,14 +1415,26 @@
           return;
         }
 
-        apiFetch("./api/apps", {
+        const body = { ...this.editForm };
+        if (body.uuid) {
+          delete body.index;
+        } else {
+          delete body.uuid;
+        }
+
+        return apiFetch("./api/apps", {
           method: "POST",
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify(this.editForm),
-        }).then((r) => {
-          if (r.status === 200) document.location.reload();
+          body: JSON.stringify(body),
+        }).then(async (r) => {
+          if (r.status === 200) {
+            this.closeEditModal();
+            await this.loadApps();
+          } else {
+            this.editFormError = this.$t('apps.save_failed') + (await this.errorText(r));
+          }
         });
       },
       handleImageError(event) {
@@ -1099,3 +1486,14 @@
     },
   }
 </script>
+
+<style scoped>
+.app-dragover .app-card {
+  outline: 2px dashed var(--bs-primary);
+  outline-offset: 2px;
+}
+
+.app-drag-handle {
+  cursor: grab;
+}
+</style>

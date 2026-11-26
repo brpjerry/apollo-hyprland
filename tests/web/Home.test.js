@@ -7,13 +7,25 @@ vi.mock('../../src_assets/common/assets/web/Navbar.vue', () => ({
 vi.mock('../../src_assets/common/assets/web/ResourceCard.vue', () => ({
   default: { template: '<div />' },
 }))
+vi.mock('../../src_assets/common/assets/web/ClientCard.vue', () => ({
+  default: { template: '<div />' },
+}))
 
 import Home from '../../src_assets/common/assets/web/Home.vue'
 
-async function mountHome(platform, { developmentVersion = true, licensed = true, serviceAvailable = true, gamepadDriver = 'virtualhid', permissions = [] } = {}) {
+async function mountHome(platform, {
+  developmentVersion = true,
+  licensed = true,
+  serviceAvailable = true,
+  gamepadDriver = 'virtualhid',
+  permissions = [],
+  version = '2026.927.1200',
+  releases = [{ tag_name: 'v2026.927.1200', prerelease: true }],
+  notifyPreReleases = false,
+} = {}) {
   vi.stubGlobal('fetch', vi.fn(async url => {
     if (url === './api/config') {
-      return { json: async () => ({ platform, controller: 'enabled', gamepad_driver: gamepadDriver, version: '2026.927.1200' }) }
+      return { json: async () => ({ platform, controller: 'enabled', gamepad_driver: gamepadDriver, version, notify_pre_releases: notifyPreReleases }) }
     }
     if (url === './api/virtual-input/status') {
       return {
@@ -32,11 +44,8 @@ async function mountHome(platform, { developmentVersion = true, licensed = true,
     if (url === './api/logs') {
       return { text: async () => '' }
     }
-    if (url === 'https://api.github.com/repos/SunshineStream/Sunshine/releases/latest') {
-      return { json: async () => ({ tag_name: 'v2026.927.1200' }) }
-    }
-    if (url === 'https://api.github.com/repos/SunshineStream/Sunshine/releases') {
-      return { json: async () => [{ tag_name: 'v2026.927.1200', prerelease: true }] }
+    if (url === 'https://api.github.com/repos/brpjerry/apollo-hyprland/releases') {
+      return { json: async () => releases }
     }
     throw new Error(`Unexpected fetch: ${url}`)
   }))
@@ -111,6 +120,54 @@ describe('development broker home notice', () => {
     const wrapper = await mountHome('macos', { gamepadDriver: 'none' })
 
     expect(wrapper.find('.alert.my-4').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('Apollo Hyprland release check', () => {
+  // Bugs caught: 0, False positives: 0
+  it('offers a newer stable fork release by its four-part tag', async () => {
+    const wrapper = await mountHome('linux', {
+      version: '0.4.8.1',
+      releases: [
+        { tag_name: 'v0.4.9-beta.1', prerelease: true, name: 'v0.4.9 beta 1', html_url: 'https://example.com/beta' },
+        { tag_name: 'v0.4.8.2', prerelease: false, name: 'v0.4.8.2', html_url: 'https://example.com/stable' },
+        { tag_name: 'nightly', prerelease: false, name: 'nightly' },
+      ],
+    })
+
+    expect(fetch).toHaveBeenCalledWith('https://api.github.com/repos/brpjerry/apollo-hyprland/releases')
+    expect(wrapper.text()).toContain('index.new_stable')
+    expect(wrapper.text()).toContain('v0.4.8.2')
+    expect(wrapper.text()).not.toContain('index.new_pre_release')
+    wrapper.unmount()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('reports the latest version when the installed build matches the newest release', async () => {
+    const wrapper = await mountHome('linux', {
+      version: '0.4.8.1',
+      releases: [{ tag_name: 'v0.4.8.1', prerelease: false, name: 'v0.4.8.1' }],
+    })
+
+    expect(wrapper.text()).toContain('index.version_latest')
+    expect(wrapper.text()).not.toContain('index.new_stable')
+    wrapper.unmount()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('offers a newer pre-release when pre-release notifications are on', async () => {
+    const wrapper = await mountHome('linux', {
+      version: '0.4.8.1',
+      notifyPreReleases: true,
+      releases: [
+        { tag_name: 'v0.4.9-beta.1', prerelease: true, name: 'v0.4.9 beta 1', html_url: 'https://example.com/beta' },
+        { tag_name: 'v0.4.8.1', prerelease: false, name: 'v0.4.8.1' },
+      ],
+    })
+
+    expect(wrapper.text()).toContain('index.new_pre_release')
+    expect(wrapper.text()).toContain('v0.4.9 beta 1')
     wrapper.unmount()
   })
 })

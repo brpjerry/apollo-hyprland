@@ -102,6 +102,7 @@
         v-if="currentTab === 'av'"
         :config="config"
         :platform="platform"
+        :vdisplay="vdisplayStatus"
       >
       </audio-video>
 
@@ -166,6 +167,62 @@
 
   const ENCODER_TAB_IDS = new Set(["nv", "amd", "qsv", "vaapi", "vt", "vulkan", "sw"]);
 
+  /** Options the server sends as JSON strings. */
+  const JSON_OPTIONS = ["dd_mode_remapping", "global_prep_cmd", "global_state_cmd", "server_cmd"];
+
+  /** Command lists edited as tables, with the entries kept when saving. */
+  const COMMAND_LISTS = {
+    global_prep_cmd: cmd => !!(cmd.do?.trim() || cmd.undo?.trim()),
+    global_state_cmd: cmd => !!(cmd.do?.trim() || cmd.undo?.trim()),
+    server_cmd: cmd => !!(cmd.name?.trim() && cmd.cmd?.trim()),
+  };
+
+  /** Fallback display mode format: `[Width]x[Height]x[FPS]`. */
+  const FALLBACK_MODE_PATTERN = /^\d+x\d+x\d+(\.\d+)?$/;
+
+  /**
+   * Parse the options the server sends as JSON strings. A value that does not parse is dropped, so the tab
+   * default applies.
+   *
+   * @param {object} config Configuration from `GET /api/config`, changed in place.
+   */
+  export function parseJsonOptions(config) {
+    for (const optionKey of JSON_OPTIONS) {
+      if (typeof config[optionKey] !== "string") {
+        continue;
+      }
+      try {
+        config[optionKey] = JSON.parse(config[optionKey]);
+      } catch (e) {
+        console.error(`Ignoring malformed ${optionKey}`, e);
+        delete config[optionKey];
+      }
+    }
+    for (const optionKey of Object.keys(COMMAND_LISTS)) {
+      if (Array.isArray(config[optionKey])) {
+        config[optionKey] = config[optionKey].map(cmd => ({ ...cmd, elevated: cmd.elevated === true || cmd.elevated === "true" }));
+      }
+    }
+  }
+
+  /**
+   * Prepare a configuration copy for saving: drop empty command rows and an invalid fallback display mode.
+   *
+   * @param {object} config Configuration copy, changed in place.
+   * @returns {object} The same configuration.
+   */
+  export function cleanConfigForSave(config) {
+    for (const [optionKey, keep] of Object.entries(COMMAND_LISTS)) {
+      if (Array.isArray(config[optionKey])) {
+        config[optionKey] = config[optionKey].filter(keep);
+      }
+    }
+    if (config.fallback_mode && !FALLBACK_MODE_PATTERN.test(config.fallback_mode.trim())) {
+      delete config.fallback_mode;
+    }
+    return config;
+  }
+
   /**
    * Compare configuration values without coercing their types.
    *
@@ -221,6 +278,7 @@
         saved: false,
         restarted: false,
         config: null,
+        vdisplayStatus: undefined,
         currentTab: "general",
         searchQuery: "",
         hashChangeHandler: null,
@@ -265,7 +323,7 @@
       }
     },
     created() {
-      fetch("./api/config")
+      apiFetch("./api/config")
         .then((r) => r.json())
         .then((r) => {
           this.config = r;
@@ -292,13 +350,12 @@
           delete this.config.status;
           delete this.config.version;
 
+          // Apollo: virtual display backend status (SudoVDA on Windows, Hyprland on Linux); absent when unavailable.
+          this.vdisplayStatus = this.config.vdisplayStatus;
+          delete this.config.vdisplayStatus;
+
           // Parse the special options before population if available
-          const specialOptions = ["dd_mode_remapping", "global_prep_cmd"]
-          for (const optionKey of specialOptions) {
-            if (this.config.hasOwnProperty(optionKey)) {
-              this.config[optionKey] = JSON.parse(this.config[optionKey]);
-            }
-          }
+          parseJsonOptions(this.config);
 
           // Populate default values from tabs options
           this.tabs.forEach(tab => {
@@ -334,7 +391,7 @@
         this.$forceUpdate()
       },
       serialize() {
-        return structuredClone(toRaw(this.config));
+        return cleanConfigForSave(structuredClone(toRaw(this.config)));
       },
       save() {
         this.saved = false;
@@ -383,7 +440,17 @@
               headers: {
                 "Content-Type": "application/json"
               }
-            });
+            })
+              .then((resp) => {
+                if (resp.status !== 200) {
+                  location.reload();
+                }
+              })
+              .catch((e) => {
+                // The server drops the connection while it restarts.
+                console.error(e);
+                setTimeout(() => location.reload(), 1000);
+              });
           }
         });
       },

@@ -243,7 +243,7 @@ watch(
     </div>
 
     <!-- Always send scancodes -->
-    <Checkbox v-if="config.keyboard === 'enabled' && platform === 'windows'"
+    <Checkbox v-if="config.keyboard === 'enabled' && (platform === 'windows' || platform === 'linux')"
               class="mb-3"
               id="always_send_scancodes"
               locale-prefix="config"
@@ -346,6 +346,24 @@ watch(
               id="native_pen_touch"
               locale-prefix="config"
               v-model="config.native_pen_touch"
+              default="true"
+    ></Checkbox>
+
+    <hr>
+    <!-- Enable Input Only Mode -->
+    <Checkbox class="mb-3"
+              id="enable_input_only_mode"
+              locale-prefix="config"
+              v-model="config.enable_input_only_mode"
+              default="false"
+    ></Checkbox>
+
+    <!-- Forward rumble to clients -->
+    <Checkbox v-if="platform === 'windows' || platform === 'linux'"
+              class="mb-3"
+              id="forward_rumble"
+              locale-prefix="config"
+              v-model="config.forward_rumble"
               default="true"
     ></Checkbox>
   </div>

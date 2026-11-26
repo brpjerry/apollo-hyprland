@@ -121,8 +121,9 @@
       </div>
     </div>
 
-    <!-- Resources -->
+    <!-- Clients and resources -->
     <div class="my-4">
+      <Client-Card class="mb-4"></Client-Card>
       <Resource-Card :installed-version-not-stable="installedVersionNotStable"></Resource-Card>
     </div>
   </div>
@@ -131,8 +132,10 @@
 <script>
   import { marked } from 'marked'
   import Navbar from './Navbar.vue'
+  import ClientCard from './ClientCard.vue'
   import ResourceCard from './ResourceCard.vue'
-  import SunshineVersion from './sunshine_version'
+  import SunshineVersion, { fetchReleaseVersions } from './sunshine_version'
+  import { apiFetch } from './fetch_utils'
   import {
     AlertCircle,
     AlertTriangle,
@@ -154,10 +157,11 @@
     sanitize: false
   });
 
-  console.log("Hello, Sunshine!")
+  console.log("Hello, Apollo!")
   export default {
     components: {
       Navbar,
+      ClientCard,
       ResourceCard,
       AlertCircle,
       AlertTriangle,
@@ -188,28 +192,33 @@
     },
     async created() {
       try {
-        let config = await fetch("./api/config").then((r) => r.json());
+        let config = await apiFetch("./api/config").then((r) => r.json());
         this.notifyPreReleases = config.notify_pre_releases;
         this.platform = config.platform;
         this.controllerEnabled = config.controller !== "disabled";
         this.gamepadDriver = config.gamepad_driver || '';
         this.version = new SunshineVersion(null, config.version);
         try {
-          const response = await fetch('./api/permissions');
+          const response = await apiFetch('./api/permissions');
           this.permissions = (await response.json()).permissions || [];
         } catch (e) {
           console.error('Failed to fetch permission status:', e);
         }
         console.log("Version: ", this.version.version)
-        this.githubVersion = new SunshineVersion(await fetch("https://api.github.com/repos/SunshineStream/Sunshine/releases/latest").then((r) => r.json()), null);
-        console.log("GitHub Version: ", this.githubVersion.version)
-        this.preReleaseVersion = new SunshineVersion((await fetch("https://api.github.com/repos/SunshineStream/Sunshine/releases").then((r) => r.json())).find(release => release.prerelease), null);
-        console.log("Pre-Release Version: ", this.preReleaseVersion.version)
+        try {
+          const releases = await fetchReleaseVersions();
+          this.githubVersion = releases.stable;
+          this.preReleaseVersion = releases.preRelease;
+          console.log("GitHub Version: ", this.githubVersion?.version)
+          console.log("Pre-Release Version: ", this.preReleaseVersion?.version)
+        } catch (e) {
+          console.error("Failed to check the latest Apollo release:", e);
+        }
 
         // Read the broker version on both platforms to identify development builds.
         if (this.platform === 'windows' || this.platform === 'macos') {
           try {
-            const virtualInputStatus = await fetch("./api/virtual-input/status").then((r) => r.json());
+            const virtualInputStatus = await apiFetch("./api/virtual-input/status").then((r) => r.json());
             this.virtualhid = virtualInputStatus.virtualhid;
             if (this.platform === 'windows') {
               this.vigembus = virtualInputStatus.vigembus;
@@ -220,7 +229,7 @@
         }
         if (this.platform === 'windows' || this.platform === 'macos') {
           try {
-            this.virtualhidLicense = await fetch("./api/virtual-input/license").then((r) => r.json());
+            this.virtualhidLicense = await apiFetch("./api/virtual-input/license").then((r) => r.json());
           } catch (e) {
             console.error("Failed to fetch Virtual HID Broker license status:", e);
           }
@@ -229,7 +238,7 @@
         console.error(e);
       }
       try {
-        this.logs = (await fetch("./api/logs").then(r => r.text()))
+        this.logs = (await apiFetch("./api/logs").then(r => r.text()))
       } catch (e) {
         console.error(e);
       }

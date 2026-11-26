@@ -1,10 +1,13 @@
 <script setup>
 import Checkbox from '../../Checkbox.vue'
 import { ref } from 'vue'
+import { apolloWikiPage } from '../../links'
 import {
   Play,
   Plus,
   Shield,
+  Tag,
+  Terminal,
   Trash2,
   Undo,
 } from '@lucide/vue'
@@ -15,21 +18,48 @@ const props = defineProps({
 })
 const config = ref(props.config)
 
-function addCmd() {
-  let template = {
-    do: "",
-    undo: "",
-  };
+/** Global command lists edited as do/undo tables (Apollo adds the resume/pause "state" commands). */
+const commandTypes = ['prep', 'state']
+const serverCommandsWiki = apolloWikiPage('Server-Commands')
 
-  if (props.platform === 'windows') {
-    template = { ...template, elevated: false };
+/**
+ * @brief Whether commands can be marked to run elevated on this platform.
+ *
+ * @return {boolean} True on Windows and Linux.
+ */
+function canElevate() {
+  return props.platform === 'windows' || props.platform === 'linux'
+}
+
+/**
+ * @brief Insert an empty command into a list.
+ *
+ * @param {string} optionKey Config option holding the list.
+ * @param {object} template Empty command.
+ * @param {number} [index] Insert position; appended when omitted.
+ */
+function addCmd(optionKey, template, index) {
+  const entry = { ...template }
+  if (canElevate()) {
+    entry.elevated = false
   }
-  config.value.global_prep_cmd.push(template);
+  config.value[optionKey] ??= []
+  const commands = config.value[optionKey]
+  commands.splice(index ?? commands.length, 0, entry)
 }
 
-function removeCmd(index) {
-  config.value.global_prep_cmd.splice(index,1)
+/**
+ * @brief Remove a command from a list.
+ *
+ * @param {string} optionKey Config option holding the list.
+ * @param {number} index Command position.
+ */
+function removeCmd(optionKey, index) {
+  config.value[optionKey].splice(index, 1)
 }
+
+const prepCmdTemplate = { do: '', undo: '' }
+const serverCmdTemplate = { name: '', cmd: '' }
 </script>
 
 <template>
@@ -64,10 +94,10 @@ function removeCmd(index) {
       <div class="form-text">{{ $t('config.locale_desc') }}</div>
     </div>
 
-    <!-- Sunshine Name -->
+    <!-- Apollo Name -->
     <div class="mb-3">
       <label for="sunshine_name" class="form-label">{{ $t('config.sunshine_name') }}</label>
-      <input type="text" class="form-control" id="sunshine_name" placeholder="Sunshine"
+      <input type="text" class="form-control" id="sunshine_name" placeholder="Apollo"
              v-model="config.sunshine_name" />
       <div class="form-text">{{ $t('config.sunshine_name_desc') }}</div>
     </div>
@@ -87,53 +117,133 @@ function removeCmd(index) {
       <div class="form-text">{{ $t('config.min_log_level_desc') }}</div>
     </div>
 
-    <!-- Global Prep Commands -->
-    <div id="global_prep_cmd" class="mb-3 d-flex flex-column">
-      <div class="form-label">{{ $t('config.global_prep_cmd') }}</div>
-      <div class="form-text">{{ $t('config.global_prep_cmd_desc') }}</div>
-      <table class="table" v-if="config.global_prep_cmd.length > 0">
+    <!-- Global Prep and Resume/Pause Commands -->
+    <div v-for="type in commandTypes" :key="type" :id="`global_${type}_cmd`" class="mb-3 d-flex flex-column">
+      <div class="form-label">{{ $t(`config.global_${type}_cmd`) }}</div>
+      <div class="form-text pre-wrap">{{ $t(`config.global_${type}_cmd_desc`) }}</div>
+      <table class="table" v-if="config[`global_${type}_cmd`]?.length > 0">
         <thead>
         <tr>
           <th scope="col"><Play :size="16" /> {{ $t('_common.do_cmd') }}</th>
           <th scope="col"><Undo :size="16" /> {{ $t('_common.undo_cmd') }}</th>
-          <th scope="col" v-if="platform === 'windows'">
+          <th scope="col" v-if="canElevate()">
             <Shield :size="16" /> {{ $t('_common.run_as') }}
           </th>
           <th scope="col"></th>
         </tr>
         </thead>
         <tbody>
-        <tr v-for="(c, i) in config.global_prep_cmd" :key="i">
+        <tr v-for="(c, i) in config[`global_${type}_cmd`]" :key="i">
           <td>
-            <label :for="`prep-cmd-do-${i}`" class="visually-hidden">{{ $t('_common.do_cmd') }}</label>
-            <input :id="`prep-cmd-do-${i}`" type="text" class="form-control monospace" v-model="c.do" />
+            <label :for="`${type}-cmd-do-${i}`" class="visually-hidden">{{ $t('_common.do_cmd') }}</label>
+            <input :id="`${type}-cmd-do-${i}`" type="text" class="form-control monospace" v-model="c.do" />
           </td>
           <td>
-            <label :for="`prep-cmd-undo-${i}`" class="visually-hidden">{{ $t('_common.undo_cmd') }}</label>
-            <input :id="`prep-cmd-undo-${i}`" type="text" class="form-control monospace" v-model="c.undo" />
+            <label :for="`${type}-cmd-undo-${i}`" class="visually-hidden">{{ $t('_common.undo_cmd') }}</label>
+            <input :id="`${type}-cmd-undo-${i}`" type="text" class="form-control monospace" v-model="c.undo" />
           </td>
-          <td v-if="platform === 'windows'" class="align-middle">
-            <Checkbox :id="'prep-cmd-admin-' + i"
+          <td v-if="canElevate()" class="align-middle">
+            <Checkbox :id="`${type}-cmd-admin-${i}`"
                       label="_common.elevated"
                       desc=""
+                      default="false"
                       v-model="c.elevated"
             ></Checkbox>
           </td>
-          <td>
-            <button class="btn btn-danger" @click="removeCmd(i)">
+          <td class="text-end text-nowrap">
+            <button class="btn btn-danger me-2" @click="removeCmd(`global_${type}_cmd`, i)">
               <Trash2 :size="16" />
             </button>
-            <button class="btn btn-success" @click="addCmd">
+            <button class="btn btn-success" @click="addCmd(`global_${type}_cmd`, prepCmdTemplate, i + 1)">
               <Plus :size="16" />
             </button>
           </td>
         </tr>
         </tbody>
       </table>
-      <button class="ms-0 mt-2 btn btn-success" style="margin: 0 auto" @click="addCmd">
+      <button class="ms-0 mt-2 btn btn-success" style="margin: 0 auto" @click="addCmd(`global_${type}_cmd`, prepCmdTemplate)">
         &plus; {{ $t('config.add') }}
       </button>
     </div>
+
+    <!-- Server Commands -->
+    <div id="server_cmd" class="mb-3 d-flex flex-column">
+      <div class="form-label">{{ $t('config.server_cmd') }}</div>
+      <div class="form-text pre-wrap">{{ $t('config.server_cmd_desc') }}</div>
+      <div class="form-text">
+        <a :href="serverCommandsWiki" target="_blank" rel="noopener noreferrer">{{ $t('_common.learn_more') }}</a>
+      </div>
+      <table class="table" v-if="config.server_cmd?.length > 0">
+        <thead>
+        <tr>
+          <th scope="col"><Tag :size="16" /> {{ $t('_common.cmd_name') }}</th>
+          <th scope="col"><Terminal :size="16" /> {{ $t('_common.cmd_val') }}</th>
+          <th scope="col" v-if="canElevate()">
+            <Shield :size="16" /> {{ $t('_common.run_as') }}
+          </th>
+          <th scope="col"></th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr v-for="(c, i) in config.server_cmd" :key="i">
+          <td>
+            <label :for="`server-cmd-name-${i}`" class="visually-hidden">{{ $t('_common.cmd_name') }}</label>
+            <input :id="`server-cmd-name-${i}`" type="text" class="form-control" v-model="c.name" />
+          </td>
+          <td>
+            <label :for="`server-cmd-cmd-${i}`" class="visually-hidden">{{ $t('_common.cmd_val') }}</label>
+            <input :id="`server-cmd-cmd-${i}`" type="text" class="form-control monospace" v-model="c.cmd" />
+          </td>
+          <td v-if="canElevate()" class="align-middle">
+            <Checkbox :id="`server-cmd-admin-${i}`"
+                      label="_common.elevated"
+                      desc=""
+                      default="false"
+                      v-model="c.elevated"
+            ></Checkbox>
+          </td>
+          <td class="text-end text-nowrap">
+            <button class="btn btn-danger me-2" @click="removeCmd('server_cmd', i)">
+              <Trash2 :size="16" />
+            </button>
+            <button class="btn btn-success" @click="addCmd('server_cmd', serverCmdTemplate, i + 1)">
+              <Plus :size="16" />
+            </button>
+          </td>
+        </tr>
+        </tbody>
+      </table>
+      <button class="ms-0 mt-2 btn btn-success" style="margin: 0 auto" @click="addCmd('server_cmd', serverCmdTemplate)">
+        &plus; {{ $t('config.add') }}
+      </button>
+    </div>
+
+    <!-- Elevation method (Linux) -->
+    <div class="mb-3" v-if="platform === 'linux'">
+      <label for="elevation_method" class="form-label">{{ $t('config.elevation_method') }}</label>
+      <select id="elevation_method" class="form-select" v-model="config.elevation_method">
+        <option value="pkexec">{{ $t('config.elevation_method_pkexec') }}</option>
+        <option value="sudo">{{ $t('config.elevation_method_sudo') }}</option>
+        <option value="terminal">{{ $t('config.elevation_method_terminal') }}</option>
+      </select>
+      <div class="form-text pre-wrap">{{ $t('config.elevation_method_desc') }}</div>
+    </div>
+
+    <!-- Enable Pairing -->
+    <Checkbox class="mb-3"
+              id="enable_pairing"
+              locale-prefix="config"
+              v-model="config.enable_pairing"
+              default="true"
+    ></Checkbox>
+
+    <!-- Enable Discovery -->
+    <Checkbox class="mb-3"
+              id="enable_discovery"
+              locale-prefix="config"
+              v-model="config.enable_discovery"
+              default="true"
+    ></Checkbox>
 
     <!-- Notify Pre-Releases -->
     <Checkbox class="mb-3"
@@ -149,6 +259,14 @@ function removeCmd(index) {
               locale-prefix="config"
               v-model="config.system_tray"
               default="true"
+    ></Checkbox>
+
+    <!-- Hide Tray Controls -->
+    <Checkbox class="mb-3"
+              id="hide_tray_controls"
+              locale-prefix="config"
+              v-model="config.hide_tray_controls"
+              default="false"
     ></Checkbox>
   </div>
 </template>

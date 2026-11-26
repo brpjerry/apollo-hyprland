@@ -2999,3 +2999,8 @@ p {
         bottom: var(--spacing-sm);
     }
 }
+
+/** @brief Keep the line breaks of multi-line help texts (Apollo). */
+.pre-wrap {
+  white-space: pre-wrap;
+}

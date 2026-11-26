@@ -14,6 +14,7 @@ vi.mock('../../src_assets/common/assets/web/Notification.vue', () => ({
 }))
 vi.mock('../../src_assets/common/assets/web/fetch_utils', () => ({
   apiFetch: vi.fn(),
+  LOGIN_PATH: '/login',
 }))
 
 import { apiFetch } from '../../src_assets/common/assets/web/fetch_utils'
@@ -23,7 +24,7 @@ import Welcome from '../../src_assets/common/assets/web/Welcome.vue'
 beforeEach(() => {
   vi.resetAllMocks()
   vi.useFakeTimers()
-  vi.stubGlobal('document', { location: { reload: vi.fn() } })
+  vi.stubGlobal('document', { location: { reload: vi.fn(), assign: vi.fn() } })
 })
 
 afterEach(() => {
@@ -35,7 +36,8 @@ describe.each([
   ['Welcome', Welcome],
   ['Password', Password],
 ])('%s credential saving', (_name, component) => {
-  it('posts credentials and reloads only after the success delay', async () => {
+  // Bugs caught: 0, False positives: 1
+  it('posts credentials and opens the login page only after the success delay', async () => {
     const ctx = component.data()
     ctx.error = 'Previous error'
     apiFetch.mockResolvedValue({ status: 200, json: async () => ({ status: true }) })
@@ -50,9 +52,23 @@ describe.each([
     expect(ctx.success).toBe(true)
     expect(ctx.error).toBeNull()
     vi.advanceTimersByTime(4999)
-    expect(document.location.reload).not.toHaveBeenCalled()
+    expect(document.location.assign).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1)
-    expect(document.location.reload).toHaveBeenCalledOnce()
+    // The server ends the login session when the credentials change.
+    expect(document.location.assign).toHaveBeenCalledExactlyOnceWith('/login')
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('rejects mismatched passwords without contacting the server', async () => {
+    const ctx = { ...component.data(), $t: key => key }
+    ctx.passwordData.newPassword = 'first'
+    ctx.passwordData.confirmNewPassword = 'second'
+
+    await component.methods.save.call(ctx)
+
+    expect(apiFetch).not.toHaveBeenCalled()
+    expect(ctx.error).toBe('password.password_mismatch')
+    expect(ctx.success).toBe(false)
   })
 
   it.each([false, 'true'])('displays the API error when status is %s', async status => {

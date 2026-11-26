@@ -8,7 +8,13 @@
       "min_log_level": 2,
       "global_prep_cmd": [],
       "notify_pre_releases": "disabled",
-      "system_tray": "enabled"
+      "system_tray": "enabled",
+      "global_state_cmd": [],
+      "server_cmd": [],
+      "elevation_method": "pkexec",
+      "enable_pairing": "enabled",
+      "enable_discovery": "enabled",
+      "hide_tray_controls": "disabled"
     }
   },
   {
@@ -31,7 +37,9 @@
       "mouse": "enabled",
       "high_resolution_scrolling": "enabled",
       "native_pen_touch": "enabled",
-      "keybindings": "[0x10,0xA0,0x11,0xA2,0x12,0xA4]"
+      "keybindings": "[0x10,0xA0,0x11,0xA2,0x12,0xA4]",
+      "enable_input_only_mode": "disabled",
+      "forward_rumble": "enabled"
     }
   },
   {
@@ -61,7 +69,13 @@
       },
       "max_bitrate": 0,
       "max_stream_resolution": "",
-      "minimum_fps_target": 0
+      "minimum_fps_target": 0,
+      "keep_sink_default": "enabled",
+      "auto_capture_sink": "enabled",
+      "fallback_mode": "",
+      "headless_mode": "disabled",
+      "double_refreshrate": "disabled",
+      "isolated_virtual_display_option": "disabled"
     }
   },
   {
@@ -107,7 +121,11 @@
       "h263p_mode": 0,
       "capture": "",
       "fp16_sdr_gamma_encoded": "disabled",
-      "encoder": ""
+      "encoder": "",
+      "limit_framerate": "enabled",
+      "envvar_compatibility_mode": "disabled",
+      "legacy_ordering": "disabled",
+      "ignore_encoder_probe_failure": "disabled"
     }
   },
   {
@@ -122,7 +140,8 @@
       "nvenc_split_encode": "driver_decides",
       "nvenc_latency_over_power": "enabled",
       "nvenc_opengl_vulkan_on_dxgi": "enabled",
-      "nvenc_h264_cavlc": "disabled"
+      "nvenc_h264_cavlc": "disabled",
+      "nvenc_intra_refresh": "disabled"
     }
   },
   {

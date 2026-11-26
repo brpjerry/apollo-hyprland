@@ -34,14 +34,21 @@ afterEach(() => {
 })
 
 describe('externally managed audio configuration', () => {
+  // Bugs caught: 0, False positives: 1
   it('renders after the existing Windows audio controls and preserves its saved value', async () => {
     const { wrapper, config } = mountAudioVideo('windows')
     expect(wrapper.findAll('input').map(input => input.attributes('id'))).toEqual([
       'audio_sink',
       'virtual_sink',
       'install_steam_audio_drivers',
+      'keep_sink_default',
+      'auto_capture_sink',
       'stream_audio',
       'external_audio',
+      'fallback_mode',
+      'headless_mode',
+      'double_refreshrate',
+      'isolated_virtual_display_option',
     ])
     expect(config.external_audio).toBe('disabled')
     expect(wrapper.get('#external_audio').element.checked).toBe(false)

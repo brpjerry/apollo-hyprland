@@ -49,6 +49,9 @@ function saveContext(imagePath) {
     editFormError: '',
     $refs: { editModal: { querySelector: () => modalBody } },
     $t: (key, _params) => key,
+    closeEditModal: vi.fn(),
+    loadApps: vi.fn(),
+    errorText: vi.fn(async () => 'error'),
     _modalBody: modalBody,
   }
 }
@@ -141,6 +144,7 @@ describe('save – cover image validation', () => {
     expect(apiFetch).not.toHaveBeenCalled()
   })
 
+  // Bugs caught: 0, False positives: 1
   it('accepts a valid .PNG path (mixed case) and submits', () => {
     const ctx = saveContext('/covers/cover.PnG')
 
@@ -154,6 +158,7 @@ describe('save – cover image validation', () => {
     )
   })
 
+  // Bugs caught: 0, False positives: 1
   it('submits when the image path is empty and leaves the letter cover as the default', () => {
     const ctx = saveContext('')
 
@@ -164,6 +169,7 @@ describe('save – cover image validation', () => {
     expect(apiFetch).toHaveBeenCalledOnce()
   })
 
+  // Bugs caught: 0, False positives: 1
   it('submits when the image path is missing', () => {
     const ctx = saveContext(null)
 
@@ -174,6 +180,7 @@ describe('save – cover image validation', () => {
     expect(apiFetch).toHaveBeenCalledOnce()
   })
 
+  // Bugs caught: 0, False positives: 1
   it('strips double quotes from the image path before validating', () => {
     const ctx = saveContext('""/covers/cover.png""')
 
@@ -205,6 +212,7 @@ function navigationContext(type = 'file') {
 }
 
 describe('fileBrowserNavigate', () => {
+  // Bugs caught: 0, False positives: 1
   it.each(['file', 'directory'])('loads a listing and updates the %s selection', async type => {
     const ctx = navigationContext(type)
     const entries = [{ name: 'cover.png', path: '/covers/cover.png', type: 'file' }]
@@ -228,6 +236,7 @@ describe('fileBrowserNavigate', () => {
     expect(ctx.fileBrowserLoading).toBe(false)
   })
 
+  // Bugs caught: 0, False positives: 1
   it.each(['file', 'directory'])('uses defaults for missing fields in a %s listing', async type => {
     const ctx = navigationContext(type)
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }))
@@ -243,6 +252,7 @@ describe('fileBrowserNavigate', () => {
     expect(ctx.fileBrowserLoading).toBe(false)
   })
 
+  // Bugs caught: 0, False positives: 1
   it.each([
     [{ error: 'Permission denied' }, 'Permission denied'],
     [{}, 'Browse failed'],
@@ -261,6 +271,7 @@ describe('fileBrowserNavigate', () => {
     expect(ctx.fileBrowserSelectedPath).toBe('/old/old.png')
   })
 
+  // Bugs caught: 0, False positives: 1
   it('displays network failures and clears the loading state', async () => {
     const ctx = navigationContext()
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network unavailable')))
@@ -272,6 +283,7 @@ describe('fileBrowserNavigate', () => {
     expect(ctx.fileBrowserCurrentPath).toBe('/old')
   })
 
+  // Bugs caught: 0, False positives: 1
   it.each([true, false])('displays invalid JSON errors when response.ok is %s', async ok => {
     const ctx = navigationContext()
     const json = vi.fn().mockRejectedValue(new Error('Invalid JSON'))

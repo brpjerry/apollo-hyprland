@@ -1,11 +1,9 @@
 import fs from 'node:fs';
 import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import process from 'node:process'
 
-const projectRoot = fileURLToPath(new URL('.', import.meta.url));
 let assetsSrcPath = 'src_assets/common/assets/web';
 let assetsDstPath = 'build/assets/web';
 
@@ -32,14 +30,27 @@ else {
     }
 }
 
+/**
+ * Images the C++ side loads from the built web directory: the tray icons (src/system_tray.cpp) and the favicon and
+ * logo that src/confighttp.cpp serves. They live in `public/images`, which Vite copies to `images/`.
+ */
+const requiredImages = [
+    'images/logo-apollo.svg',
+    'images/apollo-playing.svg',
+    'images/apollo-pausing.svg',
+    'images/apollo-locked.svg',
+    'images/apollo.ico',
+    'images/logo-apollo-45.png',
+];
+
 const emitTrayIconsPlugin = {
     name: 'emit-tray-icons',
     buildStart() {
-        this.emitFile({
-            type: 'asset',
-            fileName: 'images/logo-sunshine.svg',
-            source: fs.readFileSync(resolve(projectRoot, 'sunshine.svg')),
-        });
+        // Fail the build instead of shipping a server whose tray icons or logo are missing.
+        const missing = requiredImages.filter(image => !fs.existsSync(resolve(assetsSrcPath, 'public', image)));
+        if (missing.length > 0) {
+            this.error(`Missing images in ${resolve(assetsSrcPath, 'public')}: ${missing.join(', ')}`);
+        }
 
         const virtualHidIcon = process.env.SUNSHINE_LIBVIRTUALHID_ICON;
         if ((process.platform === 'win32' || process.platform === 'darwin') && virtualHidIcon) {

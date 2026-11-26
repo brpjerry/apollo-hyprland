@@ -366,19 +366,43 @@
         </div>
       </div>
     </div>
-    <!-- Restart Sunshine -->
+    <!-- Restart Apollo -->
     <div class="card my-4">
       <div class="card-body">
-        <h2 id="restart">{{ $t('troubleshooting.restart_sunshine') }}</h2>
-        <p>{{ $t('troubleshooting.restart_sunshine_desc') }}</p>
-        <div class="alert alert-success" v-if="restartPressed === true">
+        <h2 id="restart">{{ $t('troubleshooting.restart_apollo') }}</h2>
+        <p>{{ $t('troubleshooting.restart_apollo_desc') }}</p>
+        <div class="alert alert-success" v-if="serverRestarting">
           <check-circle :size="18" class="icon"></check-circle>
-          {{ $t('troubleshooting.restart_sunshine_success') }}
+          {{ $t('troubleshooting.restart_apollo_success') }}
         </div>
         <div>
-          <button class="btn btn-warning" :disabled="restartPressed" @click="restart">
+          <button class="btn btn-warning" :disabled="serverRestarting || serverQuitting" @click="restart">
             <refresh-cw :size="18" class="icon"></refresh-cw>
-            {{ $t('troubleshooting.restart_sunshine') }}
+            {{ $t('troubleshooting.restart_apollo') }}
+          </button>
+        </div>
+      </div>
+    </div>
+    <!-- Quit Apollo -->
+    <div class="card my-4">
+      <div class="card-body">
+        <h2 id="quit">{{ $t('troubleshooting.quit_apollo') }}</h2>
+        <p>{{ $t('troubleshooting.quit_apollo_desc') }}</p>
+        <div class="alert alert-success" v-if="serverQuit">
+          <check-circle :size="18" class="icon"></check-circle>
+          {{ $t('troubleshooting.quit_apollo_success') }}
+        </div>
+        <div class="alert alert-info" v-if="serverQuitting">
+          {{ $t('troubleshooting.quit_apollo_success_ongoing') }}
+        </div>
+        <div class="alert alert-danger" v-if="serverQuitFailed">
+          <alert-circle :size="18" class="icon"></alert-circle>
+          {{ $t('troubleshooting.quit_apollo_failed') }}
+        </div>
+        <div>
+          <button class="btn btn-danger" :disabled="serverRestarting || serverQuitting" @click="quit">
+            <power :size="18" class="icon"></power>
+            {{ $t('troubleshooting.quit_apollo') }}
           </button>
         </div>
       </div>
@@ -404,8 +428,8 @@
         </div>
       </div>
     </div>
-    <!-- Reset persistent display device settings -->
-    <div class="card my-4" v-if="platform === 'windows'">
+    <!-- Reset persistent display device settings (Windows: libdisplaydevice, Linux: Hyprland) -->
+    <div class="card my-4" v-if="platform === 'windows' || platform === 'linux'">
       <div class="card-body">
         <h2 id="dd_reset">{{ $t('troubleshooting.dd_reset') }}</h2>
         <p style="white-space: pre-line">{{ $t('troubleshooting.dd_reset_desc') }}</p>
@@ -425,53 +449,16 @@
         </div>
       </div>
     </div>
-    <!-- Unpair Clients -->
+    <!-- Paired clients moved to the pairing page -->
     <div class="card my-4">
       <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-          <h2 id="unpair" class="mb-0">{{ $t('troubleshooting.unpair_title') }}</h2>
-          <button class="btn btn-danger" :disabled="unpairAllPressed" @click="unpairAll">
-            <trash-2 :size="18" class="icon"></trash-2>
-            {{ $t('troubleshooting.unpair_all') }}
-          </button>
-        </div>
-        <p>{{ $t('troubleshooting.unpair_desc') }}</p>
-        <div class="alert alert-success d-flex align-items-center" v-if="showApplyMessage">
-          <check-circle :size="18" class="icon"></check-circle>
-          <div><b>{{ $t('_common.success') }}</b> {{ $t('troubleshooting.unpair_single_success') }}</div>
-          <button class="btn btn-success ms-auto" @click="clickedApplyBanner">{{ $t('_common.dismiss') }}</button>
-        </div>
-        <div class="alert alert-success" v-if="unpairAllStatus === true">
-          <check-circle :size="18" class="icon"></check-circle>
-          {{ $t('troubleshooting.unpair_all_success') }}
-        </div>
-        <div class="alert alert-danger" v-if="unpairAllStatus === false">
-          <alert-circle :size="18" class="icon"></alert-circle>
-          {{ $t('troubleshooting.unpair_all_error') }}
-        </div>
+        <h2 id="unpair">{{ $t('pin.device_management') }}</h2>
+        <p>{{ $t('pin.device_management_desc') }}</p>
+        <RouterLink class="btn btn-primary" to="/pin#clients">
+          <users :size="18" class="icon"></users>
+          {{ $t('troubleshooting.manage_clients') }}
+        </RouterLink>
       </div>
-      <ul class="list-group list-group-flush" v-if="clients && clients.length > 0">
-        <li v-for="client in clients" :key="client.uuid" class="list-group-item d-flex align-items-center">
-          <div class="flex-grow-1">
-            {{ client.name !== "" ? client.name : $t('troubleshooting.unpair_single_unknown') }}
-          </div>
-          <div class="form-check form-switch ms-2 mb-0">
-            <input class="form-check-input" type="checkbox" role="switch"
-                   :id="'toggle-' + client.uuid"
-                   :checked="client.enabled"
-                   :aria-checked="client.enabled.toString()"
-                   @change="toggleClient(client.uuid, !client.enabled)">
-          </div>
-          <button class="btn btn-danger btn-sm ms-2" @click="unpairSingle(client.uuid)">
-            <trash-2 :size="18" class="icon"></trash-2>
-          </button>
-        </li>
-      </ul>
-      <ul v-else class="list-group list-group-flush">
-        <li class="list-group-item p-3 text-center">
-          <em>{{ $t('troubleshooting.unpair_single_no_devices') }}</em>
-        </li>
-      </ul>
     </div>
     <!-- Logs -->
     <div class="card my-4">
@@ -537,12 +524,14 @@
       Gamepad2,
       KeyRound,
       MousePointer2,
+      Power,
       RefreshCw,
       RotateCcw,
       Search,
       ShieldCheck,
       Sparkles,
       Trash2,
+      Users,
       XCircle,
     } from '@lucide/vue'
 
@@ -566,17 +555,18 @@
         Gamepad2,
         KeyRound,
         MousePointer2,
+        Power,
         RefreshCw,
         RotateCcw,
         Search,
         ShieldCheck,
         Sparkles,
         Trash2,
+        Users,
         XCircle,
       },
       data() {
         return {
-          clients: [],
           closeAppPressed: false,
           closeAppStatus: null,
           ddResetPressed: false,
@@ -594,12 +584,12 @@
           permissionBusy: '',
           permissionError: '',
           permissionHelp: '',
-          restartPressed: false,
-          showApplyMessage: false,
+          serverRestarting: false,
+          serverQuitting: false,
+          serverQuit: false,
+          serverQuitFailed: false,
           platform: "",
           gamepadDriver: '',
-          unpairAllPressed: false,
-          unpairAllStatus: null,
           virtualhid: {
             installed: false,
             version: '',
@@ -805,7 +795,7 @@
       },
       created() {
         this._logsCopyTimeout = null;
-        fetch("/api/config")
+        apiFetch("/api/config")
           .then((r) => r.json())
           .then((r) => {
             this.platform = r.platform;
@@ -825,7 +815,6 @@
           if (this.platform) this.refreshPermissions();
         }, 5000);
         this.refreshLogs();
-        this.refreshClients();
       },
       beforeUnmount() {
         clearInterval(this.logInterval);
@@ -835,7 +824,7 @@
         /** Refresh the current platform's permission status. */
         async refreshPermissions() {
           try {
-            const response = await fetch('./api/permissions');
+            const response = await apiFetch('./api/permissions');
             if (!response.ok) throw new Error(this.$t('troubleshooting.permissions_error'));
             this.permissions = (await response.json()).permissions || [];
             this.permissionError = '';
@@ -864,11 +853,20 @@
           }
         },
         refreshLogs() {
-          fetch("./api/logs",)
-            .then((r) => r.text())
-            .then((r) => {
-              this.logs = r;
-            });
+          apiFetch("./api/logs")
+            .then((response) => {
+              // Decode with the charset the server declares (Windows hosts may not log in UTF-8).
+              const contentType = response.headers?.get?.("Content-Type") || "";
+              const charset = contentType.match(/charset=([^;]+)/i)?.[1]?.trim();
+              if (!charset || !response.arrayBuffer) {
+                return response.text();
+              }
+              return response.arrayBuffer().then((buffer) => new TextDecoder(charset).decode(buffer));
+            })
+            .then((text) => {
+              this.logs = text;
+            })
+            .catch((error) => console.error("Error fetching logs:", error));
         },
         closeApp() {
           this.closeAppPressed = true;
@@ -885,63 +883,6 @@
                 this.closeAppStatus = null;
               }, 5000);
             });
-        },
-        unpairAll() {
-          this.unpairAllPressed = true;
-          apiFetch("./api/clients/unpair-all", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            }
-           })
-            .then((r) => r.json())
-            .then((r) => {
-              this.unpairAllPressed = false;
-              this.unpairAllStatus = r.status;
-              setTimeout(() => {
-                this.unpairAllStatus = null;
-              }, 5000);
-              this.refreshClients();
-            });
-        },
-        unpairSingle(uuid) {
-          apiFetch("./api/clients/unpair", {
-            method: "POST",
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ uuid })
-          }).then(() => {
-            this.showApplyMessage = true;
-            this.refreshClients();
-          });
-        },
-        toggleClient(uuid, enabled) {
-          fetch("./api/clients/update", {
-            method: "POST",
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ uuid, enabled })
-          }).then(() => {
-            this.refreshClients();
-          });
-        },
-        refreshClients() {
-          fetch("./api/clients/list")
-            .then((response) => response.json())
-            .then((response) => {
-              if (response.status === true && response.named_certs && response.named_certs.length) {
-                this.clients = response.named_certs.sort((a, b) => {
-                  return (a.name.toLowerCase() > b.name.toLowerCase() || a.name === "" ? 1 : -1)
-                });
-              } else {
-                this.clients = [];
-              }
-            });
-        },
-        clickedApplyBanner() {
-          this.showApplyMessage = false;
         },
         copyLogs() {
           // Copy the filtered view if a filter is active.
@@ -961,16 +902,53 @@
           });
         },
         restart() {
-          this.restartPressed = true;
+          this.serverRestarting = true;
           setTimeout(() => {
-            this.restartPressed = false;
+            this.serverRestarting = false;
           }, 5000);
           apiFetch("./api/restart", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
             }
-          });
+          })
+            .then((resp) => {
+              if (resp.status !== 200) {
+                setTimeout(() => location.reload(), 1000);
+              }
+            })
+            .catch((e) => {
+              // The server drops the connection while it restarts.
+              this.serverRestarting = false;
+              console.error(e);
+              setTimeout(() => location.reload(), 1000);
+            });
+        },
+        /**
+         * @brief Stop Apollo after confirmation. The request only completes if the exit failed.
+         *
+         * @return {Promise<void>} Completion of the request.
+         */
+        async quit() {
+          if (!globalThis.confirm(this.$t('troubleshooting.quit_apollo_confirm'))) {
+            return;
+          }
+          this.serverQuitting = true;
+          this.serverQuitFailed = false;
+          try {
+            await apiFetch("./api/quit", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              }
+            });
+            this.serverQuitFailed = true;
+          } catch (e) {
+            // The server exits without answering.
+            this.serverQuit = true;
+          } finally {
+            this.serverQuitting = false;
+          }
         },
         resetPortalToken() {
           this.portalResetPressed = true;
@@ -1084,7 +1062,7 @@
             });
         },
         refreshVirtualInputStatus() {
-          fetch("/api/virtual-input/status")
+          apiFetch("/api/virtual-input/status")
             .then((r) => r.json())
             .then((r) => {
               const virtualhid = r.virtualhid || {};
@@ -1216,7 +1194,7 @@
         refreshLicenseStatus() {
           this.licenseBusy = true;
           this.licenseError = '';
-          fetch("/api/virtual-input/license")
+          apiFetch("/api/virtual-input/license")
             .then(async (response) => {
               const status = await response.json();
               if (!response.ok) {

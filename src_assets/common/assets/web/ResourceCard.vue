@@ -2,22 +2,23 @@
     <div class="card">
         <div class="card-body">
             <h2>{{ $t('resource_card.resources') }}</h2>
+            <p>{{ $t('resource_card.resources_desc') }}</p>
             <div class="d-flex flex-wrap gap-2 mt-4">
-                <a class="btn btn-success" href="https://app.lizardbyte.dev" target="_blank">
-                  <Globe :size="18" class="icon"></Globe>
-                  {{ $t('resource_card.lizardbyte_website') }}
-                </a>
-                <a class="btn btn-info" :href="documentationUrl" target="_blank">
+                <a class="btn btn-info" :href="links.documentation" target="_blank" rel="noopener noreferrer">
                   <BookOpen :size="18" class="icon"></BookOpen>
                   {{ $t('resource_card.documentation') }}
                 </a>
-                <a class="btn btn-primary" href="https://app.lizardbyte.dev/discord" target="_blank">
-                  <SimpleIcon icon="Discord" :size="18" class="icon"></SimpleIcon>
-                  Discord
-                </a>
-                <a class="btn btn-secondary" href="https://github.com/orgs/LizardByte/discussions" target="_blank">
+                <a class="btn btn-secondary" :href="links.repository" target="_blank" rel="noopener noreferrer">
                   <SimpleIcon icon="GitHub" :size="18" class="icon"></SimpleIcon>
-                  {{ $t('resource_card.github_discussions') }}
+                  {{ $t('resource_card.github_repository') }}
+                </a>
+                <a class="btn btn-secondary" :href="links.wiki" target="_blank" rel="noopener noreferrer">
+                  <SimpleIcon icon="GitHub" :size="18" class="icon"></SimpleIcon>
+                  {{ $t('resource_card.github_wiki') }}
+                </a>
+                <a class="btn btn-secondary" :href="links.stutteringClinic" target="_blank" rel="noopener noreferrer">
+                  <SimpleIcon icon="GitHub" :size="18" class="icon"></SimpleIcon>
+                  {{ $t('resource_card.github_stuttering_clinic') }}
                 </a>
             </div>
         </div>
@@ -28,13 +29,11 @@
             <h2>{{ $t('resource_card.legal') }}</h2>
             <p>{{ $t('resource_card.legal_desc') }}</p>
             <div class="d-flex flex-wrap gap-2 mt-4">
-                <a class="btn btn-danger" href="https://github.com/SunshineStream/Sunshine/blob/master/LICENSE"
-                    target="_blank">
+                <a class="btn btn-danger" :href="links.license" target="_blank" rel="noopener noreferrer">
                   <FileText :size="18" class="icon"></FileText>
                   {{ $t('resource_card.license') }}
                 </a>
-                <a class="btn btn-danger" href="https://github.com/SunshineStream/Sunshine/blob/master/NOTICE"
-                    target="_blank">
+                <a class="btn btn-danger" :href="links.notice" target="_blank" rel="noopener noreferrer">
                   <AlertCircle :size="18" class="icon"></AlertCircle>
                   {{ $t('resource_card.third_party_notice') }}
                 </a>
@@ -48,12 +47,13 @@ import {
   AlertCircle,
   BookOpen,
   FileText,
-  Globe,
 } from '@lucide/vue'
 import SimpleIcon from './SimpleIcon.vue'
+import { APOLLO_WIKI_URL, FORK_URL, apolloWikiPage, forkFile } from './links'
 
 export default {
   props: {
+    // Kept for callers that pass it; the fork documents one version only.
     installedVersionNotStable: {
       type: Boolean,
       default: false
@@ -64,13 +64,18 @@ export default {
     AlertCircle,
     BookOpen,
     FileText,
-    Globe,
   },
-  computed: {
-    documentationUrl() {
-      const docsVersion = this.installedVersionNotStable ? 'master' : 'latest'
-      return `https://docs.lizardbyte.dev/projects/sunshine/${docsVersion}/`
+  data() {
+    return {
+      links: {
+        documentation: `${FORK_URL}#readme`,
+        repository: FORK_URL,
+        wiki: APOLLO_WIKI_URL,
+        stutteringClinic: apolloWikiPage('Stuttering-Clinic'),
+        license: forkFile('LICENSE'),
+        notice: forkFile('NOTICE'),
+      },
     }
-  }
+  },
 }
 </script>
