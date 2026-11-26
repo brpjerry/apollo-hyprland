@@ -1540,19 +1540,19 @@ namespace platf {
       for (auto &card_descriptor : cds) {
         for (auto &[_, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
           if (monitor_descriptor.index == index && monitor_descriptor.type == type) {
-            monitor_descriptor.viewport.offset_x = monitor->viewport.offset_x;
-            monitor_descriptor.viewport.offset_y = monitor->viewport.offset_y;
+            monitor_descriptor.viewport.offset_x = monitor->geometry.logical_x;
+            monitor_descriptor.viewport.offset_y = monitor->geometry.logical_y;
 
             // A sanity check, it's guesswork after all.
             if (
-              monitor_descriptor.viewport.width != monitor->viewport.width ||
-              monitor_descriptor.viewport.height != monitor->viewport.height
+              monitor_descriptor.viewport.width != monitor->geometry.mode_width ||
+              monitor_descriptor.viewport.height != monitor->geometry.mode_height
             ) {
               BOOST_LOG(warning)
                 << "Mismatch on expected Resolution compared to actual resolution: "sv
                 << monitor_descriptor.viewport.width << 'x' << monitor_descriptor.viewport.height
                 << " vs "sv
-                << monitor->viewport.width << 'x' << monitor->viewport.height;
+                << monitor->geometry.mode_width << 'x' << monitor->geometry.mode_height;
             }
 
             BOOST_LOG(info) << "Monitor " << monitor_descriptor.monitor_index << " is "sv << name << ": "sv << monitor->description;

@@ -9,6 +9,9 @@
 #include <inputtino/input.hpp>
 #include <libevdev/libevdev.h>
 
+// standard includes
+#include <functional>
+
 // local includes
 #include "inputtino_common.h"
 #include "src/platform/common.h"
@@ -22,6 +25,11 @@ namespace platf::gamepad {
     DualSenseWired,  ///< DualSense Wired Controller
     SwitchProWired  ///< Switch Pro Wired Controller
   };
+
+  /**
+   * @brief The rumble callback for a virtual pad: forwards changed rumble to the client when forward_rumble is on.
+   */
+  std::function<void(int, int)> rumble_handler(feedback_queue_t feedback_queue, std::uint16_t idx, std::shared_ptr<joypad_state> gamepad);
 
   int alloc(input_raw_t *raw, const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t feedback_queue);
 

@@ -8,6 +8,7 @@
 // standard includes
 #include <filesystem>
 #include <format>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <string>
@@ -30,6 +31,7 @@
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "platform/vdisplay.h"
 #include "process.h"
 #include "rtsp.h"
 #include "stream.h"
@@ -38,10 +40,6 @@
 #include "uuid.h"
 #include "video.h"
 #include "zwpad.h"
-
-#ifdef _WIN32
-  #include "platform/windows/virtual_display.h"
-#endif
 
 using namespace std::literals;
 
@@ -148,6 +146,9 @@ namespace nvhttp {
 
   // uniqueID, session
   std::unordered_map<std::string, pair_session_t> map_id_sess;
+  /// Guards map_id_sess and the one-time PIN state. Recursive: pair() holds it across a whole request and calls
+  /// helpers (remove_session, start_pair_session) that take it too.
+  std::recursive_mutex pair_mutex;
   client_t client_root;
   std::atomic<uint32_t> session_id_counter;
 
@@ -471,7 +472,17 @@ namespace nvhttp {
   }
 
   void remove_session(const pair_session_t &sess) {
+    std::lock_guard lock {pair_mutex};
     map_id_sess.erase(sess.client.uniqueID);
+  }
+
+  pair_session_t &start_pair_session(pair_session_t &&sess) {
+    // A client that starts pairing again (the user retried, or a second host entry for this server) gets a
+    // fresh session. Reusing its unfinished one would make the next PIN an out-of-order getservercert.
+    std::lock_guard lock {pair_mutex};
+    sess.started = std::chrono::steady_clock::now();
+    auto key = sess.client.uniqueID;
+    return map_id_sess.insert_or_assign(std::move(key), std::move(sess)).first->second;
   }
 
   void fail_pair(pair_session_t &sess, pt::ptree &tree, const std::string status_msg) {
@@ -636,15 +647,13 @@ namespace nvhttp {
       named_cert_p->allow_client_commands = true;
       named_cert_p->always_use_virtual_display = false;
 
-      auto it = map_id_sess.find(client.uniqueID);
-      map_id_sess.erase(it);
-
       add_authorized_client(named_cert_p);
     } else {
       tree.put("root.paired", 0);
       BOOST_LOG(warning) << "Pair attempt failed due to same_hash: " << same_hash << ", verify: " << verify;
     }
 
+    // The session is finished either way. This frees `sess`, so it comes last.
     remove_session(sess);
     tree.put("root.<xmlattr>.status_code", 200);
   }
@@ -714,6 +723,10 @@ namespace nvhttp {
       response->close_connection_after_response = true;
     });
 
+    // Held for the whole request (except while reading a console PIN); declared after the fail guard, so the reply is
+    // written after it is released.
+    std::unique_lock lock {pair_mutex};
+
     if (!config::sunshine.enable_pairing) {
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", "Pairing is disabled for this instance");
@@ -747,11 +760,26 @@ namespace nvhttp {
         sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
 
         BOOST_LOG(debug) << sess.client.cert;
-        auto ptr = map_id_sess.emplace(sess.client.uniqueID, std::move(sess)).first;
-
-        ptr->second.async_insert_pin.salt = std::move(get_arg(args, "salt"));
+        sess.async_insert_pin.salt = std::move(get_arg(args, "salt"));
 
         auto it = args.find("otpauth");
+        if (it == std::end(args) && config::sunshine.flags[config::flag::PIN_STDIN]) {
+          // The console prompt can wait forever: read it without pair_mutex, or every other pairing request, OTP and
+          // the session clear at shutdown would wait with it. The session is published once there is a PIN.
+          lock.unlock();
+          std::string pin;
+          {
+            static std::mutex prompt_mutex;
+            std::lock_guard prompt {prompt_mutex};
+            std::cout << "Please insert pin: "sv;
+            std::getline(std::cin, pin);
+          }
+          lock.lock();
+          getservercert(start_pair_session(std::move(sess)), tree, pin);
+          return;
+        }
+
+        auto &pair_sess = start_pair_session(std::move(sess));
         if (it != std::end(args)) {
           if (one_time_pin.empty() || (std::chrono::steady_clock::now() - otp_creation_time > OTP_EXPIRE_DURATION)) {
             one_time_pin.clear();
@@ -760,15 +788,15 @@ namespace nvhttp {
             tree.put("root.<xmlattr>.status_code", 503);
             tree.put("root.<xmlattr>.status_message", "OTP auth not available.");
           } else {
-            auto hash = util::hex(crypto::hash(one_time_pin + ptr->second.async_insert_pin.salt + otp_passphrase), true);
+            auto hash = util::hex(crypto::hash(one_time_pin + pair_sess.async_insert_pin.salt + otp_passphrase), true);
 
             if (hash.to_string_view() == it->second) {
 
               if (!otp_device_name.empty()) {
-                ptr->second.client.name = std::move(otp_device_name);
+                pair_sess.client.name = std::move(otp_device_name);
               }
 
-              getservercert(ptr->second, tree, one_time_pin);
+              getservercert(pair_sess, tree, one_time_pin);
 
               one_time_pin.clear();
               otp_passphrase.clear();
@@ -778,26 +806,17 @@ namespace nvhttp {
           }
 
           // Always return positive, attackers will fail in the next steps.
-          getservercert(ptr->second, tree, crypto::rand(16));
+          getservercert(pair_sess, tree, crypto::rand(16));
           return;
         }
 
-        if (config::sunshine.flags[config::flag::PIN_STDIN]) {
-          std::string pin;
-
-          std::cout << "Please insert pin: "sv;
-          std::getline(std::cin, pin);
-
-          getservercert(ptr->second, tree, pin);
-        } else {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-          system_tray::update_tray_require_pin();
+        system_tray::update_tray_require_pin();
 #endif
-          ptr->second.async_insert_pin.response = std::move(response);
+        pair_sess.async_insert_pin.response = std::move(response);
 
-          fg.disable();
-          return;
-        }
+        fg.disable();
+        return;
       } else if (it->second == "pairchallenge"sv) {
         tree.put("root.paired", 1);
         tree.put("root.<xmlattr>.status_code", 200);
@@ -830,6 +849,7 @@ namespace nvhttp {
 
   bool pin(std::string pin, std::string name) {
     pt::ptree tree;
+    std::lock_guard lock {pair_mutex};
     if (map_id_sess.empty()) {
       return false;
     }
@@ -853,18 +873,33 @@ namespace nvhttp {
       return false;
     }
 
-    auto &sess = std::begin(map_id_sess)->second;
-    getservercert(sess, tree, pin);
+    // The PIN belongs to the newest client still waiting for one: the pairing the user just started. A client that
+    // gave up leaves its session behind, and with several in the map begin() would pick one at random.
+    auto waiting = std::end(map_id_sess);
+    for (auto it = std::begin(map_id_sess); it != std::end(map_id_sess); ++it) {
+      if (it->second.last_phase == PAIR_PHASE::NONE && (waiting == std::end(map_id_sess) || it->second.started > waiting->second.started)) {
+        waiting = it;
+      }
+    }
+    if (waiting == std::end(map_id_sess)) {
+      return false;
+    }
 
+    auto &sess = waiting->second;
     if (!name.empty()) {
       sess.client.name = name;
     }
+
+    // getservercert() erases the session when it fails, so take the client's pending response out first
+    // and do not touch `sess` afterwards.
+    auto async_response = std::move(sess.async_insert_pin.response);
+    getservercert(sess, tree, pin);
+    const bool cert_sent = tree.get<int>("root.paired", 0) == 1;
 
     // response to the request for pin
     std::ostringstream data;
     pt::write_xml(data, tree);
 
-    auto &async_response = sess.async_insert_pin.response;
     if (async_response.has_left() && async_response.left()) {
       async_response.left()->write(data.str());
     } else if (async_response.has_right() && async_response.right()) {
@@ -873,10 +908,8 @@ namespace nvhttp {
       return false;
     }
 
-    // reset async_response
-    async_response = std::decay_t<decltype(async_response.left())>();
     // response to the current request
-    return true;
+    return cert_sent;
   }
 
   template<class T>
@@ -930,14 +963,14 @@ namespace nvhttp {
 
       tree.put("root.Permission", std::to_string((uint32_t)named_cert_p->perm));
 
-    #ifdef _WIN32
-      tree.put("root.VirtualDisplayCapable", true);
-      if (!!(named_cert_p->perm & PERM::_all_actions)) {
-        tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
-      } else {
-        tree.put("root.VirtualDisplayDriverReady", true);
+      if (const auto vdisplay_status = platf::vdisplay::status(); vdisplay_status != platf::vdisplay::status_e::unavailable) {
+        tree.put("root.VirtualDisplayCapable", true);
+        if (!!(named_cert_p->perm & PERM::_all_actions)) {
+          tree.put("root.VirtualDisplayDriverReady", vdisplay_status == platf::vdisplay::status_e::ok);
+        } else {
+          tree.put("root.VirtualDisplayDriverReady", true);
+        }
       }
-    #endif
     } else {
       tree.put("root.mac", "00:00:00:00:00:00");
       tree.put("root.Permission", "0");
@@ -1523,50 +1556,55 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  SimpleWeb::StatusCode clipboard_access(
+    const crypto::named_cert_t &client,
+    bool write,
+    std::string_view type,
+    const std::list<std::string> &session_uuids
+  ) {
+    auto needed = write ? PERM::clipboard_set : PERM::clipboard_read;
+    if (!(client.perm & PERM::_allow_view) || !(client.perm & needed)) {
+      BOOST_LOG(debug) << "Permission "sv << (write ? "Write"sv : "Read"sv) << " Clipboard denied for ["sv << client.name << "] ("sv << (uint32_t) client.perm << ')';
+      return SimpleWeb::StatusCode::client_error_unauthorized;
+    }
+
+    if (type != "text"sv) {
+      BOOST_LOG(debug) << "Clipboard type ["sv << type << "] is not supported!"sv;
+      return SimpleWeb::StatusCode::client_error_bad_request;
+    }
+
+    if (std::find(session_uuids.begin(), session_uuids.end(), client.uuid) == session_uuids.end()) {
+      BOOST_LOG(debug) << "Client ["sv << client.name << "] trying to "sv << (write ? "set"sv : "get"sv) << " clipboard is not connected to a stream"sv;
+      return SimpleWeb::StatusCode::client_error_forbidden;
+    }
+
+    return SimpleWeb::StatusCode::success_ok;
+  }
+
   void getClipboard(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
     auto named_cert_p = get_verified_cert(request);
 
-    if (
-      !(named_cert_p->perm & PERM::_allow_view)
-      || !(named_cert_p->perm & PERM::clipboard_read)
-    ) {
-      BOOST_LOG(debug) << "Permission Read Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
-
-      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
-      response->close_connection_after_response = true;
-      return;
-    }
-
     auto args = request->parse_query_string();
-    auto clipboard_type = get_arg(args, "type");
-    if (clipboard_type != "text"sv) {
-      BOOST_LOG(debug) << "Clipboard type [" << clipboard_type << "] is not supported!";
-
-      response->write(SimpleWeb::StatusCode::client_error_bad_request);
+    auto status = clipboard_access(*named_cert_p, false, get_arg(args, "type", ""), rtsp_stream::get_all_session_uuids());
+    if (status != SimpleWeb::StatusCode::success_ok) {
+      response->write(status);
       response->close_connection_after_response = true;
       return;
     }
 
-    std::list<std::string> connected_uuids = rtsp_stream::get_all_session_uuids();
+    auto content = platf::get_clipboard();
+    if (!content) {
+      // Not an empty clipboard: a client syncing it must not replace its own with nothing.
+      BOOST_LOG(debug) << "Reading clipboard failed!";
 
-    bool found = !connected_uuids.empty();
-
-    if (found) {
-      found = (std::find(connected_uuids.begin(), connected_uuids.end(), named_cert_p->uuid) != connected_uuids.end());
-    }
-
-    if (!found) {
-      BOOST_LOG(debug) << "Client ["<< named_cert_p->name << "] trying to get clipboard is not connected to a stream";
-
-      response->write(SimpleWeb::StatusCode::client_error_forbidden);
+      response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
       response->close_connection_after_response = true;
       return;
     }
 
-    std::string content = platf::get_clipboard();
-    response->write(content);
+    response->write(*content);
     return;
   }
 
@@ -1576,39 +1614,10 @@ namespace nvhttp {
 
     auto named_cert_p = get_verified_cert(request);
 
-    if (
-      !(named_cert_p->perm & PERM::_allow_view)
-      || !(named_cert_p->perm & PERM::clipboard_set)
-    ) {
-      BOOST_LOG(debug) << "Permission Write Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
-
-      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
-      response->close_connection_after_response = true;
-      return;
-    }
-
     auto args = request->parse_query_string();
-    auto clipboard_type = get_arg(args, "type");
-    if (clipboard_type != "text"sv) {
-      BOOST_LOG(debug) << "Clipboard type [" << clipboard_type << "] is not supported!";
-
-      response->write(SimpleWeb::StatusCode::client_error_bad_request);
-      response->close_connection_after_response = true;
-      return;
-    }
-
-    std::list<std::string> connected_uuids = rtsp_stream::get_all_session_uuids();
-
-    bool found = !connected_uuids.empty();
-
-    if (found) {
-      found = (std::find(connected_uuids.begin(), connected_uuids.end(), named_cert_p->uuid) != connected_uuids.end());
-    }
-
-    if (!found) {
-      BOOST_LOG(debug) << "Client ["<< named_cert_p->name << "] trying to set clipboard is not connected to a stream";
-
-      response->write(SimpleWeb::StatusCode::client_error_forbidden);
+    auto status = clipboard_access(*named_cert_p, true, get_arg(args, "type", ""), rtsp_stream::get_all_session_uuids());
+    if (status != SimpleWeb::StatusCode::success_ok) {
+      response->write(status);
       response->close_connection_after_response = true;
       return;
     }
@@ -1622,6 +1631,7 @@ namespace nvhttp {
 
       response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
       response->close_connection_after_response = true;
+      return;
     }
 
     response->write();
@@ -1761,7 +1771,10 @@ namespace nvhttp {
     // Wait for any event
     shutdown_event->view();
 
-    map_id_sess.clear();
+    {
+      std::lock_guard lock {pair_mutex};
+      map_id_sess.clear();
+    }
 
     https_server.stop();
     http_server.stop();
@@ -1775,6 +1788,7 @@ namespace nvhttp {
       return "";
     }
 
+    std::lock_guard lock {pair_mutex};
     one_time_pin = crypto::rand_alphabet(4, "0123456789"sv);
     otp_passphrase = passphrase;
     otp_device_name = deviceName;

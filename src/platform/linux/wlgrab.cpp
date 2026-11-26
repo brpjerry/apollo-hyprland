@@ -1,14 +1,16 @@
 /**
  * @file src/platform/linux/wlgrab.cpp
- * @brief Definitions for wlgrab capture.
+ * @brief Definitions for wlr-screencopy capture.
  */
 // standard includes
+#include <cstring>
 #include <thread>
 
 // local includes
 #include "cuda.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/vdisplay.h"
 #include "src/video.h"
 #include "vaapi.h"
 #include "wayland.h"
@@ -16,9 +18,6 @@
 using namespace std::literals;
 
 namespace wl {
-  static int env_width;
-  static int env_height;
-
   struct img_t: public platf::img_t {
     ~img_t() override {
       delete[] data;
@@ -26,9 +25,13 @@ namespace wl {
     }
   };
 
-  class wlr_t: public platf::display_t {
+  class wlr_t: public platf::display_t, public capture_stats_source_t {
   public:
-    int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
+    explicit wlr_t(std::size_t max_buffers):
+        screencopy {max_buffers} {
+    }
+
+    int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config, bool allow_shm) {
       delay = std::chrono::nanoseconds {1s} / config.framerate;
       mem_type = hwdevice_type;
 
@@ -36,94 +39,73 @@ namespace wl {
         return -1;
       }
 
-      interface.listen(display.registry());
-
-      display.roundtrip();
-
-      if (!interface[wl::interface_t::XDG_OUTPUT]) {
-        BOOST_LOG(error) << "Missing Wayland wire for xdg_output"sv;
+      if (!enumerate_outputs(display, interface)) {
         return -1;
       }
 
       if (!interface[wl::interface_t::WLR_EXPORT_DMABUF]) {
-        BOOST_LOG(error) << "Missing Wayland wire for wlr-export-dmabuf"sv;
+        BOOST_LOG(error) << "Missing Wayland wire for wlr-screencopy"sv;
         return -1;
       }
 
-      auto monitor = interface.monitors[0].get();
-
-      if (!display_name.empty()) {
-        auto streamedMonitor = util::from_view(display_name);
-
-        if (streamedMonitor >= 0 && streamedMonitor < interface.monitors.size()) {
-          monitor = interface.monitors[streamedMonitor].get();
-        }
+      auto index = select_output(interface, display_name);
+      if (!index) {
+        return -1;
       }
 
-      monitor->listen(interface.output_manager);
+      output = interface.monitors[*index]->output;
 
-      display.roundtrip();
+      // HDR state and metadata of the output. Without wp-color-management the output is treated as SDR.
+      color.open(output_names(interface)[*index]);
 
-      output = monitor->output;
+      // Capture buffers are in hardware pixels, in whatever orientation the compositor's screencopy delivers.
+      auto constraints = probe_screencopy(display, interface.screencopy_manager, output);
+      if (!constraints) {
+        BOOST_LOG(error) << "The compositor offered no screencopy buffer for this output"sv;
+        return -1;
+      }
 
-      offset_x = monitor->viewport.offset_x;
-      offset_y = monitor->viewport.offset_y;
-      width = monitor->viewport.width;
-      height = monitor->viewport.height;
+      const bool allow_dmabuf = interface.dmabuf_interface && gbm.open();
+      auto spec = screencopy_buffer_spec(*constraints, allow_dmabuf, allow_shm);
+      if (!spec) {
+        BOOST_LOG(error) << "No usable screencopy buffer type ("sv << (allow_shm ? "dma-buf or shm"sv : "dma-buf"sv) << " with an 8-bit RGB format)"sv;
+        return -1;
+      }
+      screencopy.pool.configure(*spec);
 
-      this->env_width = ::wl::env_width;
-      this->env_height = ::wl::env_height;
-
-      BOOST_LOG(info) << "Selected monitor ["sv << monitor->description << "] for streaming"sv;
-      BOOST_LOG(debug) << "Offset: "sv << offset_x << 'x' << offset_y;
-      BOOST_LOG(debug) << "Resolution: "sv << width << 'x' << height;
-      BOOST_LOG(debug) << "Desktop Resolution: "sv << env_width << 'x' << env_height;
+      apply_output_geometry(*this, interface, *index, extent_t {(int) spec->width, (int) spec->height});
 
       return 0;
+    }
+
+    capture_stats_t capture_stats() const override {
+      return stats;
+    }
+
+    bool is_hdr() override {
+      return hdr_frames && color.is_hdr();
+    }
+
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      if (!is_hdr()) {
+        std::memset(&metadata, 0, sizeof(metadata));
+        return false;
+      }
+      return fill_hdr_metadata(*color.description(), metadata);
+    }
+
+    bool hdr_supported() override {
+      if (!hdr_frames) {
+        return false;
+      }
+      // Apollo's Hyprland virtual displays can be put in HDR mode (platf::vdisplay::set_hdr()).
+      return color.is_hdr() || (color.compositor_supports_hdr10() && platf::vdisplay::status() == platf::vdisplay::status_e::ok);
     }
 
     int dummy_img(platf::img_t *img) override {
       return 0;
     }
 
-    inline platf::capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) {
-      auto to = std::chrono::steady_clock::now() + timeout;
-
-      // Dispatch events until we get a new frame or the timeout expires
-      dmabuf.listen(interface.screencopy_manager, interface.dmabuf_interface, output, cursor);
-      do {
-        auto remaining_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(to - std::chrono::steady_clock::now());
-        if (remaining_time_ms.count() < 0 || !display.dispatch(remaining_time_ms)) {
-          return platf::capture_e::timeout;
-        }
-      } while (dmabuf.status == dmabuf_t::WAITING);
-
-      auto current_frame = dmabuf.current_frame;
-
-      if (
-        dmabuf.status == dmabuf_t::REINIT ||
-        current_frame->sd.width != width ||
-        current_frame->sd.height != height
-      ) {
-        return platf::capture_e::reinit;
-      }
-
-      return platf::capture_e::ok;
-    }
-
-    platf::mem_type_e mem_type;
-
-    std::chrono::nanoseconds delay;
-
-    wl::display_t display;
-    interface_t interface;
-    dmabuf_t dmabuf;
-
-    wl_output *output;
-  };
-
-  class wlr_ram_t: public wlr_t {
-  public:
     platf::capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
       auto next_frame = std::chrono::steady_clock::now();
 
@@ -143,6 +125,13 @@ namespace wl {
           next_frame = now + delay;
         }
 
+        // The output switched between SDR and HDR (or its HDR metadata changed): the encoder has to be recreated
+        // with the new colorspace.
+        if (color.poll_changed()) {
+          BOOST_LOG(info) << "Output colors changed; reinitializing capture"sv;
+          return platf::capture_e::reinit;
+        }
+
         std::shared_ptr<platf::img_t> img_out;
         auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
         switch (status) {
@@ -156,6 +145,7 @@ namespace wl {
             }
             break;
           case platf::capture_e::ok:
+            ++stats.frames_delivered;
             if (!push_captured_image_cb(std::move(img_out), true)) {
               return platf::capture_e::ok;
             }
@@ -169,18 +159,91 @@ namespace wl {
       return platf::capture_e::ok;
     }
 
-    platf::capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) {
-      auto status = wlr_t::snapshot(pull_free_image_cb, img_out, timeout, cursor);
+  protected:
+    /**
+     * @brief Waits until a frame has been copied into the pool's ready slot.
+     * @details Only one frame is ever in flight. If the timeout expires, the frame stays pending and the next
+     *          call keeps waiting for it.
+     */
+    platf::capture_e wait_for_frame(std::chrono::milliseconds timeout, bool cursor) {
+      auto deadline = std::chrono::steady_clock::now() + timeout;
+
+      while (true) {
+        if (screencopy.status != screencopy_t::WAITING) {
+          auto result = screencopy.start(display, interface.screencopy_manager, interface.dmabuf_interface, interface.shm, gbm.get(), output, cursor);
+          stats.buffers_allocated = screencopy.pool.allocations;
+          if (result == buffer_pool_t::acquire_e::failed) {
+            return platf::capture_e::reinit;
+          }
+          if (result == buffer_pool_t::acquire_e::busy) {
+            // Every buffer is still being encoded.
+            if (std::chrono::steady_clock::now() >= deadline) {
+              return platf::capture_e::timeout;
+            }
+            std::this_thread::sleep_for(1ms);
+            continue;
+          }
+        }
+
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (remaining.count() < 0 || !display.dispatch(remaining)) {
+          if (display.broken()) {
+            // The pending frame will never complete.
+            BOOST_LOG(error) << "Lost the Wayland connection; reinitializing capture"sv;
+            return platf::capture_e::reinit;
+          }
+          return platf::capture_e::timeout;
+        }
+
+        if (screencopy.status == screencopy_t::REINIT) {
+          return platf::capture_e::reinit;
+        }
+        if (screencopy.status == screencopy_t::READY) {
+          ++stats.frames_captured;
+          screencopy.status = screencopy_t::IDLE;
+          return platf::capture_e::ok;
+        }
+      }
+    }
+
+    virtual platf::capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) = 0;
+
+    platf::mem_type_e mem_type;
+
+    std::chrono::nanoseconds delay;
+
+    wl::display_t display;
+    interface_t interface;
+    gbm_device_t gbm;
+    screencopy_t screencopy;
+    capture_stats_t stats;
+
+    /// The output's color description (HDR state and metadata).
+    output_color_t color;
+    /// The encode path of this backend turns captured frames into PQ for HDR streams. Until it does, an HDR
+    /// output is streamed as SDR.
+    bool hdr_frames {false};
+
+    wl_output *output;
+  };
+
+  class wlr_ram_t: public wlr_t {
+  public:
+    // Frames are copied out right away, so one buffer is enough.
+    wlr_ram_t():
+        wlr_t {1} {
+    }
+
+    platf::capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) override {
+      auto status = wait_for_frame(timeout, cursor);
       if (status != platf::capture_e::ok) {
         return status;
       }
       auto frame_timestamp = std::chrono::steady_clock::now();
 
-      auto current_frame = dmabuf.current_frame;
-
-      auto rgb_opt = egl::import_source(egl_display.get(), current_frame->sd);
-
-      if (!rgb_opt) {
+      auto slot = *screencopy.pool.slots.ready_slot();
+      auto &buffer = screencopy.pool[slot];
+      if ((int) buffer.spec.width != width || (int) buffer.spec.height != height) {
         return platf::capture_e::reinit;
       }
 
@@ -188,23 +251,18 @@ namespace wl {
         return platf::capture_e::interrupted;
       }
 
-      gl::ctx.BindTexture(GL_TEXTURE_2D, (*rgb_opt)->tex[0]);
+      if (!read_buffer(egl_display.get(), buffer, *img_out, screencopy.y_invert)) {
+        return platf::capture_e::reinit;
+      }
+      screencopy.pool.slots.consumed(slot);
 
-      // Don't remove these lines, see https://github.com/LizardByte/Sunshine/issues/453
-      int w, h;
-      gl::ctx.GetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
-      gl::ctx.GetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
-      BOOST_LOG(debug) << "width and height: w "sv << w << " h "sv << h;
-
-      gl::ctx.GetTextureSubImage((*rgb_opt)->tex[0], 0, 0, 0, 0, width, height, 1, GL_BGRA, GL_UNSIGNED_BYTE, img_out->height * img_out->row_pitch, img_out->data);
-      gl::ctx.BindTexture(GL_TEXTURE_2D, 0);
       img_out->frame_timestamp = frame_timestamp;
 
       return platf::capture_e::ok;
     }
 
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
-      if (wlr_t::init(hwdevice_type, display_name, config)) {
+      if (wlr_t::init(hwdevice_type, display_name, config, true)) {
         return -1;
       }
 
@@ -256,74 +314,39 @@ namespace wl {
 
   class wlr_vram_t: public wlr_t {
   public:
-    platf::capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
-      auto next_frame = std::chrono::steady_clock::now();
-
-      sleep_overshoot_logger.reset();
-
-      while (true) {
-        auto now = std::chrono::steady_clock::now();
-
-        if (next_frame > now) {
-          std::this_thread::sleep_for(next_frame - now);
-          sleep_overshoot_logger.first_point(next_frame);
-          sleep_overshoot_logger.second_point_now_and_log();
-        }
-
-        next_frame += delay;
-        if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
-          next_frame = now + delay;
-        }
-
-        std::shared_ptr<platf::img_t> img_out;
-        auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
-        switch (status) {
-          case platf::capture_e::reinit:
-          case platf::capture_e::error:
-          case platf::capture_e::interrupted:
-            return status;
-          case platf::capture_e::timeout:
-            if (!push_captured_image_cb(std::move(img_out), false)) {
-              return platf::capture_e::ok;
-            }
-            break;
-          case platf::capture_e::ok:
-            if (!push_captured_image_cb(std::move(img_out), true)) {
-              return platf::capture_e::ok;
-            }
-            break;
-          default:
-            BOOST_LOG(error) << "Unrecognized capture status ["sv << (int) status << ']';
-            return status;
-        }
-      }
-
-      return platf::capture_e::ok;
+    // One buffer being captured into plus up to two the encoder may still read.
+    wlr_vram_t():
+        wlr_t {3} {
+      // The GL converter turns the SDR frames of an HDR output into PQ (output_color_t::sdr_white_nits()).
+      hdr_frames = true;
     }
 
-    platf::capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) {
-      auto status = wlr_t::snapshot(pull_free_image_cb, img_out, timeout, cursor);
+    int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
+      return wlr_t::init(hwdevice_type, display_name, config, false);
+    }
+
+    platf::capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) override {
+      auto status = wait_for_frame(timeout, cursor);
       if (status != platf::capture_e::ok) {
         return status;
       }
       auto frame_timestamp = std::chrono::steady_clock::now();
 
+      auto slot = *screencopy.pool.slots.ready_slot();
+      const auto &spec = screencopy.pool[slot].spec;
+      if ((int) spec.width != width || (int) spec.height != height) {
+        return platf::capture_e::reinit;
+      }
+
       if (!pull_free_image_cb(img_out)) {
         return platf::capture_e::interrupted;
       }
-      auto img = (egl::img_descriptor_t *) img_out.get();
-      img->reset();
 
-      auto current_frame = dmabuf.current_frame;
-
-      ++sequence;
-      img->sequence = sequence;
-
-      img->sd = current_frame->sd;
-      img->frame_timestamp = frame_timestamp;
-
-      // Prevent dmabuf from closing the file descriptors.
-      std::fill_n(current_frame->sd.fds, 4, -1);
+      if (!hand_over_buffer(screencopy.pool, slot, img_out, ++sequence, screencopy.y_invert)) {
+        return platf::capture_e::reinit;
+      }
+      static_cast<egl::img_descriptor_t *>(img_out.get())->sdr_white_nits = color.sdr_white_nits();
+      img_out->frame_timestamp = frame_timestamp;
 
       return platf::capture_e::ok;
     }
@@ -393,52 +416,35 @@ namespace platf {
     return wlr;
   }
 
-  std::vector<std::string> wl_display_names() {
-    std::vector<std::string> display_names;
+  bool wl_capture_supported() {
+    wl::display_t display;
+    if (display.init()) {
+      return false;
+    }
+    wl::interface_t interface;
+    interface.listen(display.registry());
+    display.roundtrip();
+    return interface[wl::interface_t::XDG_OUTPUT] && interface[wl::interface_t::WLR_EXPORT_DMABUF];
+  }
 
+  std::vector<std::string> wl_display_names() {
     wl::display_t display;
     if (display.init()) {
       return {};
     }
 
     wl::interface_t interface;
-    interface.listen(display.registry());
-
-    display.roundtrip();
-
-    if (!interface[wl::interface_t::XDG_OUTPUT]) {
-      BOOST_LOG(warning) << "Missing Wayland wire for xdg_output"sv;
+    if (!wl::enumerate_outputs(display, interface)) {
       return {};
     }
 
     if (!interface[wl::interface_t::WLR_EXPORT_DMABUF]) {
-      BOOST_LOG(warning) << "Missing Wayland wire for wlr-export-dmabuf"sv;
+      BOOST_LOG(warning) << "Missing Wayland wire for wlr-screencopy"sv;
       return {};
     }
 
-    wl::env_width = 0;
-    wl::env_height = 0;
-
-    for (auto &monitor : interface.monitors) {
-      monitor->listen(interface.output_manager);
-    }
-
-    display.roundtrip();
-
-    BOOST_LOG(info) << "-------- Start of Wayland monitor list --------"sv;
-
-    for (int x = 0; x < interface.monitors.size(); ++x) {
-      auto monitor = interface.monitors[x].get();
-
-      wl::env_width = std::max(wl::env_width, (int) (monitor->viewport.offset_x + monitor->viewport.width));
-      wl::env_height = std::max(wl::env_height, (int) (monitor->viewport.offset_y + monitor->viewport.height));
-
-      BOOST_LOG(info) << "Monitor " << x << " is "sv << monitor->name << ": "sv << monitor->description;
-
-      display_names.emplace_back(std::to_string(x));
-    }
-
-    BOOST_LOG(info) << "--------- End of Wayland monitor list ---------"sv;
+    auto display_names = wl::output_names(interface);
+    wl::log_outputs(interface, display_names);
 
     return display_names;
   }

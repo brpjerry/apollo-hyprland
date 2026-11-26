@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 
 // lib includes
@@ -272,6 +273,14 @@ namespace platf {
   struct touch_port_t {
     int offset_x, offset_y;
     int width, height;
+
+    /**
+     * Only set for absolute mouse, touch and pen input, where width/height is the bounding box of all displays:
+     * the top-left of that box (non-zero when a display has negative coordinates) and the size of the streamed
+     * display, both in the same space as offset_x/offset_y. 0 when unknown. Used by the Linux backend.
+     */
+    int layout_x {0}, layout_y {0};
+    int output_width {0}, output_height {0};
   };
 
   // These values must match Limelight-internal.h's SS_FF_* constants!
@@ -380,6 +389,13 @@ namespace platf {
     std::int32_t row_pitch {};
 
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
+
+    /**
+     * @brief The content is the same as the previous frame's. Damage-driven capture backends re-send the newest
+     *        frame while the screen does not change; the encoder encodes it but does not count it against the
+     *        frame rate, so the next real frame is not dropped for arriving too soon after it.
+     */
+    bool repeat {};
 
     virtual ~img_t() = default;
   };
@@ -523,6 +539,16 @@ namespace platf {
     }
 
     /**
+     * @brief Whether HDR streams can come from this display in this session: now (is_hdr()), or once HDR is
+     *        switched on for it (e.g. a virtual display that is put in HDR mode when the client asks for HDR).
+     * @details Encoder probing advertises 10-bit (HDR) codec profiles to clients only when this is true.
+     *          Backends that cannot tell keep the default, which advertises whatever the encoder supports.
+     */
+    virtual bool hdr_supported() {
+      return true;
+    }
+
+    /**
      * @brief Check that a given codec is supported by the display device.
      * @param name The FFmpeg codec name (or similar for non-FFmpeg codecs).
      * @param config The codec configuration.
@@ -538,7 +564,21 @@ namespace platf {
     int offset_x, offset_y;
     int env_width, env_height;
 
+    // Size of the captured frame in pixels.
     int width, height;
+
+    /**
+     * Size of this display in the coordinate space of offset_x/offset_y and env_*.
+     * 0 means the same as width/height. Backends set it when that space is not hardware pixels,
+     * e.g. Wayland, where offsets and the layout are in logical (scaled) pixels.
+     */
+    int logical_width {0}, logical_height {0};
+
+    /**
+     * Top-left corner of the env_width x env_height bounding box, in the same space as offset_x/offset_y.
+     * 0 unless the desktop layout has outputs at negative coordinates (Wayland sets it to the layout minimum).
+     */
+    int env_x {0}, env_y {0};
 
   protected:
     // collect capture timing data (at loglevel debug)
@@ -738,6 +778,17 @@ namespace platf {
    */
   bool request_process_group_exit(std::uintptr_t native_handle);
 
+#ifdef __linux__
+  /**
+   * @brief Second step of a graceful exit, once the exit timeout has passed.
+   * @details If request_process_group_exit() asked the app's windows to close (Hyprland), this sends SIGTERM to the
+   *          group, so the app gets one more chance to exit cleanly before it is killed.
+   * @param native_handle The native handle of the process group.
+   * @return `true` if SIGTERM was sent now; `false` if the first request already was SIGTERM.
+   */
+  bool escalate_process_group_exit(std::uintptr_t native_handle);
+#endif
+
   /**
    * @brief Check if a process group still has running children.
    * @param native_handle The native handle of the process group.
@@ -872,7 +923,11 @@ namespace platf {
    */
   std::unique_ptr<high_precision_timer> create_high_precision_timer();
 
-  std::string
+  /**
+   * @brief The clipboard text.
+   * @return The text ("" for an empty or non-text clipboard), or std::nullopt if it could not be read.
+   */
+  std::optional<std::string>
   get_clipboard();
 
   bool

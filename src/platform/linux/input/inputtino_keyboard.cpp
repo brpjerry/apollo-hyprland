@@ -8,12 +8,18 @@
 #include <libevdev/libevdev.h>
 
 // local includes
+#include "input_options.h"
 #include "inputtino_common.h"
 #include "inputtino_keyboard.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
+
+#ifdef SUNSHINE_BUILD_WAYLAND
+  #include "unicode_keymap.h"
+  #include "virtual_keyboard.h"
+#endif
 
 using namespace std::literals;
 
@@ -149,47 +155,113 @@ namespace platf::keyboard {
   };
 
   void update(input_raw_t *raw, uint16_t modcode, bool release, uint8_t flags) {
-    if (raw->keyboard) {
-      if (release) {
-        (*raw->keyboard).release(modcode);
-      } else {
-        (*raw->keyboard).press(modcode);
+    if (!raw->keyboard) {
+      return;
+    }
+    if (release) {
+      // Release what the press pressed, even if the layout changed in between.
+      auto it = raw->pressed_keys.find(modcode);
+      auto code = it != raw->pressed_keys.end() ? it->second : modcode;
+      if (it != raw->pressed_keys.end()) {
+        raw->pressed_keys.erase(it);
+      }
+      (*raw->keyboard).release(code);
+      return;
+    }
+
+    auto code = modcode;
+#ifdef SUNSHINE_BUILD_WAYLAND
+    if (input_options::key_mapping(flags, config::input.always_send_scancodes) == input_options::key_mapping_e::host_layout) {
+      code = raw->keyboard_layout.translate(modcode);
+      if (code != modcode) {
+        BOOST_LOG(verbose) << std::format("Non-normalized key {:#04x} is host key {:#04x}", modcode, code);
       }
     }
+#endif
+    raw->pressed_keys[modcode] = code;
+    (*raw->keyboard).press(code);
   }
 
-  void unicode(input_raw_t *raw, char *utf8, int size) {
-    if (raw->keyboard) {
-      /* Reading input text as UTF-8 */
-      auto utf8_str = boost::locale::conv::to_utf<wchar_t>(utf8, utf8 + size, "UTF-8");
-      /* Converting to UTF-32 */
-      auto utf32_str = boost::locale::conv::utf_to_utf<char32_t>(utf8_str);
-      /* To HEX string */
-      auto hex_unicode = to_hex(utf32_str);
-      BOOST_LOG(debug) << "Unicode, typing U+"sv << hex_unicode;
-
-      /* pressing <CTRL> + <SHIFT> + U */
-      (*raw->keyboard).press(0xA2);  // LEFTCTRL
-      (*raw->keyboard).press(0xA0);  // LEFTSHIFT
-      (*raw->keyboard).press(0x55);  // U
-      (*raw->keyboard).release(0x55);  // U
-
-      /* input each HEX character */
-      for (auto &ch : hex_unicode) {
-        auto key_str = "KEY_"s + ch;
-        auto keycode = libevdev_event_code_from_name(EV_KEY, key_str.c_str());
-        auto wincode = key_mappings.find(keycode);
-        if (keycode == -1 || wincode == key_mappings.end()) {
-          BOOST_LOG(warning) << "Unicode, unable to find keycode for: "sv << ch;
-        } else {
-          (*raw->keyboard).press(wincode->second);
-          (*raw->keyboard).release(wincode->second);
-        }
-      }
-
-      /* releasing <SHIFT> and <CTRL> */
-      (*raw->keyboard).release(0xA0);  // LEFTSHIFT
-      (*raw->keyboard).release(0xA2);  // LEFTCTRL
+  /**
+   * @brief Types text with IBus's Ctrl+Shift+U sequence on the uinput keyboard.
+   * @details Only IBus/GTK clients understand it, and compositor key bindings can catch it, so it is only the
+   *          fallback for compositors without zwp_virtual_keyboard_v1.
+   */
+  static void ibus_unicode(input_raw_t *raw, const char *utf8, int size) {
+    if (!raw->keyboard) {
+      return;
     }
+    /* Reading input text as UTF-8 */
+    auto utf8_str = boost::locale::conv::to_utf<wchar_t>(utf8, utf8 + size, "UTF-8");
+    /* Converting to UTF-32 */
+    auto utf32_str = boost::locale::conv::utf_to_utf<char32_t>(utf8_str);
+    /* To HEX string */
+    auto hex_unicode = to_hex(utf32_str);
+    BOOST_LOG(debug) << "Unicode, typing U+"sv << hex_unicode;
+
+    /* pressing <CTRL> + <SHIFT> + U */
+    (*raw->keyboard).press(0xA2);  // LEFTCTRL
+    (*raw->keyboard).press(0xA0);  // LEFTSHIFT
+    (*raw->keyboard).press(0x55);  // U
+    (*raw->keyboard).release(0x55);  // U
+
+    /* input each HEX character */
+    for (auto &ch : hex_unicode) {
+      auto key_str = "KEY_"s + ch;
+      auto keycode = libevdev_event_code_from_name(EV_KEY, key_str.c_str());
+      auto wincode = key_mappings.find(keycode);
+      if (keycode == -1 || wincode == key_mappings.end()) {
+        BOOST_LOG(warning) << "Unicode, unable to find keycode for: "sv << ch;
+      } else {
+        (*raw->keyboard).press(wincode->second);
+        (*raw->keyboard).release(wincode->second);
+      }
+    }
+
+    /* releasing <SHIFT> and <CTRL> */
+    (*raw->keyboard).release(0xA0);  // LEFTSHIFT
+    (*raw->keyboard).release(0xA2);  // LEFTCTRL
+  }
+
+#ifdef SUNSHINE_BUILD_WAYLAND
+  /**
+   * @brief Types text through the Wayland virtual keyboard.
+   * @return false when there is no usable virtual keyboard, so the caller falls back to IBus.
+   */
+  static bool virtual_keyboard_unicode(input_raw_t *raw, const char *utf8, int size) {
+    auto now = std::chrono::steady_clock::now();
+    if (raw->text_keyboard && !raw->text_keyboard->alive()) {
+      raw->text_keyboard.reset();
+    }
+    if (!raw->text_keyboard) {
+      if (now < raw->text_keyboard_retry) {
+        return false;
+      }
+      raw->text_keyboard = virtual_keyboard_t::connect(nullptr);
+      if (!raw->text_keyboard) {
+        // The compositor may not be up yet, or may lack the protocol; don't reconnect for every character.
+        raw->text_keyboard_retry = now + 10s;
+        BOOST_LOG(info) << "Unicode text falls back to IBus (Ctrl+Shift+U)"sv;
+        return false;
+      }
+    }
+    auto text = unicode_keymap::decode_utf8({utf8, static_cast<std::size_t>(std::max(size, 0))});
+    BOOST_LOG(debug) << "Unicode, typing "sv << text.size() << " characters through the virtual keyboard"sv;
+    if (!raw->text_keyboard->type(text)) {
+      // Part of the text may be typed already, so don't type it again through IBus; reconnect next time.
+      BOOST_LOG(warning) << "Unicode, the virtual keyboard failed while typing"sv;
+      raw->text_keyboard.reset();
+    }
+    return true;
+  }
+#endif
+
+  void unicode(input_raw_t *raw, char *utf8, int size) {
+#ifdef SUNSHINE_BUILD_WAYLAND
+    if (virtual_keyboard_unicode(raw, utf8, size)) {
+      return;
+    }
+#endif
+    ibus_unicode(raw, utf8, size);
   }
 }  // namespace platf::keyboard

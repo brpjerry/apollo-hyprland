@@ -17,9 +17,9 @@
 
 <div class="section_buttons">
 
-| Previous                      |                                            Next |
-|:------------------------------|------------------------------------------------:|
-| [Docker](../DOCKER_README.md) | [Gamestream Migration](gamestream_migration.md) |
+| Previous                  |                                            Next |
+|:--------------------------|------------------------------------------------:|
+| [Changelog](changelog.md) | [Gamestream Migration](gamestream_migration.md) |
 
 </div>
 

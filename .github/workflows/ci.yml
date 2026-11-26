@@ -1,0 +1,148 @@
+---
+# Builds the Arch Linux package (packaging/linux/Arch/PKGBUILD) with makepkg, runs the unit tests in its check(), and
+# runs the live compositor tests against a headless Hyprland. release.yml calls this workflow to build release packages.
+name: CI
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package:
+    name: Arch package
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # The CUDA toolkit alone is several GiB installed; the runner's preinstalled SDKs are not needed.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
+          df -h /
+
+      # makepkg clones this checkout, so it needs the history of the commit; it fetches the submodules itself.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build package
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w archlinux:latest scripts/ci/arch-package.sh
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: |
+            dist/*.pkg.tar.zst
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      # The live job runs on the host VM (it needs /dev/dri), so hand it the test binary.
+      - name: Upload test binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-binary
+          path: dist/tests/test_sunshine
+          retention-days: 3
+
+  # Installs the package into a fresh container the way a user would, and checks that it starts.
+  install_check:
+    name: Install check
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package
+          path: dist
+
+      - name: Install and run
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE/dist:/dist:ro" archlinux:base bash -euo pipefail -c '
+            pacman -Syu --noconfirm
+            pacman -U --noconfirm /dist/*.pkg.tar.zst
+            pacman -Qk "$(pacman -Qqp /dist/*.pkg.tar.zst)"
+            useradd --create-home tester
+            su tester -c "cd /tmp && sunshine --version"
+          '
+
+  # Runs the *LiveTest suites against a private headless Hyprland (scripts/hyprland/test-live.sh).
+  # Hyprland 0.57 cannot run without a DRM device, even with only headless outputs, and the runners have no GPU, so this
+  # loads vkms (a virtual KMS device; Mesa renders on it in software) on the host and passes /dev/dri to an Arch
+  # container. If vkms cannot be loaded the tests are skipped with a warning.
+  # continue-on-error: the vkms + llvmpipe path has not been verified on GitHub's runners yet (locally the harness runs
+  # on a GPU render node). Remove it once this job has been green on a few PRs.
+  live_hyprland:
+    name: Live Hyprland tests (headless)
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download test binary
+        uses: actions/download-artifact@v4
+        with:
+          name: test-binary
+          path: build/tests
+
+      - name: Load vkms
+        id: vkms
+        run: |
+          if ! sudo modprobe vkms; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" && sudo modprobe vkms || true
+          fi
+          for _ in $(seq 1 50); do
+            compgen -G '/dev/dri/card*' > /dev/null && break
+            sleep 0.1
+          done
+          if compgen -G '/dev/dri/card*' > /dev/null; then
+            ls -l /dev/dri
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Live Hyprland tests skipped::vkms could not be loaded; Hyprland needs a DRM device"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The test binary looks for fixture scripts (run-private-pipewire.sh) under the source path it was built from in
+      # the package job, so the checkout is mounted there too. pipewire-pulse, WirePlumber and dbus run that fixture;
+      # wl-clipboard, wev and zenity are the test clients of the clipboard, app-exit and toolkit-typing suites.
+      - name: Run live tests
+        if: steps.vkms.outputs.available == 'true'
+        run: |
+          docker run --rm --device /dev/dri -v "$GITHUB_WORKSPACE:/w" -v "$GITHUB_WORKSPACE:/home/builder/pkg/src/apollo:ro" \
+            -w /w archlinux:latest bash -euo pipefail -c '
+            pacman -Syu --noconfirm --needed base-devel hyprland mesa \
+              libva libdrm wayland libpulse libevdev avahi libayatana-appindicator libnotify miniupnpc libcap numactl \
+              opus icu pipewire pipewire-pulse wireplumber dbus wl-clipboard wev zenity
+            chmod +x build/tests/test_sunshine
+            if ldd build/tests/test_sunshine | grep "not found"; then
+              echo "test_sunshine has unresolved libraries; update the package list above" >&2
+              exit 1
+            fi
+            Hyprland --version
+            scripts/hyprland/test-live.sh /w/build --gtest_color=yes
+          '
+
+      - name: Upload Hyprland logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyprland-live-logs
+          path: build/tests/hyprland-live
+          if-no-files-found: ignore

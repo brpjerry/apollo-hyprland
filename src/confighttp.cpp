@@ -36,6 +36,7 @@
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "platform/vdisplay.h"
 #include "process.h"
 #include "utility.h"
 #include "uuid.h"
@@ -870,9 +871,7 @@ namespace confighttp {
     nlohmann::json named_certs = nvhttp::get_all_clients();
     nlohmann::json output_tree;
     output_tree["named_certs"] = named_certs;
-#ifdef _WIN32
-    output_tree["platform"] = "windows";
-#endif
+    output_tree["platform"] = SUNSHINE_PLATFORM;
     output_tree["status"] = true;
     send_response(response, output_tree);
   }
@@ -1005,9 +1004,10 @@ namespace confighttp {
     output_tree["status"] = true;
     output_tree["platform"] = SUNSHINE_PLATFORM;
     output_tree["version"] = PROJECT_VERSION;
-#ifdef _WIN32
-    output_tree["vdisplayStatus"] = (int)proc::vDisplayDriverStatus;
-#endif
+    if (const auto vdisplay_status = platf::vdisplay::status(); vdisplay_status != platf::vdisplay::status_e::unavailable) {
+      // The SudoVDA driver status codes the web UI understands (status_e keeps those values).
+      output_tree["vdisplayStatus"] = static_cast<int>(vdisplay_status);
+    }
     auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
     for (auto &[name, value] : vars) {
       output_tree[name] = value;

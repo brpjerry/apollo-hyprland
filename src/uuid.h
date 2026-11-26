@@ -5,8 +5,13 @@
 #pragma once
 
 // standard includes
-#include <random>
 #include <cstdio>
+#include <random>
+#include <stdexcept>
+#include <string>
+
+// local includes
+#include "utility.h"
 
 /**
  * @brief UUID utilities.
@@ -41,7 +46,7 @@ namespace uuid_util {
     }
 
     static uuid_t
-    parse(std::string& uuid_str) {
+    parse(const std::string &uuid_str) {
       if (uuid_str.length() != 36) {
         throw std::invalid_argument("Invalid UUID string length");
       }

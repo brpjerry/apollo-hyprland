@@ -536,7 +536,7 @@ namespace platf {
     return std::make_unique<macos_high_precision_timer>();
   }
 
-  std::string
+  std::optional<std::string>
   get_clipboard() {
     // Placeholder
     return "";

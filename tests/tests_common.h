@@ -3,6 +3,8 @@
  * @brief Common declarations.
  */
 #pragma once
+#include <cstdlib>
+
 #include <gtest/gtest.h>
 #include <src/globals.h>
 #include <src/logging.h>
@@ -129,12 +131,22 @@ namespace test_utils {
 struct PlatformTestSuite: testing::Test {
   static void SetUpTestSuite() {
     ASSERT_FALSE(platf_deinit);
+    // platf::init() fails without a session to capture from, e.g. when CI builds the package in a container.
+    // Only Linux and the BSDs capture through a display server; Windows and macOS have neither variable.
+    if (!IS_WINDOWS && !IS_MACOS && !std::getenv("WAYLAND_DISPLAY") && !std::getenv("DISPLAY")) {
+      skipped = true;
+      GTEST_SKIP() << "No Wayland or X11 display to initialise the platform against";
+    }
     BOOST_LOG(tests) << "Setting up platform test suite";
     platf_deinit = platf::init();
     ASSERT_TRUE(platf_deinit);
   }
 
   static void TearDownTestSuite() {
+    if (skipped) {
+      skipped = false;
+      return;
+    }
     ASSERT_TRUE(platf_deinit);
     platf_deinit = {};
     BOOST_LOG(tests) << "Tore down platform test suite";
@@ -142,4 +154,5 @@ struct PlatformTestSuite: testing::Test {
 
 private:
   inline static std::unique_ptr<platf::deinit_t> platf_deinit;
+  inline static bool skipped = false;
 };

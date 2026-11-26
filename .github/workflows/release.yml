@@ -1,0 +1,55 @@
+---
+# Publishes a GitHub release for a pushed tag v<pkgver>: builds and checks the Arch package with ci.yml, then attaches
+# apollo-hyprland-<pkgver>-<pkgrel>-x86_64.pkg.tar.zst and SHA256SUMS. The tag must match pkgver in
+# packaging/linux/Arch/PKGBUILD (the package bridge requires tag = "v" + pkgver).
+name: Release
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  check_tag:
+    name: Check tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Tag matches pkgver
+        run: |
+          pkgver="$(sed -n 's/^pkgver=//p' packaging/linux/Arch/PKGBUILD)"
+          if [[ "$GITHUB_REF_NAME" != "v$pkgver" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pkgver $pkgver in packaging/linux/Arch/PKGBUILD"
+            exit 1
+          fi
+
+  build:
+    name: Build
+    needs: check_tag
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$GITHUB_REF_NAME" --generate-notes ./*.pkg.tar.zst SHA256SUMS

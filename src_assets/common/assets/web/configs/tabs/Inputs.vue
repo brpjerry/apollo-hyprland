@@ -74,8 +74,8 @@ const config = ref(props.config)
                             default="true"
                   ></Checkbox>
                 </template>
-                <!-- DS4 option: DS4 back button as touchpad click (on Automatic: Windows only) -->
-                <template v-if="config.gamepad === 'ds4' || (config.gamepad === 'auto' && platform === 'windows')">
+                <!-- DS4 option: DS4 back button as touchpad click (on Automatic: Windows only; on Linux: manual DS5) -->
+                <template v-if="config.gamepad === 'ds4' || (config.gamepad === 'auto' && platform === 'windows') || (config.gamepad === 'ds5' && platform === 'linux')">
                   <Checkbox class="mb-3"
                             id="ds4_back_as_touchpad_click"
                             locale-prefix="config"
@@ -116,7 +116,7 @@ const config = ref(props.config)
               default="true"
     ></Checkbox>
 
-    <!-- Key Repeat Delay-->
+    <!-- Key Repeat Delay (Windows only: on Linux, applications repeat held keys themselves) -->
     <div class="mb-3" v-if="config.keyboard === 'enabled' && platform === 'windows'">
       <label for="key_repeat_delay" class="form-label">{{ $t('config.key_repeat_delay') }}</label>
       <input type="text" class="form-control" id="key_repeat_delay" placeholder="500"
@@ -133,7 +133,7 @@ const config = ref(props.config)
     </div>
 
     <!-- Always send scancodes -->
-    <Checkbox v-if="config.keyboard === 'enabled' && platform === 'windows'"
+    <Checkbox v-if="config.keyboard === 'enabled' && (platform === 'windows' || platform === 'linux')"
               class="mb-3"
               id="always_send_scancodes"
               locale-prefix="config"
@@ -188,7 +188,7 @@ const config = ref(props.config)
 
     <!-- Enable Rumble Messages to Controllers -->
     <hr>
-    <Checkbox v-if="platform === 'windows'"
+    <Checkbox v-if="platform === 'windows' || platform === 'linux'"
               class="mb-3"
               id="forward_rumble"
               locale-prefix="config"

@@ -184,10 +184,6 @@ To see all available options, run the tests with the `--help` flag.
 > [!TIP]
 > See the googletest [FAQ](https://google.github.io/googletest/faq.html) for more information on how to use Google Test.
 
-We use [gcovr](https://www.gcovr.com) to generate code coverage reports,
-and [Codecov](https://about.codecov.io) to analyze the reports for all PRs and commits.
-
-Codecov will fail a PR if the total coverage is reduced too much, or if not enough of the diff is covered by tests.
 In some cases, the code cannot be covered when running the tests inside of GitHub runners. For example, any test that
 needs access to the GPU will not be able to run. In these cases, the coverage can be omitted by adding comments to the
 code. See the [gcovr documentation](https://gcovr.com/en/stable/guide/exclusion-markers.html#exclusion-markers) for

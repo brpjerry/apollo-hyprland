@@ -1,6 +1,5 @@
 <script setup>
 import { ref } from 'vue'
-import PlatformLayout from '../../../PlatformLayout.vue'
 import Checkbox from "../../../Checkbox.vue";
 
 const props = defineProps({
@@ -48,8 +47,9 @@ function addRemappingEntry() {
 </script>
 
 <template>
-  <PlatformLayout :platform="platform">
-    <template #windows>
+  <!-- Windows: libdisplaydevice. Linux: Hyprland's settings manager (src/platform/linux/hyprland/settings_manager.*),
+       which supports every option here. -->
+  <template v-if="platform === 'windows' || platform === 'linux'">
       <div class="mb-3 accordion">
         <div class="accordion-item">
           <h2 class="accordion-header">
@@ -63,6 +63,9 @@ function addRemappingEntry() {
             <div class="accordion-body">
               <div class="alert alert-info" v-if="platform === 'windows'">
                 <i class="fa-solid fa-xl fa-circle-info"></i> {{ $t('config.dd_resolution_option_vdisplay_desc') }} {{ $t('config.dd_resolution_option_multi_instance_desc') }}
+              </div>
+              <div class="alert alert-info" v-if="platform === 'linux'">
+                <i class="fa-solid fa-xl fa-circle-info"></i> {{ $t('config.dd_linux_hyprland_desc') }} {{ $t('config.dd_resolution_option_multi_instance_desc') }}
               </div>
 
               <!-- Configuration option -->
@@ -243,10 +246,5 @@ function addRemappingEntry() {
           {{ $t('config.dd_wa_hdr_toggle_delay_desc_3') }}
         </div> -->
       </div>
-    </template>
-    <template #linux>
-    </template>
-    <template #macos>
-    </template>
-  </PlatformLayout>
+  </template>
 </template>

@@ -334,7 +334,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td rowspan="6">Choices</td>
         <td>ds4</td>
         <td>DualShock 4 controller (PS4)
-            @note{This option applies to Windows only.}</td>
+            @note{This option applies to Windows only. On Linux it is accepted as ds5.}</td>
     </tr>
     <tr>
         <td>ds5</td>
@@ -349,7 +349,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>x360</td>
         <td>Xbox 360 controller
-            @note{This option applies to Windows only.}</td>
+            @note{This option applies to Windows only. On Linux it is accepted as xone.}</td>
     </tr>
     <tr>
         <td>xone</td>
@@ -366,7 +366,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Allow Select/Back inputs to also trigger DS4 touchpad click. Useful for clients looking to
             emulate touchpad click on Xinput devices.
-            @hint{Only applies when gamepad is set to ds4 manually. Unused in other gamepad modes.}
+            @hint{Only applies when gamepad is set to ds4 manually (ds5 on Linux). Unused in other gamepad modes.}
         </td>
     </tr>
     <tr>
@@ -519,6 +519,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             The initial delay, in milliseconds, before repeating keys. Controls how fast keys will
             repeat themselves.
+            @note{Not used on Linux: applications repeat held keys themselves, at the host's repeat settings.}
         </td>
     </tr>
     <tr>
@@ -543,6 +544,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             How often keys repeat every second.
             @tip{This configurable option supports decimals.}
+            @note{Not used on Linux: applications repeat held keys themselves, at the host's repeat settings.}
         </td>
     </tr>
     <tr>
@@ -573,7 +575,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             <br>
             Disable if keys on the client are generating the wrong input on the host.
-            @caution{Applies to Windows only.}
+            @note{On Linux, this applies to clients that send key codes not normalized to a US layout: when enabled,
+            their letter and digit keys are typed with the host key that has that character in the host's keyboard
+            layout; when disabled, they are sent as US-layout key positions.}
         </td>
     </tr>
     <tr>
@@ -811,6 +815,11 @@ editing the `conf` file in a text editor. Use the examples as reference.
                 or use Steam Remote Play at least once to install the drivers.
             * [Virtual Audio Cable](https://vb-audio.com/Cable) (macOS, Windows)
             }
+            @note{On Linux (PulseAudio or PipeWire), give the sink's name or description. If unset, or if the sink is
+            not found, Sunshine creates its own null sinks (`sink-sunshine-stereo`, `-surround51`, `-surround71`) and
+            removes them after the stream. While host audio is off, streams that are pinned to another sink (for
+            example by WirePlumber's stored targets) are moved to the virtual sink too, and moved back when the
+            stream ends.}
         </td>
     </tr>
     <tr>
@@ -932,11 +941,24 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Select the display number you want to stream.
+            Select the display you want to stream.
             @tip{To find the appropriate values follow these instructions.
             <br>
             <br>
-            **Linux:**
+            **Linux (Wayland capture):**
+            <br>
+            During Sunshine startup, you should see the list of detected outputs:
+            @code{}
+            Info: -------- Start of Wayland monitor list --------
+            Info: Monitor 0 is DP-1: Dell Inc. DELL U2720Q (3840x2160, logical 2560x1440 at 0,0, scale 1.5, transform 0)
+            Info: Monitor 1 is HDMI-A-1: LG Electronics LG TV (1920x1080, logical 1920x1080 at 2560,0, scale 1, transform 0)
+            Info: --------- End of Wayland monitor list ---------
+            @endcode
+            You need to use the connector name, e.g. `HDMI-A-1`. A number from an older config, e.g. `1`,
+            still selects the output at that position in the list.
+            <br>
+            <br>
+            **Linux (X11 and KMS capture):**
             <br>
             During Sunshine startup, you should see the list of detected displays:
             @code{}
@@ -1023,7 +1045,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Example (Linux)</td>
         <td colspan="2">@code{}
-            output_name = 0
+            output_name = DP-1
             @endcode</td>
     </tr>
     <tr>
@@ -1047,7 +1069,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             Isolates the virtual display.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland (the headless output is placed apart from the
+            other monitors so the pointer cannot cross over, and the pointer is moved onto it when the stream
+            starts).}
         </td>
     </tr>
     <tr>
@@ -1068,7 +1092,12 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             Perform mandatory verification and additional configuration for the display device.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
+            @note{On Hyprland, displays are outputs named by connector (e.g. `DP-1`) or description. Wayland has no
+            primary display: `ensure_primary` moves the display to position 0x0 (shifting the rest of the layout with it)
+            and focuses it, and an empty [output_name](#output_name) means the display at 0x0. The original layout is
+            saved in `display_device.state` and restored when the stream ends, or on the next start after a crash.
+            Reloading the Hyprland config also undoes the changes.}
         </td>
     </tr>
     <tr>
@@ -1114,7 +1143,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Perform additional resolution configuration for the display device.
             @note{"Optimize game settings" must be enabled in Moonlight for this option to work.}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1150,7 +1179,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Specify manual resolution to be used.
             @note{[dd_resolution_option](#dd_resolution_option) must be set to `manual`}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1172,7 +1201,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             Perform additional refresh rate configuration for the display device.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1208,7 +1237,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Specify manual refresh rate to be used.
             @note{[dd_refresh_rate_option](#dd_refresh_rate_option) must be set to `manual`}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1231,7 +1260,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             Perform additional HDR configuration for the display device.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1290,7 +1319,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Additional delay in milliseconds to wait before reverting configuration when the app has been closed or the last session terminated.
             Main purpose is to provide a smoother transition when quickly switching between apps.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1315,7 +1344,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             When enabled, display configuration is reverted upon disconnect of all clients instead of app close or last session termination.
             This can be useful for returning to physical usage of the host machine without closing the active app.
             @warning{Some applications may not function properly when display configuration is changed while active.}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -1367,7 +1396,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @note{First entry to be matched in the list is the one that will be used.}
             @tip{`requested_resolution` and `final_resolution` can be omitted for `refresh_rate_only` group.}
             @tip{`requested_fps` and `final_refresh_rate` can be omitted for `resolution_only` group.}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows, and to Linux on Hyprland.}
         </td>
     </tr>
     <tr>
@@ -2035,10 +2064,17 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="6">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>nvfbc</td>
         <td>Use NVIDIA Frame Buffer Capture to capture direct to GPU memory. This is usually the fastest method for
             NVIDIA cards. NvFBC does not have native Wayland support and does not work with XWayland.
+            @note{Applies to Linux only.}</td>
+    </tr>
+    <tr>
+        <td>ext</td>
+        <td>Capture Wayland outputs via ext-image-copy-capture-v1 (e.g. Hyprland, and other compositors that
+            implement it). Keeps one capture session open, reuses its capture buffers and only copies frames when the
+            output changes. Tried before `wlr` when the compositor supports it.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>

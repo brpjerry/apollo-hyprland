@@ -128,25 +128,73 @@ if(WAYLAND_FOUND)
     if(NOT SUNSHINE_SYSTEM_WAYLAND_PROTOCOLS)
         set(WAYLAND_PROTOCOLS_DIR "${CMAKE_SOURCE_DIR}/third-party/wayland-protocols")
     else()
+        # 1.41 for color-management-v1, the newest protocol generated below.
+        pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols>=1.41)
         pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
-        pkg_check_modules(WAYLAND_PROTOCOLS wayland-protocols REQUIRED)
     endif()
 
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "unstable/xdg-output" xdg-output-unstable-v1)
     GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "unstable/linux-dmabuf" linux-dmabuf-unstable-v1)
     GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-screencopy-unstable-v1)
+    # ext-image-copy-capture-v1 needs wayland-protocols >= 1.37. ext-image-capture-source-v1 references
+    # ext_foreign_toplevel_handle_v1, so ext-foreign-toplevel-list-v1 is generated for its interface definition.
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-foreign-toplevel-list" ext-foreign-toplevel-list-v1)
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-image-capture-source" ext-image-capture-source-v1)
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-image-copy-capture" ext-image-copy-capture-v1)
+    # Clipboard sync: ext-data-control-v1 (wayland-protocols >= 1.39), falling back to wlr-data-control.
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/ext-data-control" ext-data-control-v1)
+    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-data-control-unstable-v1)
+    # wp-color-management-v1: HDR state and metadata of the captured output (wayland-protocols >= 1.41).
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/color-management" color-management-v1)
+    # Unicode text input (HYP-14). The protocol lives in wlroots' tree, not in wlr-protocols or wayland-protocols.
+    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party" "wlroots-protocols" virtual-keyboard-unstable-v1)
+    pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 
     include_directories(
             SYSTEM
             ${WAYLAND_INCLUDE_DIRS}
+            ${XKBCOMMON_INCLUDE_DIRS}
             ${CMAKE_BINARY_DIR}/generated-src
     )
 
-    list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES} gbm)
+    list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES} ${XKBCOMMON_LIBRARIES} gbm)
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wlgrab.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/extgrab.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland_capture_logic.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland_color.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.cpp")
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.cpp"
+            # platf::get_clipboard / set_clipboard (HYP-13)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/clipboard.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/clipboard.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/clipboard_logic.h"
+            # Unicode text through zwp_virtual_keyboard_v1 (HYP-14)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/unicode_keymap.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/virtual_keyboard.cpp"
+            # Non-normalized key codes through the host layout (HYP-25)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/input/keyboard_layout.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/ipc.cpp"
+            # platf::vdisplay: Hyprland headless outputs (HYP-06)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/vdisplay.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/vdisplay.cpp"
+            # per-client virtual display settings, workspace and window placement (HYP-11, HYP-12)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/display_settings.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/display_settings.cpp"
+            # display_device: dd_* options for Hyprland outputs (HYP-18)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/settings_manager.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/settings_manager.cpp"
+            # streaming session helpers: waking the streamed output (HYP-20)
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/session.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/hyprland/session.cpp")
+else()
+    # platf::vdisplay: no virtual display support without Wayland
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/vdisplay_stub.cpp")
 endif()
 
 # x11
@@ -208,6 +256,19 @@ else()
     message(STATUS "Tray icon disabled")
 endif()
 
+# keep the session from idling while streaming (HYP-20): org.freedesktop.ScreenSaver and logind over D-Bus
+pkg_check_modules(GIO gio-2.0 gio-unix-2.0)
+if(GIO_FOUND)
+    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_BUILD_GIO=1)
+    include_directories(SYSTEM ${GIO_INCLUDE_DIRS})
+    list(APPEND PLATFORM_LIBRARIES ${GIO_LIBRARIES})
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/idle_inhibit.cpp")
+else()
+    message(WARNING "gio-2.0 not found: Apollo will not keep the session from idling or locking while streaming")
+endif()
+
 # These need to be set before adding the inputtino subdirectory in order for them to be picked up
 set(LIBEVDEV_CUSTOM_INCLUDE_DIR "${EVDEV_INCLUDE_DIR}")
 set(LIBEVDEV_CUSTOM_LIBRARY "${EVDEV_LIBRARY}")
@@ -218,11 +279,25 @@ file(GLOB_RECURSE INPUTTINO_SOURCES
         ${CMAKE_SOURCE_DIR}/src/platform/linux/input/inputtino*.h
         ${CMAKE_SOURCE_DIR}/src/platform/linux/input/inputtino*.cpp)
 list(APPEND PLATFORM_TARGET_FILES ${INPUTTINO_SOURCES})
+# Per-client touch screen and pen tablet (HYP-24) and the input option decisions (HYP-24, HYP-25)
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/input_options.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/input/touch_pen.cpp")
 
 # build libevdev before the libinputtino target
 if(EXTERNAL_PROJECT_LIBEVDEV_USED)
     add_dependencies(libinputtino libevdev)
 endif()
+
+# Elevated commands (HYP-23): the helper installed by packaging/linux.cmake, also named in the polkit action.
+if(NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK})
+    set(APOLLO_ELEVATION_HELPER "${CMAKE_INSTALL_FULL_LIBEXECDIR}/apollo/apollo-run-elevated")
+    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_ELEVATION_HELPER="${APOLLO_ELEVATION_HELPER}")
+endif()
+list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/command.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/command.cpp")
 
 # AppImage and Flatpak
 if (${SUNSHINE_BUILD_APPIMAGE})
@@ -239,6 +314,9 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/audio_sinks.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/audio_sinks.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/vdisplay.h"
         "${CMAKE_SOURCE_DIR}/third-party/glad/src/egl.c"
         "${CMAKE_SOURCE_DIR}/third-party/glad/src/gl.c"
         "${CMAKE_SOURCE_DIR}/third-party/glad/include/EGL/eglplatform.h"

@@ -8,6 +8,7 @@
 #include <libevdev/libevdev.h>
 
 // local includes
+#include "inputtino_abs.h"
 #include "inputtino_common.h"
 #include "inputtino_pen.h"
 #include "src/config.h"
@@ -19,51 +20,36 @@ using namespace std::literals;
 
 namespace platf::pen {
   void update(client_input_raw_t *raw, const touch_port_t &touch_port, const pen_input_t &pen) {
-    if (raw->pen) {
-      // First set the buttons
-      (*raw->pen).set_btn(inputtino::PenTablet::PRIMARY, pen.penButtons & LI_PEN_BUTTON_PRIMARY);
-      (*raw->pen).set_btn(inputtino::PenTablet::SECONDARY, pen.penButtons & LI_PEN_BUTTON_SECONDARY);
-      (*raw->pen).set_btn(inputtino::PenTablet::TERTIARY, pen.penButtons & LI_PEN_BUTTON_TERTIARY);
-
-      // Set the tool
-      inputtino::PenTablet::TOOL_TYPE tool;
-      switch (pen.toolType) {
-        case LI_TOOL_TYPE_PEN:
-          tool = inputtino::PenTablet::PEN;
-          break;
-        case LI_TOOL_TYPE_ERASER:
-          tool = inputtino::PenTablet::ERASER;
-          break;
-        default:
-          tool = inputtino::PenTablet::SAME_AS_BEFORE;
-          break;
-      }
-
-      // Normalize rotation value to 0-359 degree range
-      auto rotation = pen.rotation;
-      if (rotation != LI_ROT_UNKNOWN) {
-        rotation %= 360;
-      }
-
-      // Here we receive:
-      //  - Rotation: degrees from vertical in Y dimension (parallel to screen, 0..360)
-      //  - Tilt: degrees from vertical in Z dimension (perpendicular to screen, 0..90)
-      float tilt_x = 0;
-      float tilt_y = 0;
-      // Convert polar coordinates into Y tilt angles
-      if (pen.tilt != LI_TILT_UNKNOWN && rotation != LI_ROT_UNKNOWN) {
-        auto rotation_rads = deg2rad(rotation);
-        auto tilt_rads = deg2rad(pen.tilt);
-        auto r = std::sin(tilt_rads);
-        auto z = std::cos(tilt_rads);
-
-        tilt_x = std::atan2(std::sin(-rotation_rads) * r, z) * 180.f / M_PI;
-        tilt_y = std::atan2(std::cos(-rotation_rads) * r, z) * 180.f / M_PI;
-      }
-
-      bool is_touching = pen.eventType == LI_TOUCH_EVENT_DOWN || pen.eventType == LI_TOUCH_EVENT_MOVE;
-
-      (*raw->pen).place_tool(tool, pen.x, pen.y, is_touching ? pen.pressureOrDistance : -1, is_touching ? -1 : pen.pressureOrDistance, tilt_x, tilt_y);
+    if (!raw->pen) {
+      return;
     }
+    touch_pen::pen_sample_t sample;
+    switch (pen.toolType) {
+      case LI_TOOL_TYPE_PEN:
+        sample.tool = BTN_TOOL_PEN;
+        break;
+      case LI_TOOL_TYPE_ERASER:
+        sample.tool = BTN_TOOL_RUBBER;
+        break;
+      default:
+        sample.tool = 0;  // Same as before
+        break;
+    }
+    sample.buttons = pen.penButtons;
+    bool positioned = pen.eventType == LI_TOUCH_EVENT_HOVER || pen.eventType == LI_TOUCH_EVENT_DOWN || pen.eventType == LI_TOUCH_EVENT_MOVE || pen.eventType == LI_TOUCH_EVENT_UP;
+    if (positioned) {
+      // pen.x/y are display-local positions divided by the layout size (touch_port.width/height).
+      auto t = raw->pen_mapper.map(touch_port, double(pen.x) * touch_port.width, double(pen.y) * touch_port.height);
+      sample.x = abs_input::libinput_units(t.at.x, t.min.x, t.max.x, abs_input::pen_max_x);
+      sample.y = abs_input::libinput_units(t.at.y, t.min.y, t.max.y, abs_input::pen_max_y);
+      std::tie(sample.tilt_x, sample.tilt_y) = touch_pen::pen_tilt(pen.tilt, pen.rotation);
+      sample.rotation = pen.rotation == LI_ROT_UNKNOWN ? -1 : pen.rotation % 360;
+      if (pen.eventType == LI_TOUCH_EVENT_HOVER) {
+        sample.distance = pen.pressureOrDistance;
+      } else {
+        sample.pressure = pen.pressureOrDistance;
+      }
+    }
+    raw->pen->write(raw->pen_state.handle(pen.eventType, sample));
   }
 }  // namespace platf::pen

@@ -52,6 +52,18 @@ file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_SOURCE_DIR}/tests/*.h
         ${CMAKE_SOURCE_DIR}/tests/*.cpp)
 
+# Protocols only the live Wayland tests use: a layer-shell client that keeps a test output damaged.
+if(WAYLAND_FOUND)
+    set(SUNSHINE_PLATFORM_TARGET_FILES "${PLATFORM_TARGET_FILES}")
+    set(PLATFORM_TARGET_FILES "")
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "stable/xdg-shell" xdg-shell)
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "stable/viewporter" viewporter)
+    GEN_WAYLAND("${WAYLAND_PROTOCOLS_DIR}" "staging/single-pixel-buffer" single-pixel-buffer-v1)
+    GEN_WAYLAND("${CMAKE_SOURCE_DIR}/third-party/wlr-protocols" "unstable" wlr-layer-shell-unstable-v1)
+    list(APPEND TEST_SOURCES ${PLATFORM_TARGET_FILES})
+    set(PLATFORM_TARGET_FILES "${SUNSHINE_PLATFORM_TARGET_FILES}")
+endif()
+
 set(SUNSHINE_SOURCES
         ${SUNSHINE_TARGET_FILES})
 
@@ -106,6 +118,16 @@ target_link_libraries(${PROJECT_NAME}
         ${SUNSHINE_EXTERNAL_LIBRARIES}
         gtest
         ${PLATFORM_LIBRARIES})
+
+# Optional: libinput reads the virtual touch screen and pen in tests/integration/test_touch_pen_uinput.cpp.
+if(UNIX AND NOT APPLE)
+    pkg_check_modules(TEST_LIBINPUT libinput libudev)
+    if(TEST_LIBINPUT_FOUND)
+        target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${TEST_LIBINPUT_INCLUDE_DIRS})
+        target_link_libraries(${PROJECT_NAME} ${TEST_LIBINPUT_LIBRARIES})
+        target_compile_definitions(${PROJECT_NAME} PRIVATE TESTS_HAVE_LIBINPUT)
+    endif()
+endif()
 target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST_DEFINITIONS})
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE)

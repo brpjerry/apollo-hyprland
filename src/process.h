@@ -27,12 +27,10 @@
 // local includes
 #include "config.h"
 #include "platform/common.h"
+#include "platform/vdisplay.h"
 #include "rtsp.h"
 #include "utility.h"
-
-#ifdef _WIN32
-  #include "platform/windows/virtual_display.h"
-#endif
+#include "uuid.h"
 
 #define VIRTUAL_DISPLAY_UUID "8902CB19-674A-403D-A587-41B092E900BA"
 #define FALLBACK_DESKTOP_UUID "EAAC6159-089A-46A9-9E24-6436885F6610"
@@ -41,10 +39,6 @@
 
 namespace proc {
   using file_t = util::safe_ptr_v2<FILE, int, fclose>;
-
-#ifdef _WIN32
-  extern VDISPLAY::DRIVER_STATUS vDisplayDriverStatus;
-#endif
 
   typedef config::prep_cmd_t cmd_t;
 
@@ -91,7 +85,6 @@ namespace proc {
     bool auto_detach;
     bool wait_all;
     bool virtual_display;
-    bool virtual_display_primary;
     bool use_app_identity;
     bool per_client_app_identity;
     bool allow_client_commands;
@@ -172,6 +165,54 @@ namespace proc {
    * @return Tuple of id calculated without index (for use if no collision) and one with.
    */
   std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, std::string app_image_path, int index);
+
+  /**
+   * @brief Identity of the virtual display created for a session.
+   */
+  struct vdisplay_identity_t {
+    uuid_util::uuid_t uuid;  ///< Passed to platf::vdisplay::create() and remove().
+    std::string uuid_str;  ///< Textual form handed to the backend (the configured UUID string where there is one).
+    std::string name;  ///< Human-readable display name.
+  };
+
+  /**
+   * @brief Derive the virtual display identity for an app launched by a client.
+   *
+   * - By default the display belongs to the client: client UUID and client name.
+   * - With `use_app_identity` it belongs to the app: app UUID and app name.
+   * - With `per_client_app_identity` as well, the UUID is the client UUID XOR the app UUID,
+   *   so every client gets its own display per app.
+   * @throws std::invalid_argument if a UUID involved is not a 36-character UUID string.
+   */
+  vdisplay_identity_t vdisplay_identity(const ctx_t &app, const rtsp_stream::launch_session_t &launch_session);
+
+  /**
+   * @brief Refresh rate in mHz for a session's virtual display.
+   * @param client_fps The fps the client asked for, in mHz or (below 1000) in Hz; 0 means 60 Hz.
+   * @param double_refreshrate Double the result (config option `double_refreshrate`).
+   */
+  int vdisplay_refresh_millihz(int client_fps, bool double_refreshrate);
+
+  /**
+   * @brief Create the virtual display for a session, if the platform backend is available.
+   *
+   * Re-initialises the backend when it is not ready. Sets `launch_session.display_guid`, and sets
+   * `launch_session.virtual_display` to whether a display may now exist and must be removed on terminate.
+   * @return The display name (for `proc_t::display_name`), or "" if no usable display was created (outside
+   *         Windows also when the display could not be activated).
+   */
+  std::string create_virtual_display(const ctx_t &app, rtsp_stream::launch_session_t &launch_session, uint32_t render_width, uint32_t render_height);
+
+  /**
+   * @brief Whether a launch that needed a virtual display but got none may go on with the configured display.
+   *
+   * Windows keeps upstream's fallback to the physical display. Elsewhere that is only allowed when the platform has
+   * no virtual display backend at all (`unavailable`, e.g. not running under Hyprland): a backend that exists but
+   * failed, or a display that could not be set up, ends the launch instead of streaming the host's desktop.
+   * @param status The backend status after create_virtual_display().
+   * @param display_attempted `launch_session.virtual_display` after create_virtual_display().
+   */
+  bool may_stream_without_virtual_display(platf::vdisplay::status_e status, bool display_attempted);
 
   std::string validate_app_image_path(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);

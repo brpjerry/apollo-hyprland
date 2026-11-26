@@ -125,13 +125,27 @@ namespace nvhttp {
      * @brief used as a security measure to prevent out of order calls
      */
     PAIR_PHASE last_phase = PAIR_PHASE::NONE;
+
+    /**
+     * @brief When the client sent getservercert; a PIN goes to the newest session waiting for one.
+     */
+    std::chrono::steady_clock::time_point started {};
   };
 
   /**
    * @brief removes the temporary pairing session
    * @param sess
+   * @note Takes the pairing lock (recursive), like every function that touches the pairing sessions. The web UI
+   *       thread (pin) and the nvhttp server threads (pair) both change them.
    */
   void remove_session(const pair_session_t &sess);
+
+  /**
+   * @brief Store the pairing session a client opened with getservercert.
+   * @param sess The new session; its client.uniqueID is the key.
+   * @return The stored session. It stays valid only while the caller holds the pairing lock (pair() does).
+   */
+  pair_session_t &start_pair_session(pair_session_t &&sess);
 
   /**
    * @brief Pair, phase 1
@@ -194,6 +208,22 @@ namespace nvhttp {
    * @examples_end
    */
   bool pin(std::string pin, std::string name);
+
+  /**
+   * @brief Decide whether a client may use the clipboard endpoint (/actions/clipboard).
+   * @param client The verified client certificate.
+   * @param write `true` to set the host clipboard (needs clipboard_set), `false` to read it (needs clipboard_read).
+   * @param type The requested clipboard type; only "text" is supported.
+   * @param session_uuids UUIDs of the clients that are streaming now.
+   * @return success_ok if allowed, otherwise the status to answer with: 401 without the permission (or without
+   *         view/launch), 400 for an unsupported type, 403 when the client is not streaming.
+   */
+  SimpleWeb::StatusCode clipboard_access(
+    const crypto::named_cert_t &client,
+    bool write,
+    std::string_view type,
+    const std::list<std::string> &session_uuids
+  );
 
   std::string request_otp(const std::string& passphrase, const std::string& deviceName);
 

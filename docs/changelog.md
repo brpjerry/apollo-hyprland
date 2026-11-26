@@ -10,9 +10,9 @@
 
 <div class="section_buttons">
 
-| Previous                              |                          Next |
-|:--------------------------------------|------------------------------:|
-| [Getting Started](getting_started.md) | [Docker](../DOCKER_README.md) |
+| Previous                              |                                            Next |
+|:--------------------------------------|------------------------------------------------:|
+| [Getting Started](getting_started.md) | [Third-Party Packages](third_party_packages.md) |
 
 </div>
 

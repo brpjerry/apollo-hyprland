@@ -4,11 +4,32 @@
  */
 #include "../tests_common.h"
 
+#include "platform/private_pulse.h"
+
 #include <src/audio.h>
 
 using namespace audio;
 
 struct AudioTest: PlatformTestSuite, testing::WithParamInterface<std::tuple<std::basic_string_view<char>, config_t>> {
+  // Capture without host audio makes a virtual sink the default and moves streams to it: keep that off the
+  // desktop's sound server. Without a private instance, audio fails to initialise and the stream has no audio.
+  static void SetUpTestSuite() {
+    PlatformTestSuite::SetUpTestSuite();
+    if (IsSkipped()) {
+      return;
+    }
+    if (!pulse.start()) {
+      BOOST_LOG(warning) << "No private PipeWire instance; audio capture will fail to initialise";
+    }
+  }
+
+  static void TearDownTestSuite() {
+    pulse.stop();
+    PlatformTestSuite::TearDownTestSuite();
+  }
+
+  inline static test_pulse::private_pulse_t pulse;
+
   void SetUp() override {
     m_config = std::get<1>(GetParam());
     m_mail = std::make_shared<safe::mail_raw_t>();

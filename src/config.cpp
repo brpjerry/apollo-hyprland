@@ -601,6 +601,7 @@ namespace config {
     {},  // prep commands
     {},  // state commands
     {},  // server commands
+    "pkexec",  // elevation_method
   };
 
   bool endline(char ch) {
@@ -1307,6 +1308,7 @@ namespace config {
     sunshine.port = (std::uint16_t) port;
 
     string_restricted_f(vars, "address_family", sunshine.address_family, {"ipv4"sv, "both"sv});
+    string_restricted_f(vars, "elevation_method", sunshine.elevation_method, {"pkexec"sv, "sudo"sv, "terminal"sv});
 
     bool upnp = false;
     bool_f(vars, "upnp"s, upnp);
@@ -1452,6 +1454,9 @@ namespace config {
         auto cfg_file = std::ofstream {sunshine.config_file};
       #ifdef _WIN32
         cfg_file << "server_cmd = [{\"name\":\"Bubbles\",\"cmd\":\"bubbles.scr\",\"elevated\":false}]\n";
+      #elif defined(__linux__)
+        // A URL command: opened with xdg-open, like rundll32's URL handler on Windows.
+        cfg_file << "server_cmd = [{\"name\":\"Steam Big Picture\",\"cmd\":\"steam://open/bigpicture\",\"elevated\":false}]\n";
       #endif
       }
 

@@ -28,11 +28,12 @@ extern "C" {
 #include "logging.h"
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
+#include "platform/display_selection.h"
+#include "platform/vdisplay.h"
 #include "sync.h"
 #include "video.h"
 
 #ifdef _WIN32
-  #include "platform/windows/virtual_display.h"
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -58,8 +59,22 @@ namespace video {
     if (devices.empty()) {
       #ifdef _WIN32
       // We'll create a temporary virtual display for probing anyways.
-      if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+      // Only on Windows: elsewhere libdisplaydevice is unsupported and always reports no devices,
+      // which says nothing about whether a display is attached.
+      if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
         return false;
+      }
+      #else
+      // Ask the virtual display backend instead. With no active output (Hyprland: every monitor disabled or
+      // DPMS-off, which captures as black), probing happens on a temporary virtual display (main.cpp) and every
+      // app gets a virtual display (proc::proc_t::execute()). Without a working backend this cannot be told,
+      // and no virtual display could be created anyway, so probing goes ahead.
+      if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
+        const auto any_active = platf::vdisplay::any_display_active();
+        if (any_active && !*any_active) {
+          BOOST_LOG(info) << "No display is active (all outputs disabled or switched off); a virtual display will be used"sv;
+          return false;
+        }
       }
       #endif
         return true;
@@ -1121,15 +1136,20 @@ namespace video {
 
     // If we had a name previously, let's try to find it in the new list
     if (!current_display_name.empty()) {
-      for (int x = 0; x < display_names.size(); ++x) {
-        if (display_names[x] == current_display_name) {
-          current_display_index = x;
-          return;
-        }
+#ifdef __linux__
+      // Wayland capture names outputs by connector (e.g. DP-3); older configs used the enumeration index.
+      constexpr bool allow_legacy_index = true;
+#else
+      constexpr bool allow_legacy_index = false;
+#endif
+      if (auto index = platf::find_display(display_names, current_display_name, allow_legacy_index)) {
+        current_display_index = (int) *index;
+        return;
       }
 
       // The old display was removed, so we'll start back at the first display again
-      BOOST_LOG(warning) << "Previous active display ["sv << current_display_name << "] is no longer present"sv;
+      BOOST_LOG(warning) << "Previous active display ["sv << current_display_name << "] is no longer present; available displays: "sv
+                         << platf::join_display_names(display_names);
     } else {
       for (int x = 0; x < display_names.size(); ++x) {
         if (display_names[x] == output_name) {
@@ -1944,8 +1964,6 @@ namespace video {
     double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target * 1000 : std::max(config.encodingFramerate / 5, 10000);
     auto max_frametime = std::chrono::nanoseconds(1000ms) * 1000 / minimum_fps_target;
     auto encode_frame_threshold = std::chrono::nanoseconds(1000ms) * 1000 / config.encodingFramerate;
-    auto frame_variation_threshold = encode_frame_threshold / 4;
-    auto min_frame_diff = encode_frame_threshold - frame_variation_threshold;
     BOOST_LOG(info) << "Minimum FPS target set to ~"sv << (minimum_fps_target / 2000) << "fps ("sv << max_frametime * 2 << ")"sv;
     BOOST_LOG(info) << "Encoding Frame threshold: "sv << encode_frame_threshold;
 
@@ -1983,8 +2001,10 @@ namespace video {
       }
     }
 
-    std::chrono::steady_clock::time_point encode_frame_timestamp;
+    encode_frame_limiter_t frame_limiter {encode_frame_threshold};
     bool missing_frame_timestamp_warning_logged = false;
+    std::size_t frames_dropped_by_limiter = 0;
+    auto limiter_log_time = std::chrono::steady_clock::now();
 
     while (true) {
       // Break out of the encoding loop if any of the following are true:
@@ -2029,11 +2049,16 @@ namespace video {
             frame_timestamp = std::chrono::steady_clock::now();
           }
 
-          auto current_timestamp = *frame_timestamp;
-          auto time_diff = current_timestamp - encode_frame_timestamp;
-
           // If new frame comes in way too fast, just drop
-          if (time_diff < -frame_variation_threshold) {
+          auto admitted = frame_limiter.admit(*frame_timestamp, img->repeat);
+          if (!admitted) {
+            ++frames_dropped_by_limiter;
+            if (auto now = std::chrono::steady_clock::now(); now - limiter_log_time >= 10s) {
+              BOOST_LOG(debug) << "Encoder dropped "sv << frames_dropped_by_limiter << " frames that came in too fast in the last "sv
+                               << std::chrono::duration_cast<std::chrono::seconds>(now - limiter_log_time).count() << " s"sv;
+              frames_dropped_by_limiter = 0;
+              limiter_log_time = now;
+            }
             continue;
           }
 
@@ -2042,13 +2067,7 @@ namespace video {
             break;
           }
 
-          if (time_diff < frame_variation_threshold) {
-            *frame_timestamp = encode_frame_timestamp;
-          } else {
-            encode_frame_timestamp = current_timestamp;
-          }
-
-          encode_frame_timestamp += encode_frame_threshold;
+          frame_timestamp = admitted;
         } else if (!images->running()) {
           break;
         }
@@ -2078,7 +2097,15 @@ namespace video {
     auto offsetX = (config.width - w2) * 0.5f;
     auto offsetY = (config.height - h2) * 0.5f;
 
-    return input::touch_port_t {
+    // The letterboxing above is in captured-frame pixels. When the backend reports a logical size
+    // (offsets and layout in scaled desktop units, e.g. Wayland), convert so that input coordinates
+    // come out in that same space.
+    float to_desktop_units = 1.0f;
+    if (display->logical_width > 0 && wd > 0) {
+      to_desktop_units = display->logical_width / wd;
+    }
+
+    input::touch_port_t port {
       {
         display->offset_x,
         display->offset_y,
@@ -2089,8 +2116,13 @@ namespace video {
       display->env_height,
       offsetX,
       offsetY,
-      1.0f / scalar,
+      to_desktop_units / scalar,
     };
+    port.env_x = display->env_x;
+    port.env_y = display->env_y;
+    port.logical_width = display->logical_width > 0 ? display->logical_width : display->width;
+    port.logical_height = display->logical_height > 0 ? display->logical_height : display->height;
+    return port;
   }
 
   std::unique_ptr<platf::encode_device_t> make_encode_device(platf::display_t &disp, const encoder_t &encoder, const config_t &config) {
@@ -2698,6 +2730,14 @@ namespace video {
 
       test_hdr_and_yuv444(encoder.hevc, 1);
       test_hdr_and_yuv444(encoder.av1, 2);
+
+      // The tests above only show that the encoder can produce 10-bit streams; on an SDR display they encode
+      // 10-bit SDR. Advertising Main10 makes clients offer HDR, so only do it when HDR can actually reach them.
+      if (!disp->hdr_supported() && (encoder.hevc[encoder_t::DYNAMIC_RANGE] || encoder.av1[encoder_t::DYNAMIC_RANGE])) {
+        BOOST_LOG(info) << encoder.name << ": the display cannot deliver HDR here; not advertising HDR (10-bit) codec profiles"sv;
+        encoder.hevc[encoder_t::DYNAMIC_RANGE] = false;
+        encoder.av1[encoder_t::DYNAMIC_RANGE] = false;
+      }
     }
 
     encoder.h264[encoder_t::VUI_PARAMETERS] = encoder.h264[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];

@@ -95,11 +95,15 @@ namespace display_device {
    * In case the state could not be restored, by default it will be retried again in 5 seconds
    * (repeating indefinitely until success or until persistence is reset).
    *
+   * @param delay_first_attempt Wait `dd_config_revert_delay` before the first attempt (the default). Pass false to
+   *        make the first attempt in the calling thread, e.g. when the stream's virtual display is removed next and
+   *        the monitors disabled for it must be back first.
+   *
    * @examples
    * revert_configuration();
    * @examples_end
    */
-  void revert_configuration();
+  void revert_configuration(bool delay_first_attempt = true);
 
   /**
    * @brief Reset the persistence and currently held initial display state.

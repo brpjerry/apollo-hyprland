@@ -3,10 +3,19 @@
  * @brief Definitions for the main entry point for Sunshine.
  */
 // standard includes
+#include <atomic>
 #include <codecvt>
 #include <csignal>
 #include <fstream>
 #include <iostream>
+
+#ifndef _WIN32
+  #include <cerrno>
+  #include <cstring>
+  #include <fcntl.h>
+  #include <thread>
+  #include <unistd.h>
+#endif
 
 // local includes
 #include "confighttp.h"
@@ -17,6 +26,7 @@
 #include "logging.h"
 #include "main.h"
 #include "nvhttp.h"
+#include "platform/vdisplay.h"
 #include "process.h"
 #include "system_tray.h"
 #include "upnp.h"
@@ -25,7 +35,6 @@
 
 #ifdef _WIN32
   #include "platform/windows/misc.h"
-  #include "platform/windows/virtual_display.h"
 #endif
 
 #define PROBE_DISPLAY_UUID "38F72B96-B00C-4F21-8B6C-E1BFF1602B0E"
@@ -38,14 +47,114 @@ using namespace std::literals;
 
 std::map<int, std::function<void()>> signal_handlers;
 
+#ifdef _WIN32
+// Windows runs signal handlers on a thread of their own, not on the thread that was interrupted.
 void on_signal_forwarder(int sig) {
   signal_handlers.at(sig)();
 }
+
+void start_signal_thread() {}
+
+void stop_signal_thread() {}
+#else
+namespace {
+  // POSIX signal handlers interrupt whatever thread receives the signal, maybe while it holds a lock the shutdown
+  // handlers need (logging, the running app, the tray). So the handler only writes the signal number to a pipe,
+  // and signal_thread runs the registered handler. A 0 byte stops the thread.
+  int signal_pipe[2] {-1, -1};
+  std::thread signal_thread;
+
+  void on_signal_forwarder(int sig) {
+    const int saved_errno = errno;
+    const auto byte = static_cast<unsigned char>(sig);
+    [[maybe_unused]] auto written = write(signal_pipe[1], &byte, 1);
+    errno = saved_errno;
+  }
+
+  void run_signal_handlers() {
+    while (true) {
+      unsigned char sig;
+      auto n = read(signal_pipe[0], &sig, 1);
+      if (n < 0 && errno == EINTR) {
+        continue;
+      }
+      if (n != 1 || sig == 0) {
+        return;
+      }
+      if (auto handler = signal_handlers.find(sig); handler != signal_handlers.end()) {
+        handler->second();
+      }
+    }
+  }
+
+  bool open_signal_pipe() {
+    if (signal_pipe[0] >= 0) {
+      return true;
+    }
+    // The write end never blocks the signal handler; a full pipe already holds a pending shutdown.
+  #ifdef __APPLE__
+    // Darwin has no pipe2().
+    if (pipe(signal_pipe) < 0) {
+      return false;
+    }
+    const bool cloexec = fcntl(signal_pipe[0], F_SETFD, FD_CLOEXEC) == 0 && fcntl(signal_pipe[1], F_SETFD, FD_CLOEXEC) == 0;
+  #else
+    if (pipe2(signal_pipe, O_CLOEXEC) < 0) {
+      return false;
+    }
+    constexpr bool cloexec = true;
+  #endif
+    if (!cloexec || fcntl(signal_pipe[1], F_SETFL, O_NONBLOCK) < 0) {
+      close(signal_pipe[0]);
+      close(signal_pipe[1]);
+      signal_pipe[0] = signal_pipe[1] = -1;
+      return false;
+    }
+    return true;
+  }
+}  // namespace
+
+/**
+ * @brief Starts running the handlers of signals received so far and from now on. Call it once every handler is
+ *        registered: the thread reads signal_handlers without a lock.
+ */
+void start_signal_thread() {
+  if (signal_pipe[0] >= 0 && !signal_thread.joinable()) {
+    signal_thread = std::thread {run_signal_handlers};
+  }
+}
+
+/**
+ * @brief Restores the default action of the registered signals and stops the thread running their handlers, after
+ *        any handler in progress has finished. The handlers refer to main()'s locals, so main() calls this first
+ *        when it returns.
+ */
+void stop_signal_thread() {
+  for (const auto &[sig, handler] : signal_handlers) {
+    std::signal(sig, SIG_DFL);
+  }
+  if (!signal_thread.joinable()) {
+    return;
+  }
+  // The pipe stays open: a handler started just before SIG_DFL took effect may still write to it.
+  const unsigned char stop = 0;
+  while (write(signal_pipe[1], &stop, 1) < 0 && (errno == EINTR || errno == EAGAIN)) {
+    std::this_thread::yield();
+  }
+  signal_thread.join();
+}
+#endif
 
 template<class FN>
 void on_signal(int sig, FN &&fn) {
   signal_handlers.emplace(sig, std::forward<FN>(fn));
 
+#ifndef _WIN32
+  if (!open_signal_pipe()) {
+    BOOST_LOG(error) << "Couldn't create the signal pipe: "sv << std::strerror(errno);
+    return;
+  }
+#endif
   std::signal(sig, on_signal_forwarder);
 }
 
@@ -297,36 +406,47 @@ int main(int argc, char *argv[]) {
 
   // Create signal handler after logging has been initialized
   auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-  on_signal(SIGINT, [&force_shutdown, &display_device_deinit_guard, shutdown_event]() {
-    BOOST_LOG(info) << "Interrupt handler called"sv;
+  // Returns a handler that starts the normal shutdown: optionally stop the running app (undo its prep commands and
+  // remove its display) while everything is still initialised, then raise the shutdown event and arm a watchdog.
+  // Only the first signal shuts down; later ones (a second Ctrl+C, SIGTERM after SIGHUP) are only logged.
+  std::atomic_bool shutdown_started {false};
+  auto make_shutdown_handler = [&force_shutdown, &display_device_deinit_guard, &shutdown_started, shutdown_event](std::string_view message, bool terminate_app) {
+    return [&force_shutdown, &display_device_deinit_guard, &shutdown_started, shutdown_event, message, terminate_app]() {
+      BOOST_LOG(info) << message;
+      if (shutdown_started.exchange(true)) {
+        BOOST_LOG(info) << "Shutdown already in progress"sv;
+        return;
+      }
 
-    auto task = []() {
-      BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
-      logging::log_flush();
-      lifetime::debug_trap();
+      auto task = []() {
+        BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
+        logging::log_flush();
+        lifetime::debug_trap();
+      };
+
+      if (terminate_app) {
+        proc::proc.terminate();
+      }
+
+      force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
+
+      shutdown_event->raise(true);
+      display_device_deinit_guard = nullptr;
     };
+  };
 
-    proc::proc.terminate();
+  on_signal(SIGINT, make_shutdown_handler("Interrupt handler called"sv, true));
 
-    force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
-
-    shutdown_event->raise(true);
-    display_device_deinit_guard = nullptr;
-  });
-
-  on_signal(SIGTERM, [&force_shutdown, &display_device_deinit_guard, shutdown_event]() {
-    BOOST_LOG(info) << "Terminate handler called"sv;
-
-    auto task = []() {
-      BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
-      logging::log_flush();
-      lifetime::debug_trap();
-    };
-    force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
-
-    shutdown_event->raise(true);
-    display_device_deinit_guard = nullptr;
-  });
+#ifdef _WIN32
+  on_signal(SIGTERM, make_shutdown_handler("Terminate handler called"sv, false));
+#else
+  // systemd stops the user service with SIGTERM when the graphical session ends, and the session leader's
+  // terminal or compositor going away delivers SIGHUP. Both must clean up like SIGINT so no app, virtual
+  // display or input device is left behind.
+  on_signal(SIGTERM, make_shutdown_handler("Terminate handler called"sv, true));
+  on_signal(SIGHUP, make_shutdown_handler("Hangup handler called"sv, true));
+#endif
+  start_signal_thread();
 
 #ifdef _WIN32
   // Terminate gracefully on Windows when console window is closed
@@ -356,28 +476,34 @@ int main(int argc, char *argv[]) {
   }
 
   if (video::probe_encoders()) {
-#ifdef _WIN32
     bool allow_probing = video::allow_encoder_probing();
     // Create a temporary virtual display for encoder capability probing
-    if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-      std::string probe_uuid_str = PROBE_DISPLAY_UUID;
-      auto probe_uuid = uuid_util::uuid_t::parse(probe_uuid_str);
-      auto* probe_guid = (GUID*)(void*)&probe_uuid;
+    if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
+      const std::string probe_uuid_str = PROBE_DISPLAY_UUID;
+      const auto probe_uuid = uuid_util::uuid_t::parse(probe_uuid_str);
+#ifdef _WIN32
+      // SudoVDA has always been given 60 here, not 60000.
+      constexpr int probe_refresh = 60;
+#else
+      constexpr int probe_refresh = 60000;
+#endif
 
       BOOST_LOG(info) << "Creating a temporary virtual display to probe for encoders..."sv;
 
       if (!config::video.adapter_name.empty()) {
-        VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
+        platf::vdisplay::set_render_adapter(config::video.adapter_name);
       }
 
-      VDISPLAY::createVirtualDisplay(
-        probe_uuid_str.c_str(),
-        "Probe",
-        800,
-        600,
-        60,
-        *probe_guid
-      );
+      [[maybe_unused]] const auto probe_display = platf::vdisplay::create(probe_uuid, "Probe", {800, 600, probe_refresh}, probe_uuid_str);
+
+#ifndef _WIN32
+      // Capture picks the output by name: probe on the display just created, not on a configured output that
+      // may be disabled, switched off or missing (which may be why probing failed).
+      const auto saved_output_name = config::video.output_name;
+      if (!probe_display.empty()) {
+        config::video.output_name = platf::vdisplay::output_name_for(probe_display);
+      }
+#endif
 
       std::this_thread::sleep_for(500ms);
 
@@ -390,14 +516,25 @@ int main(int argc, char *argv[]) {
         }
       }
 
-      VDISPLAY::removeVirtualDisplay(*probe_guid);
+#ifndef _WIN32
+      config::video.output_name = saved_output_name;
+#endif
+
+      platf::vdisplay::remove(probe_uuid);
     } else if (!allow_probing) {
       BOOST_LOG(error) << "Video failed to find working encoder: probe failed and virtual display driver isn't initialized"sv;
     }
-#else
-    BOOST_LOG(error) << "Video failed to find working encoder: probing failed."sv;
+#ifndef _WIN32
+    else {
+      BOOST_LOG(error) << "Video failed to find working encoder: probing failed."sv;
+    }
 #endif
   }
+
+  // Declared after every deinit guard above and the locals the handlers refer to, so on any return the signal
+  // thread is stopped (and a handler in progress has finished) before they are torn down. Signals arriving after
+  // that get their default action.
+  auto signal_thread_guard = util::fail_guard(stop_signal_thread);
 
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
@@ -457,6 +594,11 @@ int main(int argc, char *argv[]) {
 
   // Wait for shutdown, this is not necessary when we're using the main event loop
   shutdown_event->view();
+
+  // The handler that raised the shutdown event may still be releasing the display device: let it finish before
+  // tearing anything down.
+  signal_thread_guard.disable();
+  stop_signal_thread();
 
   httpThread.join();
   configThread.join();

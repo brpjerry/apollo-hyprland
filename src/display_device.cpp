@@ -25,6 +25,8 @@
   #include <display_device/windows/settings_manager.h>
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_display_device.h>
+#elif defined(SUNSHINE_BUILD_WAYLAND)
+  #include "platform/linux/hyprland/settings_manager.h"
 #endif
 
 namespace display_device {
@@ -624,6 +626,10 @@ namespace display_device {
           .m_hdr_blank_delay = video_config.dd.wa.hdr_toggle_delay != std::chrono::milliseconds::zero() ? std::make_optional(video_config.dd.wa.hdr_toggle_delay) : std::nullopt
         }
       );
+#elif defined(SUNSHINE_BUILD_WAYLAND)
+      // Hyprland: outputs are configured through its IPC socket. There is no audio context as on Windows (it keeps
+      // a disabled monitor's audio device in use); Apollo's audio capture follows the default sink.
+      return hyprland::dd::make_settings_manager(persistence_filepath);
 #else
       return nullptr;
 #endif
@@ -813,9 +819,9 @@ namespace display_device {
                                   {.m_sleep_durations = {DEFAULT_RETRY_INTERVAL}});
   }
 
-  void revert_configuration() {
+  void revert_configuration(bool delay_first_attempt) {
     std::lock_guard lock {DD_DATA.mutex};
-    revert_configuration_unlocked(revert_option_e::try_indefinitely_with_delay);
+    revert_configuration_unlocked(delay_first_attempt ? revert_option_e::try_indefinitely_with_delay : revert_option_e::try_indefinitely);
   }
 
   bool reset_persistence() {

@@ -1856,7 +1856,7 @@ namespace platf {
     return std::make_unique<win32_high_precision_timer>();
   }
 
-  std::string
+  std::optional<std::string>
   get_clipboard() {
     std::string currentClipboard = to_utf8(getClipboardData());
     return currentClipboard;

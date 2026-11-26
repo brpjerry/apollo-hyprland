@@ -295,6 +295,13 @@ namespace egl {
 
     // Increment sequence when new rgb_t needs to be created
     std::uint64_t sequence;
+
+    // The image is stored bottom row first and must be flipped vertically
+    bool y_invert {false};
+
+    /// The image is SDR (sRGB, BT.709) and its white is this many cd/m² in an HDR stream; it is converted to PQ
+    /// when the stream is HDR. 0: the image is already in the stream's transfer function (e.g. a PQ framebuffer).
+    float sdr_white_nits {0};
   };
 
   class sws_t {
@@ -312,6 +319,12 @@ namespace egl {
     void load_vram(img_descriptor_t &img, int offset_x, int offset_y, int texture);
 
     void apply_colorspace(const video::sunshine_colorspace_t &colorspace);
+
+    /**
+     * @brief Where white of SDR input lands in an HDR stream (see img_descriptor_t::sdr_white_nits).
+     * @param nits 0 when the input already has the stream's transfer function.
+     */
+    void set_sdr_white(float nits);
 
     // The first texture is the monitor image.
     // The second texture is the cursor image
@@ -334,6 +347,13 @@ namespace egl {
 
     // Store latest cursor for load_vram
     std::uint64_t serial;
+
+    // The stream is HDR (PQ), and the white level of SDR input (0: input is not SDR).
+    bool hdr_output {false};
+    float sdr_white_nits {0};
+
+  private:
+    void update_transfer_uniforms();
   };
 
   bool fail();
