@@ -697,7 +697,7 @@ TEST_F(ConfigHttpTest, PairingRestApiRejectsMalformedFieldsWithoutConsumingReque
     nlohmann::json {{"pairing_id", "not-a-pairing-id"}, {"pin", "1234"}, {"name", "Client"}},
     nlohmann::json {{"pairing_id", pairing_id}, {"pin", "123"}, {"name", "Client"}},
     nlohmann::json {{"pairing_id", pairing_id}, {"pin", "12a4"}, {"name", "Client"}},
-    nlohmann::json {{"pairing_id", pairing_id}, {"pin", "1234"}, {"name", ""}},
+    // An empty name is valid in Apollo: the client's device name is used instead.
     nlohmann::json {{"pairing_id", pairing_id}, {"pin", "1234"}, {"name", std::string(nvhttp::MAX_PAIRING_CLIENT_NAME_SIZE + 1, 'a')}},
   };
 

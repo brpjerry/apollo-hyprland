@@ -4,6 +4,7 @@
 # CMAKE_EXTRA_ARGS is split on whitespace and appended to the first configure, so it can override the defaults
 # below (e.g. CMAKE_EXTRA_ARGS="-DSUNSHINE_ENABLE_CUDA=OFF -DCUDA_FAIL_ON_MISSING=OFF" without CUDA). It is ignored
 # once the build directory has been configured; delete build.ninja to reconfigure. TARGETS limits the ninja targets.
+# NINJA_ARGS adds ninja flags, e.g. NINJA_ARGS="-k 0" to keep going past failures and see every error at once.
 #
 # Memory safety (a set of parallel builds once exhausted RAM and swap and took the desktop down):
 # - Only one build runs at a time on this machine, across all checkouts and worktrees: the build waits for
@@ -75,4 +76,5 @@ if [[ ! -f "$build/build.ninja" ]]; then
     "${extra_args[@]}"
 fi
 echo "build.sh: building $build with $jobs jobs (memory cap $memory_max)" >&2
-limited ninja -C "$build" -j "$jobs" "${targets[@]}"
+# shellcheck disable=SC2086 # NINJA_ARGS is a list of flags, e.g. "-k 0"
+limited ninja -C "$build" -j "$jobs" ${NINJA_ARGS:-} "${targets[@]}"

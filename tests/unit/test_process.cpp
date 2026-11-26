@@ -40,7 +40,7 @@ namespace proc {
    * @param env Environment used for executable lookup.
    * @return Working directory, or an empty path when the command is a URL.
    */
-  boost::filesystem::path find_working_directory(const std::string &cmd, boost::process::v1::environment &env);
+  boost::filesystem::path find_working_directory(const std::string &cmd, const boost::process::v1::environment &env);
 
   /**
    * @brief Expand environment references while preserving Windows variable-name casing.
@@ -163,8 +163,12 @@ TEST(ProcessTest, PrepLaunchErrorsAbortDesktopLaunch) {
   app.prep_cmds.emplace_back("sunshine-nonexistent-prep-command", "", false);
   boost::process::v1::environment env = boost::this_process::environment();
   proc::proc_t process(std::move(env), {std::move(app)});
-  const auto cleanup = util::fail_guard([&process]() {
+  // Apollo probes the encoders before running prep commands; without a display here the probe fails with 503.
+  const bool saved_ignore_probe = config::video.ignore_encoder_probe_failure;
+  config::video.ignore_encoder_probe_failure = true;
+  const auto cleanup = util::fail_guard([&process, saved_ignore_probe]() {
     process.terminate();
+    config::video.ignore_encoder_probe_failure = saved_ignore_probe;
   });
 
   EXPECT_EQ(process.execute(42, std::make_shared<rtsp_stream::launch_session_t>()), -1);
@@ -522,14 +526,25 @@ protected:
     BaseTest::SetUp();
     test_dir = fs::temp_directory_path() / "sunshine_process_refresh_test";  // NOSONAR(cpp:S5443): safe for tests
     fs::create_directories(test_dir);
+    // Apollo appends "Remote Input" and "Terminate" entries in input-only mode; these tests count only the file's apps.
+    saved_input_only_mode = config::input.enable_input_only_mode;
+    config::input.enable_input_only_mode = false;
+    // Apollo probes the encoders when launching; without a display here the probe fails and the launch returns 503.
+    saved_ignore_probe = config::video.ignore_encoder_probe_failure;
+    config::video.ignore_encoder_probe_failure = true;
   }
 
   void TearDown() override {
+    config::input.enable_input_only_mode = saved_input_only_mode;
+    config::video.ignore_encoder_probe_failure = saved_ignore_probe;
     if (fs::exists(test_dir)) {
       fs::remove_all(test_dir);
     }
     BaseTest::TearDown();
   }
+
+  bool saved_input_only_mode = true;
+  bool saved_ignore_probe = false;
 
   /**
    * @brief Write a minimal valid apps.json file.
@@ -841,4 +856,28 @@ TEST_F(ProcessRefreshTest, FileTimeType_DefaultValueComparison) {
   // The actual correctness is verified by Refresh_ParsesFileOnFirstCall above —
   // if that test passes, the optional fix works regardless of platform behavior.
   SUCCEED();
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ProcessTest, VdisplayIdentityDerivesStableUuidsForNonUuidIds) {
+  // Sunshine-style numeric app ids and launches without a paired client used to throw from uuid parsing.
+  proc::ctx_t app {};
+  app.id = "42";
+  app.name = "Desktop";
+  rtsp_stream::launch_session_t session {};
+  session.device_name = "Client";
+
+  const auto client_identity = proc::vdisplay_identity(app, session);
+  EXPECT_EQ(client_identity.uuid_str.size(), 36u);
+  EXPECT_EQ(client_identity.uuid_str, proc::vdisplay_identity(app, session).uuid_str);
+
+  app.use_app_identity = true;
+  app.uuid = "not-a-uuid";
+  const auto app_identity = proc::vdisplay_identity(app, session);
+  EXPECT_EQ(app_identity.uuid_str.size(), 36u);
+  EXPECT_NE(app_identity.uuid_str, client_identity.uuid_str);
+
+  // A real UUID is used as is, keeping existing output names and remembered settings.
+  app.uuid = "12345678-9abc-def0-1234-56789abcdef0";
+  EXPECT_EQ(proc::vdisplay_identity(app, session).uuid_str, app.uuid);
 }

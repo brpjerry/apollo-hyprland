@@ -167,7 +167,7 @@ endif()
 # TODO(libvirtualhid port): these test the inputtino-era touch/pen and absolute input code, which is out of the build
 # until it is ported onto libvirtualhid (see cmake/compile_definitions/linux.cmake).
 list(FILTER TEST_SOURCES EXCLUDE REGEX
-        "/tests/(unit/platform/test_(inputtino_abs|touch_pen|input_options)|integration/test_(touch_pen_uinput|abs_input_live))\\.cpp$")
+        "/tests/(unit/test_touch_port|unit/platform/test_(inputtino_abs|touch_pen|input_options)|integration/test_(touch_pen_uinput|abs_input_live))\\.cpp$")
 
 # Add macOS-specific test files only when building tests for macOS
 if (APPLE)

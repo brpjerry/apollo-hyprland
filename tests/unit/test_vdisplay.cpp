@@ -110,9 +110,12 @@ TEST(VdisplayIdentityTest, PerClientAppIdentityXorsClientAndApp) {
 }
 
 // Bugs caught: 0, False positives: 0
-TEST(VdisplayIdentityTest, RejectsMalformedClientUuid) {
+TEST(VdisplayIdentityTest, MalformedClientUuidGetsAStableDerivedUuid) {
+  // A malformed id used to throw and abort the launch; it now maps to a UUID derived from the text.
   const auto app = make_app(false, false);
-  EXPECT_THROW(proc::vdisplay_identity(app, make_session("not-a-uuid")), std::invalid_argument);
+  const auto identity = proc::vdisplay_identity(app, make_session("not-a-uuid"));
+  EXPECT_EQ(identity.uuid_str.size(), 36u);
+  EXPECT_EQ(identity.uuid_str, proc::vdisplay_identity(app, make_session("not-a-uuid")).uuid_str);
 }
 
 #ifndef _WIN32

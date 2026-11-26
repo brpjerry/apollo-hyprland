@@ -484,6 +484,8 @@ namespace nvhttp {
     const bool allow_client_commands,
     const bool always_use_virtual_display
   );
+
+  /**
    * @brief Get codec mode flags.
    *
    * @return Moonlight codec capability bitmask for the currently probed encoders.

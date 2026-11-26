@@ -93,9 +93,10 @@ CPMDeclarePackage(moonlight-common-c
         GIT_SUBMODULES enet nanors
         # Apollo protocol extensions (ClassicOldSong/moonlight-common-c), rebased onto the pin above.
         # Regenerate these if the pin moves and they stop applying.
-        PATCHES
-            "${PATCH_DIRECTORY}/moonlight-common-c-0001-server-cmd-over-control-stream.patch"
-            "${PATCH_DIRECTORY}/moonlight-common-c-0002-send-empty-payload.patch"
+        # Applied with apply_patches_once.cmake instead of PATCHES so a reconfigure does not apply them twice.
+        PATCH_COMMAND ${CMAKE_COMMAND}
+            "-DPATCH_FILES=${PATCH_DIRECTORY}/moonlight-common-c-0001-server-cmd-over-control-stream.patch|${PATCH_DIRECTORY}/moonlight-common-c-0002-send-empty-payload.patch"
+            -P "${CMAKE_CURRENT_LIST_DIR}/cmake/scripts/apply_patches_once.cmake"
         DOWNLOAD_ONLY YES
 )
 
@@ -130,7 +131,9 @@ CPMDeclarePackage(simple_web_server
         GIT_REPOSITORY https://github.com/LizardByte-infrastructure/Simple-Web-Server.git
         GIT_TAG ${SIMPLE_WEB_SERVER_COMMIT}
         # Apollo adds a per-request user pointer (ClassicOldSong/Simple-Web-Server), rebased onto the pin above.
-        PATCHES "${PATCH_DIRECTORY}/simple-web-server-0001-request-userp.patch"
+        PATCH_COMMAND ${CMAKE_COMMAND}
+            "-DPATCH_FILES=${PATCH_DIRECTORY}/simple-web-server-0001-request-userp.patch"
+            -P "${CMAKE_CURRENT_LIST_DIR}/cmake/scripts/apply_patches_once.cmake"
 )
 
 # TPCircularBuffer

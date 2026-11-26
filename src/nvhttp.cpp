@@ -452,8 +452,15 @@ namespace nvhttp {
     }
 
     std::string uid = tree["root"]["uniqueid"];
-    http::uuid = uuid_util::uuid_t::parse(uid);
-    http::unique_id = uid;
+    try {
+      http::uuid = uuid_util::uuid_t::parse(uid);
+      http::unique_id = uid;
+    } catch (const std::invalid_argument &) {
+      // Keep the paired clients below; only the host id is unusable, so give the host a new one.
+      BOOST_LOG(warning) << "Invalid host uniqueid in "sv << config::nvhttp.file_state << ", generating a new one"sv;
+      http::uuid = uuid_util::uuid_t::generate();
+      http::unique_id = http::uuid.string();
+    }
 
     nlohmann::json root = tree["root"];
     client_t client;  // Local client to load into

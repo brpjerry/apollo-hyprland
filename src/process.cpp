@@ -277,28 +277,45 @@ namespace proc {
 #endif
   }
 
+  /**
+   * @brief The UUID an identifier stands for: the identifier itself when it is a UUID, otherwise one derived from it.
+   *
+   * App and client identifiers are UUIDs once Apollo has migrated them, but an app list written by Sunshine uses
+   * numeric ids and a launch without a paired client has no id at all. Deriving a UUID keeps the virtual display's
+   * identity stable for the same identifier instead of failing the launch.
+   */
+  uuid_util::uuid_t identity_uuid(const std::string &id) {
+    try {
+      return uuid_util::uuid_t::parse(id);
+    } catch (const std::invalid_argument &) {
+      const auto digest = crypto::hash("apollo-vdisplay-identity:" + id);
+      uuid_util::uuid_t uuid;
+      std::copy_n(digest.begin(), uuid.b8.size(), uuid.b8.begin());
+      return uuid;
+    }
+  }
+
   vdisplay_identity_t vdisplay_identity(const ctx_t &app, const rtsp_stream::launch_session_t &launch_session) {
     vdisplay_identity_t identity;
 
     if (app.use_app_identity) {
       identity.name = app.name;
       if (app.per_client_app_identity) {
-        identity.uuid = uuid_util::uuid_t::parse(launch_session.unique_id);
-        const auto app_uuid = uuid_util::uuid_t::parse(app.uuid);
+        identity.uuid = identity_uuid(launch_session.unique_id);
+        const auto app_uuid = identity_uuid(app.uuid);
 
         // Use XOR to mix the two UUIDs
         identity.uuid.b64[0] ^= app_uuid.b64[0];
         identity.uuid.b64[1] ^= app_uuid.b64[1];
-
         identity.uuid_str = identity.uuid.string();
       } else {
-        identity.uuid_str = app.uuid;
-        identity.uuid = uuid_util::uuid_t::parse(app.uuid);
+        identity.uuid = identity_uuid(app.uuid);
+        identity.uuid_str = app.uuid.size() == 36 ? app.uuid : identity.uuid.string();
       }
     } else {
       identity.name = launch_session.device_name;
-      identity.uuid_str = launch_session.unique_id;
-      identity.uuid = uuid_util::uuid_t::parse(launch_session.unique_id);
+      identity.uuid = identity_uuid(launch_session.unique_id);
+      identity.uuid_str = launch_session.unique_id.size() == 36 ? launch_session.unique_id : identity.uuid.string();
     }
 
     return identity;
@@ -1883,7 +1900,10 @@ namespace proc {
 
     if (proc_opt) {
       proc.update_apps_and_env(std::move(*proc_opt));
-      last_apps_file_update = current_time;
+      // parse() may have rewritten the file (Apollo migrates app ids to UUIDs), so record the time after parsing.
+      // Otherwise the next refresh sees a newer file and parses it again.
+      const auto parsed_time = std::filesystem::last_write_time(file_name, ec);
+      last_apps_file_update = ec ? current_time : parsed_time;
     }
   }
 }  // namespace proc
