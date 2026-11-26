@@ -397,6 +397,14 @@ systemctl --user enable sunshine
 The user service is part of `graphical-session.target`: it starts once the desktop session is up and stops when it
 ends. Check what it is doing with `journalctl --user -u sunshine -f`.
 
+If you enabled the service under an older version, which started it with `xdg-desktop-autostart.target`, move its
+login link to the new target once:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user reenable sunshine
+```
+
 #### Running on Hyprland
 Sunshine uses Wayland capture on Hyprland, so it needs neither `cap_sys_admin` nor root. It does need to run inside
 your Hyprland session, with the session's environment, so that it can reach the compositor, Hyprland's IPC sockets,
