@@ -29,9 +29,19 @@ no_access="$runtime/no-input-device"
 : > "$no_access"
 chmod 000 "$no_access"
 sandbox=()
-if command -v bwrap > /dev/null; then
-  sandbox=(bwrap --dev-bind / / --ro-bind "$no_access" /dev/uinput --ro-bind "$no_access" /dev/uhid --)
-elif [[ ${APOLLO_TEST_ALLOW_UINPUT:-} != 1 ]]; then
+# Only nodes this user can write need hiding; in a container or CI runner there are usually none, and bwrap can only
+# bind over a node that exists.
+hide=()
+for node in /dev/uinput /dev/uhid; do
+  if [[ -w $node ]]; then
+    hide+=(--ro-bind "$no_access" "$node")
+  fi
+done
+if ((${#hide[@]} == 0)) || [[ ${APOLLO_TEST_ALLOW_UINPUT:-} == 1 ]]; then
+  :
+elif command -v bwrap > /dev/null; then
+  sandbox=(bwrap --dev-bind / / "${hide[@]}" --)
+else
   echo "test.sh: bwrap (bubblewrap) is needed to hide /dev/uinput from the tests; install it, or set" \
     "APOLLO_TEST_ALLOW_UINPUT=1 to let the tests create virtual input devices on this session" >&2
   exit 1
