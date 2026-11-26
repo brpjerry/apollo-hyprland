@@ -861,7 +861,6 @@
     "restart_apollo_success": "Apollo 正在重启",
     "quit_apollo": "退出 Apollo",
     "quit_apollo_desc": "停止运行 Apollo。这将会终止任何正在进行的会话。",
-    "quit_apollo_success": "Apollo 已成功退出。",
     "quit_apollo_success_ongoing": "Apollo 正在退出...",
     "quit_apollo_confirm": "确定要退出 Apollo 吗？如果没有其他操作方式，你将无法再次启动 Apollo。"
   },
@@ -910,9 +909,7 @@
     "clients_desc": "为 Apollo 精心特调的客户端",
     "generic_moonlight_clients_desc": "普通 Moonlight 客户端也可与 Apollo 共同使用。"
   },
-  "login": {
-    "save_password": "记住密码"
-  },
+  "login": {},
   "permissions": {
     "input_controller": "手柄输入",
     "input_touch": "触摸输入",

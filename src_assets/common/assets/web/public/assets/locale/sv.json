@@ -807,7 +807,6 @@
     "restart_apollo_success": "Apollo startar om",
     "quit_apollo": "Avsluta Apollo",
     "quit_apollo_desc": "Avsluta Apollo. Detta kommer att avsluta alla pågående sessioner.",
-    "quit_apollo_success": "Apollo har avslutats.",
     "quit_apollo_success_ongoing": "Apollo avslutas...",
     "quit_apollo_confirm": "Vill du verkligen avsluta Apollo? Du kommer inte att kunna starta Apollo igen om du inte har andra metoder för att använda din dator."
   },
@@ -856,9 +855,7 @@
     "clients_desc": "Klienter specifikt optimerade för att fungera bäst med Apollo",
     "generic_moonlight_clients_desc": "Generiska Moonlight-klienter som kan användas med Apollo"
   },
-  "login": {
-    "save_password": "Kom ihåg lösenord"
-  },
+  "login": {},
   "permissions": {
     "input_controller": "Kontrollerinmatning",
     "input_touch": "Touchinmatning",

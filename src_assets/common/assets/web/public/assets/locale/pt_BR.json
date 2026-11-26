@@ -807,7 +807,6 @@
     "restart_apollo_success": "O Apollo está reiniciando",
     "quit_apollo": "Encerrar Apollo",
     "quit_apollo_desc": "Encerrar Apollo. Isso vai encerrar todas as sessões ativas.",
-    "quit_apollo_success": "Apollo encerrou.",
     "quit_apollo_success_ongoing": "Apollo está encerrando...",
     "quit_apollo_confirm": "Você tem certeza que deseja encerrar Apollo? Você não poderá iniciar Apollo novamente se você não tiver outras formas de controlar o seu computador."
   },
@@ -856,9 +855,7 @@
     "clients_desc": "Clientes que foram especificamente aprimorados para funcionar bem com o Apollo.",
     "generic_moonlight_clients_desc": "Clientes genéricos Moonlight ainda funcionam com o Apollo."
   },
-  "login": {
-    "save_password": "Lembrar senha"
-  },
+  "login": {},
   "permissions": {
     "input_controller": "Entrada de controle",
     "input_touch": "Entrada de toque",

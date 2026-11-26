@@ -955,7 +955,6 @@
     "generic_moonlight_clients_desc": "Generic Moonlight clients are still usable with Apollo."
   },
   "login": {
-    "save_password": "Remember Password",
     "login_failed": "Login failed: {error}",
     "login_success": "Signed in. Opening the Web UI...",
     "wrong_credentials": "Login failed: please check your username and password."
