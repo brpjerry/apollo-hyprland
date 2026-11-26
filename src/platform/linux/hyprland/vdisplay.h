@@ -257,6 +257,8 @@ namespace hyprland {
     bool connect_locked();
     std::optional<std::vector<monitor_info_t>> monitors_locked();
     std::optional<monitor_info_t> find_monitor_locked(const std::string &name);
+    /// Whether Hyprland lists the output; std::nullopt when the monitor list cannot be read.
+    std::optional<bool> monitor_listed_locked(const std::string &name);
     bool apply_rule_locked(owned_t &entry, monitor_rule_t rule, const platf::vdisplay::mode_t &mode);
     monitor_rule_t rule_for_locked(const std::string &name, const owned_t &entry, const platf::vdisplay::mode_t &mode, std::optional<std::string> isolated_position);
     void learn_locked(const std::string &name, owned_t &entry, const monitor_info_t &now);

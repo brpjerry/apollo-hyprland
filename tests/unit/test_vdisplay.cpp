@@ -115,6 +115,22 @@ TEST(VdisplayIdentityTest, RejectsMalformedClientUuid) {
   EXPECT_THROW(proc::vdisplay_identity(app, make_session("not-a-uuid")), std::invalid_argument);
 }
 
+#ifndef _WIN32
+// Bugs caught: 0, False positives: 0
+TEST(VdisplayFallbackTest, OnlyAMissingBackendFallsBackToThePhysicalDisplay) {
+  using platf::vdisplay::status_e;
+  // No virtual display support here at all (not Hyprland): stream the configured display as before.
+  EXPECT_TRUE(proc::may_stream_without_virtual_display(status_e::unavailable, false));
+  // A backend that exists but does not work (Hyprland not answering, or failing its version query): the client asked
+  // for its own display, so the host's desktop must not be streamed instead.
+  EXPECT_FALSE(proc::may_stream_without_virtual_display(status_e::failed, false));
+  EXPECT_FALSE(proc::may_stream_without_virtual_display(status_e::version_incompatible, false));
+  EXPECT_FALSE(proc::may_stream_without_virtual_display(status_e::watchdog_failed, false));
+  // Creation or activation failed on a working backend.
+  EXPECT_FALSE(proc::may_stream_without_virtual_display(status_e::ok, true));
+}
+#endif
+
 // Bugs caught: 0, False positives: 0
 TEST(VdisplayStatusTest, KeepsWebUiStatusCodes) {
   // config.html / AudioVideo.vue index their messages by these SudoVDA driver codes.

@@ -9,12 +9,15 @@
 
   // standard includes
   #include <algorithm>
+  #include <atomic>
+  #include <filesystem>
   #include <format>
   #include <functional>
   #include <map>
   #include <set>
 
   // local includes
+  #include "hyprland_fakes.h"
   #include <src/platform/linux/hyprland/settings_manager.h>
   #include <src/platform/linux/hyprland/vdisplay.h>
 
@@ -73,6 +76,7 @@ namespace {
     std::function<void(const monitor_rule_t &)> on_rule;
     std::set<std::string> refuse;  ///< Outputs whose rules are rejected.
     bool refuse_dispatch = false;  ///< Reject focus and workspace dispatches.
+    std::map<std::string, std::string> cm_becomes;  ///< Colour presets the output takes as a different one.
 
     std::vector<monitor_rule_t> queued;
     int polls = 0;
@@ -127,7 +131,8 @@ namespace {
         o->y = std::stoi(rule.position->substr(x + 1));
       }
       if (rule.cm && o->hdr_capable) {
-        o->cm = *rule.cm;
+        auto it = cm_becomes.find(*rule.cm);
+        o->cm = it == cm_becomes.end() ? *rule.cm : it->second;
       }
       if (rule.bitdepth) {
         o->bitdepth = rule.bitdepth;
@@ -253,6 +258,75 @@ namespace {
     return options;
   }
 
+  /**
+   * @brief A fake Hyprland request socket, for hyprland_compositor_t itself: DP-3 (showing workspace 1, with 3 also on
+   *        it) and HDMI-A-1 (showing 2, focused).
+   */
+  struct fake_socket_t {
+    static constexpr auto signature = "sig_1_1";
+    hyprland_fakes::temp_dir_t tmp;
+    std::string provider = "lua";  ///< configProvider in j/status: "lua" or "hyprlang".
+    std::atomic<bool> workspaces_fail {false};
+    hyprland_fakes::fake_request_socket_t socket {make_dir(tmp.path()) / ".socket.sock", [this](const std::string &req) {
+                                                    return handle(req);
+                                                  }};
+
+    static std::filesystem::path make_dir(const std::filesystem::path &base) {
+      std::filesystem::create_directories(base / signature);
+      return base / signature;
+    }
+
+    std::string handle(const std::string &req) {
+      if (req == "j/status") {
+        return std::format(R"({{"configProvider": "{}"}})", provider);
+      }
+      if (req == "/version") {
+        return "Hyprland 0.57.2";
+      }
+      if (req == "j/monitors all") {
+        return R"([
+          {"id": 1, "name": "DP-3", "width": 3840, "height": 2160, "refreshRate": 240, "x": 0, "y": 0, "disabled": false,
+           "dpmsStatus": true, "focused": false, "activeWorkspace": {"id": 1, "name": "1"}},
+          {"id": 2, "name": "HDMI-A-1", "width": 3840, "height": 2160, "refreshRate": 240, "x": 3840, "y": 0,
+           "disabled": false, "dpmsStatus": true, "focused": true, "activeWorkspace": {"id": 2, "name": "2"}}])";
+      }
+      if (req == "j/workspaces") {
+        if (workspaces_fail) {
+          return "error: busy";
+        }
+        return R"([{"id": 1, "name": "1", "monitor": "DP-3"}, {"id": 2, "name": "2", "monitor": "HDMI-A-1"},
+                   {"id": 3, "name": "3", "monitor": "DP-3"}])";
+      }
+      if (req.starts_with("/dispatch ")) {
+        return "ok";
+      }
+      return "unknown request";
+    }
+
+    std::shared_ptr<hyprland_compositor_t> compositor() {
+      hyprland_compositor_t::options_t options;
+      options.hypr_dir = tmp.path();
+      options.signature = signature;
+      options.get_virtual_hdr = [](const std::string &) {
+        return std::nullopt;
+      };
+      options.set_virtual_hdr = [](const std::string &, bool) {
+        return false;
+      };
+      return std::make_shared<hyprland_compositor_t>(std::move(options));
+    }
+
+    std::vector<std::string> dispatches() {
+      std::vector<std::string> result;
+      for (auto &req : socket.requests()) {
+        if (req.starts_with("/dispatch ")) {
+          result.push_back(req);
+        }
+      }
+      return result;
+    }
+  };
+
   const output_t &out(const fake_compositor_t &c, const std::string &name) {
     return *c.current.find(name);
   }
@@ -305,6 +379,19 @@ TEST(HyprlandSettingsManagerTest, ParsesMonitorsWorkspacesAndModes) {
   EXPECT_FALSE(parse_mode_string("1920x1080"));
   EXPECT_FALSE(parse_mode_string("0x1080@60"));
   EXPECT_EQ(mode_string({1920, 1080, 59.94}), "1920x1080@59.940");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, KeepsNamedWorkspacesWhateverTheirId) {
+  // Hyprland gives named workspaces negative ids too (from -1337 down), like special ones (-98, -99, ...). Only the
+  // special workspaces are left out, recognised by their reserved name.
+  const auto workspaces = parse_workspaces(nlohmann::json::parse(R"([
+    {"id": 1, "name": "1", "monitor": "DP-3"},
+    {"id": -1337, "name": "apollo-1a2b3c4d", "monitor": "APOLLO-1a2b3c4d"},
+    {"id": -1338, "name": "specialist", "monitor": "DP-3"},
+    {"id": -98, "name": "special:magic", "monitor": "DP-3"},
+    {"id": -99, "name": "special", "monitor": "DP-3"}])"));
+  EXPECT_EQ(workspaces, (std::vector<workspace_t> {{"1", "DP-3"}, {"apollo-1a2b3c4d", "APOLLO-1a2b3c4d"}, {"specialist", "DP-3"}}));
 }
 
 // Bugs caught: 0, False positives: 0
@@ -847,6 +934,80 @@ TEST(HyprlandSettingsManagerTest, RejectedHyprlangRuleIsReportedByWhatItChanges)
 
   c->refuse = {"HDMI-A-1"};
   EXPECT_EQ(m.applySettings(cfg("HDMI-A-1", Prep::EnsurePrimary)), ApplyResult::PrimaryDevicePrepFailed);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, RepeatApplyPutsAnExternallyChangedHdrStateBack) {
+  auto c = desk();
+  c->current.outputs[0].hdr_capable = true;
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  // An SDR stream on the SDR monitor: only the topology changes.
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::EnsureOnlyDisplay, {}, {}, HdrState::Disabled)), ApplyResult::Ok);
+  ASSERT_TRUE(p->data);
+
+  // Something switches DP-3 to HDR during the session; the client reconnects, still asking for SDR.
+  c->find("DP-3")->cm = "hdr";
+  c->find("DP-3")->bitdepth = 10;
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::EnsureOnlyDisplay, {}, {}, HdrState::Disabled)), ApplyResult::Ok);
+  EXPECT_EQ(out(*c, "DP-3").cm, "srgb");
+  EXPECT_EQ(out(*c, "DP-3").bitdepth, 8);
+
+  // Already as asked: no colour change is sent.
+  c->rules.clear();
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::EnsureOnlyDisplay, {}, {}, HdrState::Disabled)), ApplyResult::Ok);
+  EXPECT_TRUE(std::ranges::none_of(c->rules, [](const monitor_rule_t &r) {
+    return r.cm.has_value();
+  }));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, RevertWaitsForTheExactColourPreset) {
+  auto c = desk();
+  c->current.outputs[0].hdr_capable = true;
+  c->current.outputs[0].cm = "hdredid";
+  c->current.outputs[0].bitdepth = 10;
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::VerifyOnly, {}, {}, HdrState::Disabled)), ApplyResult::Ok);
+  ASSERT_EQ(out(*c, "DP-3").cm, "srgb");
+
+  // The monitor takes hdredid as plain hdr: still HDR, but not the preset the user had.
+  c->cm_becomes["hdredid"] = "hdr";
+  EXPECT_EQ(m.revertSettings(), RevertResult::RevertingHdrStatesFailed);
+  EXPECT_TRUE(p->data);
+
+  c->cm_becomes.clear();
+  ASSERT_EQ(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(out(*c, "DP-3").cm, "hdredid");
+  EXPECT_FALSE(p->data);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandCompositorTest, LayoutFailsWhenTheWorkspacesCannotBeListed) {
+  fake_socket_t hypr;
+  auto c = hypr.compositor();
+  auto layout = c->layout();
+  ASSERT_TRUE(layout);
+  EXPECT_EQ(layout->workspaces.size(), 3u);
+
+  // An empty list would be saved as the original layout, or make revert skip putting the workspaces back.
+  hypr.workspaces_fail = true;
+  EXPECT_FALSE(c->layout());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandCompositorTest, HyprlangShowWorkspaceSelectsItAndKeepsTheFocus) {
+  fake_socket_t hypr;
+  hypr.provider = "hyprlang";
+  auto c = hypr.compositor();
+  // Workspace 3 is already on DP-3, not shown: moving it there alone would change nothing.
+  ASSERT_TRUE(c->show_workspace("DP-3", "3"));
+  EXPECT_EQ(hypr.dispatches(), (std::vector<std::string> {
+                                 "/dispatch moveworkspacetomonitor 3 DP-3",
+                                 "/dispatch workspace 3",
+                                 "/dispatch focusmonitor HDMI-A-1",
+                               }));
 }
 
 // Bugs caught: 0, False positives: 0

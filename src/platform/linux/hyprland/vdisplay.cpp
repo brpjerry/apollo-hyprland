@@ -309,21 +309,26 @@ namespace hyprland {
     }
 
     const auto seen = added_count(name);
+    // Claim the name first: another instance's stale cleanup takes an Apollo output without a live owner for a
+    // leftover and would remove it.
+    write_owner_file(name);
     if (!ipc_->create_headless(name)) {
       BOOST_LOG(error) << "Hyprland virtual display: cannot create headless output "sv << name;
+      remove_owner_file(name);
       return {};
     }
     auto &entry = owned_[name];
     entry = {};
     start_session(entry);
     const auto rule = rule_for_locked(name, entry, mode, std::nullopt);
-    write_owner_file(name);
 
     const auto fail = [&](std::string_view why) -> std::string {
       BOOST_LOG(error) << "Hyprland virtual display: "sv << name << ' ' << why << "; removing it"sv;
-      remove_output_locked(name);
-      owned_.erase(name);
-      remove_owner_file(name);
+      // If that fails too, keep it owned: the caller's remove() (terminate() after a failed launch) tries again.
+      if (remove_output_locked(name)) {
+        owned_.erase(name);
+        remove_owner_file(name);
+      }
       return {};
     };
 
@@ -452,7 +457,14 @@ namespace hyprland {
       return false;
     }
 
-    const auto current = find_monitor_locked(name);
+    // A monitor list that cannot be read says nothing about the output: keep it owned and let the caller retry.
+    const auto monitors = monitors_locked();
+    if (!monitors) {
+      BOOST_LOG(warning) << "Hyprland virtual display: cannot list monitors to remove "sv << name;
+      return false;
+    }
+    const auto found = std::ranges::find(*monitors, name, &monitor_info_t::name);
+    const auto current = found == monitors->end() ? std::nullopt : std::make_optional(*found);
     std::optional<focus_t> restore_focus;
     if (auto it = owned_.find(name); it != owned_.end()) {
       it->second.pgid = 0;
@@ -783,7 +795,7 @@ namespace hyprland {
   std::optional<std::vector<monitor_info_t>> vdisplay_t::monitors_locked() {
     for (int attempt = 0; attempt < 2; ++attempt) {
       if (ipc_) {
-        if (auto json = ipc_->request_json("monitors all"sv)) {
+        if (auto json = ipc_->request_json("monitors all"sv); json && json->is_array()) {
           return parse_monitors(*json);
         }
       }
@@ -793,6 +805,14 @@ namespace hyprland {
       }
     }
     return std::nullopt;
+  }
+
+  std::optional<bool> vdisplay_t::monitor_listed_locked(const std::string &name) {
+    const auto monitors = monitors_locked();
+    if (!monitors) {
+      return std::nullopt;
+    }
+    return std::ranges::find(*monitors, name, &monitor_info_t::name) != monitors->end();
   }
 
   std::optional<monitor_info_t> vdisplay_t::find_monitor_locked(const std::string &name) {
@@ -883,7 +903,7 @@ namespace hyprland {
     }
     if (!wait_for_output_event_locked(name, false, seen)) {
       BOOST_LOG(warning) << "Hyprland virtual display: no monitorremovedv2 for "sv << name;
-      return !find_monitor_locked(name).has_value();
+      return monitor_listed_locked(name) == false;
     }
     return true;
   }
@@ -936,7 +956,7 @@ namespace hyprland {
       }
       // Without the event socket, fall back to polling the monitor list.
       if (!listener_ || !listener_->connected()) {
-        if (find_monitor_locked(name).has_value() == added) {
+        if (monitor_listed_locked(name) == added) {
           return true;
         }
       }

@@ -27,6 +27,7 @@
 // local includes
 #include "config.h"
 #include "platform/common.h"
+#include "platform/vdisplay.h"
 #include "rtsp.h"
 #include "utility.h"
 #include "uuid.h"
@@ -201,6 +202,17 @@ namespace proc {
    *         Windows also when the display could not be activated).
    */
   std::string create_virtual_display(const ctx_t &app, rtsp_stream::launch_session_t &launch_session, uint32_t render_width, uint32_t render_height);
+
+  /**
+   * @brief Whether a launch that needed a virtual display but got none may go on with the configured display.
+   *
+   * Windows keeps upstream's fallback to the physical display. Elsewhere that is only allowed when the platform has
+   * no virtual display backend at all (`unavailable`, e.g. not running under Hyprland): a backend that exists but
+   * failed, or a display that could not be set up, ends the launch instead of streaming the host's desktop.
+   * @param status The backend status after create_virtual_display().
+   * @param display_attempted `launch_session.virtual_display` after create_virtual_display().
+   */
+  bool may_stream_without_virtual_display(platf::vdisplay::status_e status, bool display_attempted);
 
   std::string validate_app_image_path(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);

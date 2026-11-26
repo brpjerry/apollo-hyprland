@@ -145,6 +145,9 @@ namespace {
 
     std::atomic<bool> emit_events {true};  ///< Send monitoraddedv2/monitorremovedv2.
     std::atomic<bool> apply_rules {true};  ///< Apply hl.monitor() rules to the monitor list.
+    std::atomic<int> fail_removes {0};  ///< Refuse this many `output remove` requests.
+    std::atomic<bool> monitors_fail {false};  ///< Answer `j/monitors all` with an error.
+    std::function<void(const std::string &)> on_request;  ///< Sees every request before it is handled.
 
   private:
     static fs::path make_dir(const fs::path &base) {
@@ -164,6 +167,9 @@ namespace {
     }
 
     std::string handle(const std::string &req) {
+      if (on_request) {
+        on_request(req);
+      }
       static const std::regex create_re {"^/output create headless (\\S+)$"};
       static const std::regex remove_re {"^/output remove (\\S+)$"};
       static const std::regex output_re {"output = \"([^\"]+)\""};
@@ -183,6 +189,9 @@ namespace {
         return R"({"tag": "v0.57.2", "version": "0.57.2"})";
       }
       if (req == "j/monitors all") {
+        if (monitors_fail) {
+          return "error: busy";
+        }
         std::lock_guard lock {mutex_};
         nlohmann::json arr = nlohmann::json::array();
         int id = 0;
@@ -208,6 +217,10 @@ namespace {
         return "ok";
       }
       if (std::regex_match(req, match, remove_re)) {
+        if (fail_removes > 0) {
+          --fail_removes;
+          return "error: busy";
+        }
         const std::string name = match[1];
         {
           std::lock_guard lock {mutex_};
@@ -581,6 +594,64 @@ TEST(HyprlandVdisplayTest, ReusesItsOwnOutputButReplacesLeftovers) {
   EXPECT_DOUBLE_EQ(m->refresh, 90.0);
 
   EXPECT_TRUE(vd.remove(client_identity()));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, OwnerFileExistsBeforeTheOutput) {
+  fake_hyprland_t hypr;
+  std::atomic<int> owner_at_create {0};
+  hypr.on_request = [&](const std::string &req) {
+    if (req == "/output create headless APOLLO-1a2b3c4d") {
+      std::ifstream in {hypr.state_dir() / client_output};
+      int pid = 0;
+      in >> pid;
+      owner_at_create = pid;
+    }
+  };
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  // Otherwise another instance's stale cleanup can take the brand-new output for a leftover and remove it.
+  EXPECT_EQ(owner_at_create.load(), ::getpid());
+  EXPECT_TRUE(vd.remove(client_identity()));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, FailedCleanupKeepsTheOutputForTheNextRemove) {
+  fake_hyprland_t hypr;
+  hypr.apply_rules = false;  // the mode never lands, so create() gives up and removes the output...
+  hypr.fail_removes = 1;  // ...which fails the first time
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+
+  EXPECT_EQ(vd.create(client_identity(), "Living Room", {2560, 1600, 120000}), "");
+  ASSERT_TRUE(hypr.monitor(client_output));
+  // The failed launch's terminate() removes the display: that must still reach it.
+  EXPECT_TRUE(vd.remove(client_identity()));
+  EXPECT_FALSE(hypr.monitor(client_output));
+  EXPECT_TRUE(vd.owned_outputs().empty());
+  EXPECT_FALSE(fs::exists(hypr.state_dir() / client_output));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, RemoveDoesNotTakeAFailedMonitorListForGone) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+
+  hypr.monitors_fail = true;
+  EXPECT_FALSE(vd.remove(client_identity()));
+  EXPECT_TRUE(hypr.monitor(client_output));
+  EXPECT_EQ(vd.owned_outputs(), std::vector<std::string> {client_output});
+
+  hypr.monitors_fail = false;
+  EXPECT_TRUE(vd.remove(client_identity()));
+  EXPECT_FALSE(hypr.monitor(client_output));
 }
 
 // Bugs caught: 0, False positives: 0
