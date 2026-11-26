@@ -8,6 +8,8 @@
 #ifdef SUNSHINE_BUILD_WAYLAND
 
   // standard includes
+  #include <filesystem>
+  #include <format>
   #include <fstream>
   #include <map>
 
@@ -102,6 +104,31 @@ TEST(HyprlandDisplaySettingsTest, StoreKeepsOtherEntriesAndRemovesEmptyOnes) {
   display_settings_store_t none {""};
   EXPECT_FALSE(none.save("APOLLO-0000beef", b));
   EXPECT_TRUE(none.load("APOLLO-0000beef").empty());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandDisplaySettingsTest, StoreKeepsTheOldFileWhenTheWriteFails) {
+  namespace fs = std::filesystem;
+  if (!fs::exists("/dev/full")) {
+    GTEST_SKIP() << "needs /dev/full";
+  }
+  hyprland_fakes::temp_dir_t tmp;
+  const auto file = tmp.path() / "vdisplay_settings.json";
+  display_settings_store_t store {file};
+  display_settings_t a;
+  a.scale = 2.0;
+  ASSERT_TRUE(store.save("APOLLO-1a2b3c4d", a));
+
+  // The next write runs out of space. The stream buffers the small file, so that only shows when it is flushed.
+  auto tmp_file = file;
+  tmp_file += std::format(".{}.tmp", ::getpid());
+  fs::create_symlink("/dev/full", tmp_file);
+  display_settings_t b;
+  b.transform = 3;
+  EXPECT_FALSE(store.save("APOLLO-0000beef", b));
+  EXPECT_FALSE(fs::is_symlink(file)) << "the settings file was replaced by the failed write";
+  EXPECT_EQ(store.load("APOLLO-1a2b3c4d"), a);
+  EXPECT_FALSE(fs::exists(fs::symlink_status(tmp_file)));
 }
 
 // Bugs caught: 0, False positives: 0

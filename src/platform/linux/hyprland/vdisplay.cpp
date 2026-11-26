@@ -954,6 +954,7 @@ namespace hyprland {
     std::filesystem::create_directories(options_.state_dir, ec);
     std::ofstream out {options_.state_dir / name, std::ios::trunc};
     out << ::getpid() << '\n';
+    out.close();
     if (!out) {
       BOOST_LOG(debug) << "Hyprland virtual display: cannot write "sv << (options_.state_dir / name).string();
     }

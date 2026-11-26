@@ -195,6 +195,8 @@ namespace hyprland {
     {
       std::ofstream out {tmp, std::ios::trunc};
       out << json.dump(2) << '\n';
+      // A write error (a full disk, say) may only show when the buffer is flushed.
+      out.close();
       if (!out) {
         BOOST_LOG(warning) << "Hyprland virtual display: cannot write "sv << tmp.string();
         std::filesystem::remove(tmp, ec);
