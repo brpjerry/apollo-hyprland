@@ -63,11 +63,16 @@
    * @param {?string} redir Value of the `redir` query parameter.
    * @return {string} Absolute path inside the Web UI.
    */
-  export function loginTarget(redir) {
+  export function loginTarget(redir, hash = '') {
     if (typeof redir !== 'string') {
       return '/'
     }
-    const target = redir.startsWith('./') ? redir.substring(1) : redir
+    let target = redir.startsWith('./') ? redir.substring(1) : redir
+    // The server's redirect to the login page cannot carry the fragment in `redir` (browsers never send it), but the
+    // browser keeps it on the login page's URL. Put it back, e.g. so /pin#PIN opens the PIN tab.
+    if (hash && !target.includes('#')) {
+      target += hash
+    }
     if (!target.startsWith('/')) {
       return '/'
     }
@@ -144,7 +149,7 @@
 
         this.success = true
         const params = new URLSearchParams(globalThis.location.search)
-        globalThis.location.assign(loginTarget(params.get('redir')))
+        globalThis.location.assign(loginTarget(params.get('redir'), globalThis.location.hash))
       },
     },
   }

@@ -93,8 +93,8 @@ export function jsonRequest(body, method = 'POST') {
 /**
  * @brief Drop Apollo's login session cookie in this browser.
  *
- * The server sets `auth` without HttpOnly, so the page can expire it. Logging out also calls `POST /api/logout`, which
- * ends the session on the server.
+ * The server now sets `auth` with HttpOnly, so this only removes a cookie left by an older version; `POST /api/logout`
+ * is what ends the session and expires the cookie.
  *
  * @param {Document} [doc] Document whose cookie is cleared.
  */

@@ -201,4 +201,11 @@ describe('Login page', () => {
     expect(ctx.error).toBe('login.login_failed:{"error":"offline"}')
     expect(ctx.loading).toBe(false)
   })
+
+  // Bugs caught: 0, False positives: 0
+  it('keeps the fragment the browser carried over from the redirected page', () => {
+    expect(loginTarget('/pin', '#PIN')).toBe('/pin#PIN')
+    expect(loginTarget('/pin#clients', '#PIN')).toBe('/pin#clients')
+    expect(loginTarget('//evil.example', '#x')).toBe('/')
+  })
 })
