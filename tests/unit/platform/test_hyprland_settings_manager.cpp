@@ -308,6 +308,19 @@ TEST(HyprlandSettingsManagerTest, ParsesMonitorsWorkspacesAndModes) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, KeepsNamedWorkspacesWhateverTheirId) {
+  // Hyprland gives named workspaces negative ids too (from -1337 down), like special ones (-98, -99, ...). Only the
+  // special workspaces are left out, recognised by their reserved name.
+  const auto workspaces = parse_workspaces(nlohmann::json::parse(R"([
+    {"id": 1, "name": "1", "monitor": "DP-3"},
+    {"id": -1337, "name": "apollo-1a2b3c4d", "monitor": "APOLLO-1a2b3c4d"},
+    {"id": -1338, "name": "specialist", "monitor": "DP-3"},
+    {"id": -98, "name": "special:magic", "monitor": "DP-3"},
+    {"id": -99, "name": "special", "monitor": "DP-3"}])"));
+  EXPECT_EQ(workspaces, (std::vector<workspace_t> {{"1", "DP-3"}, {"apollo-1a2b3c4d", "APOLLO-1a2b3c4d"}, {"specialist", "DP-3"}}));
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(HyprlandSettingsManagerTest, ChoosesAnAvailableModeOnRealMonitors) {
   output_t drm = output("DP-3", {3840, 2160, 240.0}, 0, 0, "1");
   drm.any_mode = false;

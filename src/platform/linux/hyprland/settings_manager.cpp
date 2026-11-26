@@ -274,8 +274,9 @@ namespace hyprland::dd {
     for (const auto &obj : workspaces) {
       auto name = json_get<std::string>(obj, "name", "");
       auto monitor = json_get<std::string>(obj, "monitor", "");
-      // Special workspaces follow the focused monitor; they are not moved around.
-      if (name.empty() || name.starts_with("special"sv) || json_get<int>(obj, "id", 0) < 0) {
+      // Special workspaces follow the focused monitor; they are not moved around. They are told apart by their
+      // reserved name: named workspaces have negative ids as well.
+      if (name.empty() || name == "special"sv || name.starts_with("special:"sv)) {
         continue;
       }
       result.push_back({std::move(name), std::move(monitor)});
