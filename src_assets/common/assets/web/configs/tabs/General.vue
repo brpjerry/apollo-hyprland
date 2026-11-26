@@ -1,6 +1,14 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import Checkbox from '../../Checkbox.vue'
+import { ref } from 'vue'
+import {
+  Play,
+  Plus,
+  Shield,
+  Trash2,
+  Undo,
+} from '@lucide/vue'
 
 const props = defineProps({
   platform: String,
@@ -65,8 +73,8 @@ onMounted(() => {
         <option value="cs">Čeština (Czech)</option>
         <option value="de">Deutsch (German)</option>
         <option value="en">English</option>
-        <option value="en_GB">English, UK</option>
-        <option value="en_US">English, US</option>
+        <option value="en_GB">English, United Kingdom</option>
+        <option value="en_US">English, United States</option>
         <option value="es">Español (Spanish)</option>
         <option value="fr">Français (French)</option>
         <option value="hu">Magyar (Hungarian)</option>
@@ -110,28 +118,30 @@ onMounted(() => {
       <div class="form-text">{{ $t('config.min_log_level_desc') }}</div>
     </div>
 
-    <!-- Global Prep/State Commands -->
-    <div v-for="type in ['prep', 'state']" :id="`global_${type}_cmd`" class="mb-3 d-flex flex-column">
-      <label class="form-label">{{ $t(`config.global_${type}_cmd`) }}</label>
-      <div class="form-text pre-wrap">{{ $t(`config.global_${type}_cmd_desc`) }}</div>
-      <table class="table" v-if="cmds[type].length > 0">
+    <!-- Global Prep Commands -->
+    <div id="global_prep_cmd" class="mb-3 d-flex flex-column">
+      <div class="form-label">{{ $t('config.global_prep_cmd') }}</div>
+      <div class="form-text">{{ $t('config.global_prep_cmd_desc') }}</div>
+      <table class="table" v-if="config.global_prep_cmd.length > 0">
         <thead>
         <tr>
-          <th scope="col"><i class="fas fa-play"></i> {{ $t('_common.do_cmd') }}</th>
-          <th scope="col"><i class="fas fa-undo"></i> {{ $t('_common.undo_cmd') }}</th>
-          <th scope="col" v-if="(platform === 'windows' || platform === 'linux')">
-            <i class="fas fa-shield-alt"></i> {{ $t('_common.run_as') }}
+          <th scope="col"><Play :size="16" /> {{ $t('_common.do_cmd') }}</th>
+          <th scope="col"><Undo :size="16" /> {{ $t('_common.undo_cmd') }}</th>
+          <th scope="col" v-if="platform === 'windows'">
+            <Shield :size="16" /> {{ $t('_common.run_as') }}
           </th>
           <th scope="col"></th>
         </tr>
         </thead>
         <tbody>
-        <tr v-for="(c, i) in cmds[type]">
+        <tr v-for="(c, i) in config.global_prep_cmd" :key="i">
           <td>
-            <input type="text" class="form-control monospace" v-model="c.do" />
+            <label :for="`prep-cmd-do-${i}`" class="visually-hidden">{{ $t('_common.do_cmd') }}</label>
+            <input :id="`prep-cmd-do-${i}`" type="text" class="form-control monospace" v-model="c.do" />
           </td>
           <td>
-            <input type="text" class="form-control monospace" v-model="c.undo" />
+            <label :for="`prep-cmd-undo-${i}`" class="visually-hidden">{{ $t('_common.undo_cmd') }}</label>
+            <input :id="`prep-cmd-undo-${i}`" type="text" class="form-control monospace" v-model="c.undo" />
           </td>
           <td v-if="(platform === 'windows' || platform === 'linux')" class="align-middle">
             <Checkbox :id="type + '-cmd-admin-' + i"
@@ -141,12 +151,12 @@ onMounted(() => {
                       v-model="c.elevated"
             ></Checkbox>
           </td>
-          <td class="text-end">
-            <button class="btn btn-danger me-2" @click="removeCmd(cmds[type], i)">
-              <i class="fas fa-trash"></i>
+          <td>
+            <button class="btn btn-danger" @click="removeCmd(i)">
+              <Trash2 :size="16" />
             </button>
-            <button class="btn btn-success" @click="addCmd(cmds[type], prepCmdTemplate, i)">
-              <i class="fas fa-plus"></i>
+            <button class="btn btn-success" @click="addCmd">
+              <Plus :size="16" />
             </button>
           </td>
         </tr>
@@ -257,7 +267,3 @@ onMounted(() => {
     ></Checkbox>
   </div>
 </template>
-
-<style scoped>
-
-</style>

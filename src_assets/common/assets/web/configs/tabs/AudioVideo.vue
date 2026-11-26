@@ -8,14 +8,10 @@ import DisplayDeviceOptions from "./audiovideo/DisplayDeviceOptions.vue";
 import DisplayModesSettings from "./audiovideo/DisplayModesSettings.vue";
 import Checkbox from "../../Checkbox.vue";
 
-const $t = inject('i18n').t;
-
-const props = defineProps([
-  'platform',
-  'config',
-  'vdisplay',
-  'min_fps_factor',
-])
+const props = defineProps({
+  platform: String,
+  config: Object,
+})
 
 const sudovdaStatus = {
   '1': 'Unknown',
@@ -72,9 +68,13 @@ const validateFallbackMode = (event) => {
           <template #windows>
             <pre>tools\audio-info.exe</pre>
           </template>
+          <template #freebsd>
+            <pre>pacmd list-sinks | grep "name:"</pre>
+            <pre>pactl list short sinks</pre>
+          </template>
           <template #linux>
             <pre>pacmd list-sinks | grep "name:"</pre>
-            <pre>pactl info | grep Source</pre>
+            <pre>pactl list short sinks</pre>
           </template>
           <template #macos>
             <a href="https://github.com/mattingalls/Soundflower" target="_blank">Soundflower</a><br>
@@ -124,6 +124,18 @@ const validateFallbackMode = (event) => {
               v-model="config.stream_audio"
               default="true"
     ></Checkbox>
+
+    <PlatformLayout :platform="platform">
+      <template #windows>
+        <!-- Externally Managed Audio -->
+        <Checkbox class="mb-3"
+                  id="external_audio"
+                  locale-prefix="config"
+                  v-model="config.external_audio"
+                  default="false"
+        ></Checkbox>
+      </template>
+    </PlatformLayout>
 
     <AdapterNameSelector
         :platform="platform"
@@ -203,6 +215,3 @@ const validateFallbackMode = (event) => {
 
   </div>
 </template>
-
-<style scoped>
-</style>

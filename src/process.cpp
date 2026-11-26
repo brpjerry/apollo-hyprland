@@ -8,9 +8,12 @@
  #define BOOST_PROCESS_VERSION 1
 #endif
 // standard includes
+#include <algorithm>
+#include <array>
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // lib includes
@@ -20,6 +23,8 @@
 #include <boost/program_options/parsers.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <boost/range/algorithm/find_if.hpp>
+#include <boost/token_functions.hpp>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 
@@ -27,7 +32,7 @@
 #include "config.h"
 #include "crypto.h"
 #include "display_device.h"
-#include "file_handler.h"
+#include "input.h"
 #include "logging.h"
 #include "platform/common.h"
 #include "platform/vdisplay.h"
@@ -40,28 +45,26 @@
 
 #ifdef _WIN32
   // from_utf8() string conversion function
-  #include "platform/windows/misc.h"
-  #include "platform/windows/utils.h"
+  #include "platform/windows/utf_utils.h"
 
   // _SH constants for _wfsopen()
   #include <share.h>
 #endif
 
-#define DEFAULT_APP_IMAGE_PATH SUNSHINE_ASSETS_DIR "/box.png"
-
 namespace proc {
   using namespace std::literals;
   namespace pt = boost::property_tree;
 
-  proc_t proc;
+  proc_t proc;  ///< Global process registry used to track and terminate child processes.
 
-  int input_only_app_id = -1;
-  std::string input_only_app_id_str;
-  int terminate_app_id = -1;
-  std::string terminate_app_id_str;
-
+  /**
+   * @brief RAII helper that runs shutdown cleanup when destroyed.
+   */
   class deinit_t: public platf::deinit_t {
   public:
+    /**
+     * @brief Destroy the process subsystem deinitializer.
+     */
     ~deinit_t() {
       proc.terminate();
     }
@@ -71,19 +74,7 @@ namespace proc {
     return std::make_unique<deinit_t>();
   }
 
-  /**
-   * @brief Say why an elevated command failed when its exit code tells: on Linux, 126 is pkexec's status for a
-   *        denied or dismissed authorization. The command is not retried.
-   */
-  void log_if_elevation_denied(bool elevated, int exit_code) {
-#ifdef __linux__
-    if (elevated && exit_code == 126) {
-      BOOST_LOG(error) << "Authorization to run the command as root was denied or dismissed (exit code 126); not retrying"sv;
-    }
-#endif
-  }
-
-  void terminate_process_group(boost::process::v1::child &proc, boost::process::v1::group &group, std::chrono::seconds exit_timeout) {
+  void terminate_process_group(boost::process::v1::child &child_process, boost::process::v1::group &group, std::chrono::seconds exit_timeout) {
     if (group.valid() && platf::process_group_running((std::uintptr_t) group.native_handle())) {
       if (exit_timeout.count() > 0) {
         // Request processes in the group to exit gracefully
@@ -125,19 +116,32 @@ namespace proc {
       group.detach();
     }
 
-    if (proc.valid()) {
+    if (child_process.valid()) {
       // avoid zombie process
-      proc.detach();
+      child_process.detach();
     }
   }
 
-  boost::filesystem::path find_working_directory(const std::string &cmd, const boost::process::v1::environment &env) {
+  /**
+   * @brief Resolve the working directory for a configured command.
+   *
+   * @param cmd Command line to execute or inspect.
+   * @param env Environment variables for the child process.
+   * @return Directory used to launch the command, falling back to PATH lookup when needed.
+   */
+  boost::filesystem::path find_working_directory(const std::string &cmd, boost::process::v1::environment &env) {
     // Parse the raw command string into parts to get the actual command portion
+    std::vector<std::string> parts;
+    try {
 #ifdef _WIN32
-    auto parts = boost::program_options::split_winmain(cmd);
+      parts = boost::program_options::split_winmain(cmd);
 #else
-    auto parts = boost::program_options::split_unix(cmd);
+      parts = boost::program_options::split_unix(cmd);
 #endif
+    } catch (boost::escaped_list_error &err) {
+      BOOST_LOG(error) << "Boost failed to parse command ["sv << cmd << "] because " << err.what();
+      return boost::filesystem::path();
+    }
     if (parts.empty()) {
       BOOST_LOG(error) << "Unable to parse command: "sv << cmd;
       return boost::filesystem::path();
@@ -146,14 +150,22 @@ namespace proc {
     BOOST_LOG(debug) << "Parsed target ["sv << parts.at(0) << "] from command ["sv << cmd << ']';
 
     // If the target is a URL, don't parse any further here
-    if (parts.at(0).find("://") != std::string::npos) {
+    if (parts.at(0).contains("://")) {
       return boost::filesystem::path();
     }
 
     // If the cmd path is not an absolute path, resolve it using our PATH variable
     boost::filesystem::path cmd_path(parts.at(0));
     if (!cmd_path.is_absolute()) {
-      cmd_path = boost::process::v1::search_path(parts.at(0));
+      // Search the child's PATH. Boost's default search list reads this process's environment through a
+      // std::locale("") on POSIX, which throws when an LC_* variable names a locale that is not installed.
+      if (const auto path_var = env.find("PATH"); path_var != env.end()) {
+        const auto path_entries = path_var->to_vector();
+        const std::vector<boost::filesystem::path> search_dirs {path_entries.begin(), path_entries.end()};
+        cmd_path = boost::process::v1::search_path(parts.at(0), search_dirs);
+      } else {
+        cmd_path = boost::process::v1::search_path(parts.at(0));
+      }
       if (cmd_path.empty()) {
         BOOST_LOG(error) << "Unable to find executable ["sv << parts.at(0) << "]. Is it in your PATH?"sv;
         return boost::filesystem::path();
@@ -166,13 +178,60 @@ namespace proc {
     return cmd_path.parent_path();
   }
 
-  void proc_t::launch_input_only() {
-    _app_id = input_only_app_id;
-    _app_name = "Remote Input";
-    _app.uuid = REMOTE_INPUT_UUID;
-    _app.terminate_on_pause = true;
-    allow_client_commands = false;
-    placebo = true;
+  std::string prepare_command(const std::string &command) {
+#ifdef SUNSHINE_BUILD_FLATPAK
+    constexpr auto host_command_prefix = "flatpak-spawn --host "sv;
+    const auto stripped_command = boost::trim_copy(command);
+    if (stripped_command.empty() || stripped_command.starts_with(host_command_prefix)) {
+      if (!stripped_command.empty()) {
+        BOOST_LOG(warning) << "Command ["sv << stripped_command << "] already includes [flatpak-spawn --host], which is no longer required for Flatpak builds."sv;
+      }
+      return stripped_command;
+    }
+
+    return std::string {host_command_prefix} + stripped_command;
+#else
+    return command;
+#endif
+  }
+
+  /**
+   * @brief Check a prep-command launch and wait for successful completion.
+   *
+   * @param child Process returned by the prep-command launch, or an empty child on failure.
+   * @param command Command line used for logging.
+   * @param ec Launch error, updated by the wait or cleared when permission denial is allowed.
+   * @param allow_permission_denied Whether a permission-denied launch may be skipped for Desktop access before login.
+   * @return True if the command succeeded or its permission-denied launch was allowed.
+   */
+  bool wait_for_prep_command(boost::process::v1::child &child, const std::string &command, std::error_code &ec, bool allow_permission_denied) {
+    if (ec) {
+      BOOST_LOG(error) << "Couldn't run ["sv << command << "]: System: "sv << ec.message();
+      // User impersonation can fail before anyone signs in after a reboot. Allow Desktop access
+      // without waiting on the child that never started or passing its launch error to later commands.
+      if (allow_permission_denied && ec == std::errc::permission_denied) {
+        ec.clear();
+        return true;
+      }
+      return false;
+    }
+
+    child.wait(ec);
+    if (ec) {
+      BOOST_LOG(error) << '[' << command << "] wait failed with error code ["sv << ec << ']';
+      return false;
+    }
+    auto ret = child.exit_code();
+    if (ret != 0) {
+      BOOST_LOG(error) << '[' << command << "] exited with code ["sv << ret << ']';
+      return false;
+    }
+    return true;
+  }
+
+  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
+    // Ensure starting from a clean slate
+    terminate();
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_playing(_app_name);
@@ -413,9 +472,10 @@ namespace proc {
     // Sunshine Compatibility
     _env["SUNSHINE_APP_ID"] = _app.id;
     _env["SUNSHINE_APP_NAME"] = _app.name;
-    _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(render_width);
-    _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(render_height);
-    _env["SUNSHINE_CLIENT_FPS"] = config::sunshine.envvar_compatibility_mode ? std::to_string(std::round((float)launch_session->fps / 1000.0f)) : fps_str;
+    _env["SUNSHINE_CLIENT_NAME"] = launch_session->client_name;
+    _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(launch_session->width);
+    _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(launch_session->height);
+    _env["SUNSHINE_CLIENT_FPS"] = std::to_string(launch_session->fps);
     _env["SUNSHINE_CLIENT_HDR"] = launch_session->enable_hdr ? "true" : "false";
     _env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
     _env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
@@ -460,7 +520,7 @@ namespace proc {
 #ifdef _WIN32
       // fopen() interprets the filename as an ANSI string on Windows, so we must convert it
       // to UTF-16 and use the wchar_t variants for proper Unicode log file path support.
-      auto woutput = platf::from_utf8(_app.output);
+      auto woutput = utf_utils::from_utf8(_app.output);
 
       // Use _SH_DENYNO to allow us to open this log file again for writing even if it is
       // still open from a previous execution. This is required to handle the case of a
@@ -472,8 +532,10 @@ namespace proc {
     }
 
     std::error_code ec;
-    _app_prep_begin = std::begin(_app.prep_cmds);
-    _app_prep_it = _app_prep_begin;
+    // Executed when returning from function
+    auto fg = util::fail_guard([this]() {
+      terminate();
+    });
 
     for (; _app_prep_it != std::end(_app.prep_cmds); ++_app_prep_it) {
       auto &cmd = *_app_prep_it;
@@ -483,27 +545,14 @@ namespace proc {
         continue;
       }
 
+      const auto command = prepare_command(cmd.do_cmd);
       boost::filesystem::path working_dir = _app.working_dir.empty() ?
-                                              find_working_directory(cmd.do_cmd, _env) :
+                                              find_working_directory(command, _env) :
                                               boost::filesystem::path(_app.working_dir);
-      BOOST_LOG(info) << "Executing Do Cmd: ["sv << cmd.do_cmd << "] elevated: " << cmd.elevated;
-      auto child = platf::run_command(cmd.elevated, true, cmd.do_cmd, working_dir, _env, _pipe.get(), ec, nullptr);
+      BOOST_LOG(info) << "Executing Do Cmd: ["sv << command << ']';
+      auto child = platf::run_command(cmd.elevated, true, command, working_dir, _env, _pipe.get(), ec, nullptr);
 
-      if (ec) {
-        BOOST_LOG(error) << "Couldn't run ["sv << cmd.do_cmd << "]: System: "sv << ec.message();
-        // We don't want any prep commands failing launch of the desktop.
-        // This is to prevent the issue where users reboot their PC and need to log in with Sunshine.
-        // permission_denied is typically returned when the user impersonation fails, which can happen when user is not signed in yet.
-        if (!(_app.cmd.empty() && ec == std::errc::permission_denied)) {
-          return -1;
-        }
-      }
-
-      child.wait();
-      auto ret = child.exit_code();
-      log_if_elevation_denied(cmd.elevated, ret);
-      if (ret != 0 && ec != std::errc::permission_denied) {
-        BOOST_LOG(error) << '[' << cmd.do_cmd << "] failed with code ["sv << ret << ']';
+      if (!wait_for_prep_command(child, command, ec, _app.cmd.empty())) {
         return -1;
       }
     }
@@ -511,13 +560,14 @@ namespace proc {
     _env["APOLLO_APP_STATUS"] = "RUNNING";
 
     for (auto &cmd : _app.detached) {
+      const auto command = prepare_command(cmd);
       boost::filesystem::path working_dir = _app.working_dir.empty() ?
-                                              find_working_directory(cmd, _env) :
+                                              find_working_directory(command, _env) :
                                               boost::filesystem::path(_app.working_dir);
-      BOOST_LOG(info) << "Spawning ["sv << cmd << "] in ["sv << working_dir << ']';
-      auto child = platf::run_command(_app.elevated, true, cmd, working_dir, _env, _pipe.get(), ec, nullptr);
+      BOOST_LOG(info) << "Spawning ["sv << command << "] in ["sv << working_dir << ']';
+      auto child = platf::run_command(_app.elevated, true, command, working_dir, _env, _pipe.get(), ec, nullptr);
       if (ec) {
-        BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd << "]: System: "sv << ec.message();
+        BOOST_LOG(warning) << "Couldn't spawn ["sv << command << "]: System: "sv << ec.message();
       } else {
         child.detach();
       }
@@ -527,13 +577,14 @@ namespace proc {
       BOOST_LOG(info) << "No commands configured, showing desktop..."sv;
       placebo = true;
     } else {
+      const auto command = prepare_command(_app.cmd);
       boost::filesystem::path working_dir = _app.working_dir.empty() ?
-                                              find_working_directory(_app.cmd, _env) :
+                                              find_working_directory(command, _env) :
                                               boost::filesystem::path(_app.working_dir);
-      BOOST_LOG(info) << "Executing: ["sv << _app.cmd << "] in ["sv << working_dir << ']';
-      _process = platf::run_command(_app.elevated, true, _app.cmd, working_dir, _env, _pipe.get(), ec, &_process_group);
+      BOOST_LOG(info) << "Executing: ["sv << command << "] in ["sv << working_dir << ']';
+      _process = platf::run_command(_app.elevated, true, command, working_dir, _env, _pipe.get(), ec, &_process_group);
       if (ec) {
-        BOOST_LOG(warning) << "Couldn't run ["sv << _app.cmd << "]: System: "sv << ec.message();
+        BOOST_LOG(warning) << "Couldn't run ["sv << command << "]: System: "sv << ec.message();
         return -1;
       }
 #ifndef _WIN32
@@ -659,8 +710,8 @@ namespace proc {
     } else if (_process.running()) {
       // The app is still running only if the initial process launched is still running
       return _app_id;
-    } else if (_app.auto_detach && std::chrono::steady_clock::now() - _app_launch_time < 5s) {
-      BOOST_LOG(info) << "App exited with code ["sv << _process.native_exit_code() << "] within 5 seconds of launch. Treating the app as a detached command."sv;
+    } else if (_app.auto_detach && _process.native_exit_code() == 0 && std::chrono::steady_clock::now() - _app_launch_time < 5s) {
+      BOOST_LOG(info) << "App exited gracefully within 5 seconds of launch. Treating the app as a detached command."sv;
       BOOST_LOG(info) << "Adjust this behavior in the Applications tab or apps.json if this is not what you want."sv;
       placebo = true;
 
@@ -681,111 +732,8 @@ namespace proc {
     return 0;
   }
 
-  void proc_t::resume() {
-    BOOST_LOG(info) << "Session resuming for app [" << _app_name << "].";
-
-    if (!_app.state_cmds.empty()) {
-      auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
-
-        _env["APOLLO_APP_STATUS"] = "RESUMING";
-
-        std::error_code ec;
-        auto _state_resume_it = std::begin(cmd_list);
-
-        for (; _state_resume_it != std::end(cmd_list); ++_state_resume_it) {
-          auto &cmd = *_state_resume_it;
-
-          // Skip empty commands
-          if (cmd.do_cmd.empty()) {
-            continue;
-          }
-
-          boost::filesystem::path working_dir = app_working_dir.empty() ?
-                                                  find_working_directory(cmd.do_cmd, _env) :
-                                                  boost::filesystem::path(app_working_dir);
-          BOOST_LOG(info) << "Executing Resume Cmd: ["sv << cmd.do_cmd << "] elevated: " << cmd.elevated;
-          auto child = platf::run_command(cmd.elevated, true, cmd.do_cmd, working_dir, _env, nullptr, ec, nullptr);
-
-          if (ec) {
-            BOOST_LOG(error) << "Couldn't run ["sv << cmd.do_cmd << "]: System: "sv << ec.message();
-            break;
-          }
-
-          child.wait();
-
-          auto ret = child.exit_code();
-          log_if_elevation_denied(cmd.elevated, ret);
-          if (ret != 0 && ec != std::errc::permission_denied) {
-            BOOST_LOG(error) << '[' << cmd.do_cmd << "] failed with code ["sv << ret << ']';
-            break;
-          }
-        }
-      });
-
-      exec_thread.detach();
-    }
-  }
-
-  void proc_t::pause() {
-    if (!running()) {
-      BOOST_LOG(info) << "Session already stopped, do not run pause commands.";
-      return;
-    }
-
-    if (_app.terminate_on_pause) {
-      BOOST_LOG(info) << "Terminating app [" << _app_name << "] when all clients are disconnected. Pause commands are skipped.";
-      terminate();
-      return;
-    }
-
-    BOOST_LOG(info) << "Session pausing for app [" << _app_name << "].";
-
-    if (!_app.state_cmds.empty()) {
-      auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
-        _env["APOLLO_APP_STATUS"] = "PAUSING";
-
-        std::error_code ec;
-        auto _state_pause_it = std::begin(cmd_list);
-
-        for (; _state_pause_it != std::end(cmd_list); ++_state_pause_it) {
-          auto &cmd = *_state_pause_it;
-
-          // Skip empty commands
-          if (cmd.undo_cmd.empty()) {
-            continue;
-          }
-
-          boost::filesystem::path working_dir = app_working_dir.empty() ?
-                                                  find_working_directory(cmd.undo_cmd, _env) :
-                                                  boost::filesystem::path(app_working_dir);
-          BOOST_LOG(info) << "Executing Pause Cmd: ["sv << cmd.undo_cmd << "] elevated: " << cmd.elevated;
-          auto child = platf::run_command(cmd.elevated, true, cmd.undo_cmd, working_dir, _env, nullptr, ec, nullptr);
-
-          if (ec) {
-            BOOST_LOG(error) << "Couldn't run ["sv << cmd.undo_cmd << "]: System: "sv << ec.message();
-            break;
-          }
-
-          child.wait();
-
-          auto ret = child.exit_code();
-          log_if_elevation_denied(cmd.elevated, ret);
-          if (ret != 0 && ec != std::errc::permission_denied) {
-            BOOST_LOG(error) << '[' << cmd.undo_cmd << "] failed with code ["sv << ret << ']';
-            break;
-          }
-        }
-      });
-
-      exec_thread.detach();
-    }
-
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-    system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-#endif
-  }
-
-  void proc_t::terminate(bool immediate, bool needs_refresh) {
+  void proc_t::terminate() {
+    input::terminate_gamepads();
     std::error_code ec;
     placebo = false;
 
@@ -805,11 +753,12 @@ namespace proc {
         continue;
       }
 
+      const auto command = prepare_command(cmd.undo_cmd);
       boost::filesystem::path working_dir = _app.working_dir.empty() ?
-                                              find_working_directory(cmd.undo_cmd, _env) :
+                                              find_working_directory(command, _env) :
                                               boost::filesystem::path(_app.working_dir);
-      BOOST_LOG(info) << "Executing Undo Cmd: ["sv << cmd.undo_cmd << ']';
-      auto child = platf::run_command(cmd.elevated, true, cmd.undo_cmd, working_dir, _env, _pipe.get(), ec, nullptr);
+      BOOST_LOG(info) << "Executing Undo Cmd: ["sv << command << ']';
+      auto child = platf::run_command(cmd.elevated, true, command, working_dir, _env, _pipe.get(), ec, nullptr);
 
       if (ec) {
         BOOST_LOG(warning) << "System: "sv << ec.message();
@@ -936,6 +885,20 @@ namespace proc {
     return _env;
   }
 
+  void proc_t::update_apps_and_env(proc_t &&other) {
+    if (_app_id > 0 || placebo) {
+      // Preserve session-specific environment variables for the running app
+      for (const auto &var : _env) {
+        std::string name = var.get_name();
+        if (name.find("SUNSHINE_APP_") == 0 || name.find("SUNSHINE_CLIENT_") == 0) {
+          other._env[name] = var.to_string();
+        }
+      }
+    }
+    _env = std::move(other._env);
+    _apps = std::move(other._apps);
+  }
+
   proc_t::~proc_t() {
     // It's not safe to call terminate() here because our proc_t is a static variable
     // that may be destroyed after the Boost loggers have been destroyed. Instead,
@@ -945,6 +908,13 @@ namespace proc {
     assert(!_process.running());
   }
 
+  /**
+   * @brief Find the closing parenthesis for an environment-variable expression.
+   *
+   * @param begin Iterator positioned at the opening parenthesis.
+   * @param end End iterator for the expression being scanned.
+   * @return Iterator for the matching closing parenthesis, or end when unmatched.
+   */
   std::string_view::iterator find_match(std::string_view::iterator begin, std::string_view::iterator end) {
     int stack = 0;
 
@@ -966,6 +936,13 @@ namespace proc {
     return begin;
   }
 
+  /**
+   * @brief Parse env val.
+   *
+   * @param env Environment variables for the child process.
+   * @param val_raw Raw value that may contain $(NAME) substitutions.
+   * @return Value with recognized environment-variable substitutions expanded.
+   */
   std::string parse_env_val(boost::process::v1::native_environment &env, const std::string_view &val_raw) {
     auto pos = std::begin(val_raw);
     auto dollar = std::find(pos, std::end(val_raw), '$');
@@ -987,7 +964,7 @@ namespace proc {
               // Windows treats environment variable names in a case-insensitive manner,
               // so we look for a case-insensitive match here. This is critical for
               // correctly appending to PATH on Windows.
-              auto itr = std::find_if(env.cbegin(), env.cend(), [&](const auto &e) {
+              auto itr = boost::range::find_if(std::as_const(env), [&var_name](const auto &e) {
                 return boost::iequals(e.get_name(), var_name);
               });
               if (itr != env.cend()) {
@@ -1021,6 +998,43 @@ namespace proc {
     return ss.str();
   }
 
+  /**
+   * @brief Validates a path whether it is a valid PNG.
+   * @param path The path to the PNG file.
+   * @return true if the file has a valid PNG signature, false otherwise.
+   */
+  bool check_valid_png(const std::filesystem::path &path) {
+    // PNG signature as defined in PNG specification
+    // http://www.libpng.org/pub/png/spec/1.2/PNG-Structure.html
+    static constexpr std::array<unsigned char, 8> PNG_SIGNATURE = {
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A
+    };
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+      return false;
+    }
+
+    std::array<unsigned char, 8> header;
+    file.read(reinterpret_cast<char *>(header.data()), 8);
+
+    if (file.gcount() != 8) {
+      return false;
+    }
+
+    return header == PNG_SIGNATURE;
+  }
+
+  /**
+   * @brief Validate app image path.
+   */
   std::string validate_app_image_path(std::string app_image_path) {
     if (app_image_path.empty()) {
       return DEFAULT_APP_IMAGE_PATH;
@@ -1030,25 +1044,36 @@ namespace proc {
     auto image_extension = std::filesystem::path(app_image_path).extension().string();
     boost::to_lower(image_extension);
 
-    // return the default box image if extension is not "png"
+    // return the default box image if the extension is not "png"
     if (image_extension != ".png") {
       return DEFAULT_APP_IMAGE_PATH;
     }
 
     // check if image is in assets directory
-    auto full_image_path = std::filesystem::path(SUNSHINE_ASSETS_DIR) / app_image_path;
-    if (std::filesystem::exists(full_image_path)) {
+    if (auto full_image_path = std::filesystem::path(SUNSHINE_ASSETS_DIR) / app_image_path; std::filesystem::exists(full_image_path)) {
+      // Validate PNG signature
+      if (!check_valid_png(full_image_path)) {
+        BOOST_LOG(warning) << "Invalid PNG file at path ["sv << full_image_path << ']';
+        return DEFAULT_APP_IMAGE_PATH;
+      }
       return full_image_path.string();
-    } else if (app_image_path == "./assets/steam.png") {
+    }
+
+    if (app_image_path == "./assets/steam.png") {
       // handle old default steam image definition
       return SUNSHINE_ASSETS_DIR "/steam.png";
     }
 
     // check if specified image exists
-    std::error_code code;
-    if (!std::filesystem::exists(app_image_path, code)) {
+    if (std::error_code code; !std::filesystem::exists(app_image_path, code)) {
       // return default box image if image does not exist
       BOOST_LOG(warning) << "Couldn't find app image at path ["sv << app_image_path << ']';
+      return DEFAULT_APP_IMAGE_PATH;
+    }
+
+    // Validate PNG signature
+    if (!check_valid_png(app_image_path)) {
+      BOOST_LOG(warning) << "Invalid PNG file at path ["sv << app_image_path << ']';
       return DEFAULT_APP_IMAGE_PATH;
     }
 
@@ -1057,6 +1082,12 @@ namespace proc {
     return app_image_path;
   }
 
+  /**
+   * @brief Calculate the SHA-256 digest for a file.
+   *
+   * @param filename File path whose contents should be hashed.
+   * @return Lowercase hexadecimal SHA-256 digest, or std::nullopt on read/hash failure.
+   */
   std::optional<std::string> calculate_sha256(const std::string &filename) {
     crypto::md_ctx_t ctx {EVP_MD_CTX_create()};
     if (!ctx) {
@@ -1068,18 +1099,18 @@ namespace proc {
     }
 
     // Read file and update calculated SHA
-    char buf[1024 * 16];
+    std::array<char, 1024 * 16> buf;
     std::ifstream file(filename, std::ifstream::binary);
     while (file.good()) {
-      file.read(buf, sizeof(buf));
-      if (!EVP_DigestUpdate(ctx.get(), buf, file.gcount())) {
+      file.read(buf.data(), buf.size());
+      if (!EVP_DigestUpdate(ctx.get(), buf.data(), file.gcount())) {
         return std::nullopt;
       }
     }
     file.close();
 
-    unsigned char result[SHA256_DIGEST_LENGTH];
-    if (!EVP_DigestFinal_ex(ctx.get(), result, nullptr)) {
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> result;
+    if (!EVP_DigestFinal_ex(ctx.get(), result.data(), nullptr)) {
       return std::nullopt;
     }
 
@@ -1092,6 +1123,12 @@ namespace proc {
     return ss.str();
   }
 
+  /**
+   * @brief Calculate the CRC-32 checksum for a string.
+   *
+   * @param input Bytes to include in the checksum.
+   * @return CRC-32 value for the input bytes.
+   */
   uint32_t calculate_crc32(const std::string &input) {
     boost::crc_32_type result;
     result.process_bytes(input.data(), input.length());
@@ -1130,27 +1167,10 @@ namespace proc {
   }
 
   /**
-   * @brief Migrate the applications stored in the file tree by merging in a new app.
-   *
-   * This function updates the application entries in *fileTree_p* using the data in *inputTree_p*.
-   * If an app in the file tree does not have a UUID, one is generated and inserted.
-   * If an app with the same UUID as the new app is found, it is replaced.
-   * Additionally, empty keys (such as "prep-cmd" or "detached") and keys no longer needed ("launching", "index")
-   * are removed from the input.
-   *
-   * Legacy versions of Sunshine/Apollo stored boolean and integer values as strings.
-   * The following keys are converted:
-   *   - Boolean keys: "exclude-global-prep-cmd", "elevated", "auto-detach", "wait-all",
-   *                     "use-app-identity", "per-client-app-identity", "virtual-display"
-   *   - Integer keys: "exit-timeout"
-   *
-   * A migration version is stored in the file tree (under "version") so that future changes can be applied.
-   *
-   * @param fileTree_p Pointer to the JSON object representing the file tree.
-   * @param inputTree_p Pointer to the JSON object representing the new app.
+   * @brief Parse serialized text into the corresponding runtime representation.
    */
-  void migrate_apps(nlohmann::json* fileTree_p, nlohmann::json* inputTree_p) {
-    std::string new_app_uuid;
+  std::optional<proc::proc_t> parse(const std::string &file_name) {
+    pt::ptree tree;
 
     if (inputTree_p) {
       // If the input contains a non-empty "uuid", use it; otherwise generate one.
@@ -1161,417 +1181,10 @@ namespace proc {
         (*inputTree_p)["uuid"] = new_app_uuid;
       }
 
-      // Remove "prep-cmd" if empty.
-      if (inputTree_p->contains("prep-cmd") && (*inputTree_p)["prep-cmd"].empty()) {
-        inputTree_p->erase("prep-cmd");
-      }
-
-      // Remove "detached" if empty.
-      if (inputTree_p->contains("detached") && (*inputTree_p)["detached"].empty()) {
-        inputTree_p->erase("detached");
-      }
-
-      // Remove keys that are no longer needed.
-      inputTree_p->erase("launching");
-      inputTree_p->erase("index");
-    }
-
-    // Get the current apps array; if it doesn't exist, create one.
-    nlohmann::json newApps = nlohmann::json::array();
-    if (fileTree_p->contains("apps") && (*fileTree_p)["apps"].is_array()) {
-      for (auto &app : (*fileTree_p)["apps"]) {
-        // For apps without a UUID, generate one and remove "launching".
-        if (!app.contains("uuid") || app["uuid"].get<std::string>().empty()) {
-          app["uuid"] = uuid_util::uuid_t::generate().string();
-          app.erase("launching");
-          newApps.push_back(std::move(app));
-        } else {
-          // If an app with the same UUID as the new app is found, replace it.
-          if (!new_app_uuid.empty() && app["uuid"].get<std::string>() == new_app_uuid) {
-            newApps.push_back(*inputTree_p);
-            new_app_uuid.clear();
-          } else {
-            newApps.push_back(std::move(app));
-          }
-        }
-      }
-    }
-    // If the new app's UUID has not been merged yet, add it.
-    if (!new_app_uuid.empty() && inputTree_p) {
-      newApps.push_back(*inputTree_p);
-    }
-    (*fileTree_p)["apps"] = newApps;
-  }
-
-  void migration_v2(nlohmann::json& fileTree) {
-    static const int this_version = 2;
-    // Determine the current migration version (default to 1 if not present).
-    int file_version = 1;
-    if (fileTree.contains("version")) {
-      try {
-        file_version = fileTree["version"].get<int>();
-      } catch (const std::exception& e) {
-        BOOST_LOG(info) << "Cannot parse apps.json version, treating as v1: " << e.what();
-      }
-    }
-
-    // If the version is less than this_version, perform legacy conversion.
-    if (file_version < this_version) {
-      BOOST_LOG(info) << "Migrating app list from v1 to v2...";
-      migrate_apps(&fileTree, nullptr);
-
-      // List of keys to convert to booleans.
-      std::vector<std::string> boolean_keys = {
-        "allow-client-commands",
-        "exclude-global-prep-cmd",
-        "elevated",
-        "auto-detach",
-        "wait-all",
-        "use-app-identity",
-        "per-client-app-identity",
-        "virtual-display"
-      };
-
-      // List of keys to convert to integers.
-      std::vector<std::string> integer_keys = {
-        "exit-timeout",
-        "scale-factor"
-      };
-
-      // Walk through each app and convert legacy string values.
-      for (auto &app : fileTree["apps"]) {
-        for (const auto &key : boolean_keys) {
-          if (app.contains(key)) {
-            auto& _key = app[key];
-            if (_key.is_string()) {
-              std::string s = _key.get<std::string>();
-              std::transform(s.begin(), s.end(), s.begin(), ::tolower);  // Normalize to lowercase for comparison
-              _key = (s == "true" || s == "on" || s == "yes");
-            } else if (_key.is_array()) {
-              // Check if the array contains at least one item and interpret the first element
-              if (!_key.empty() && _key[0].is_string()) {
-                std::string first = _key[0].get<std::string>();
-                std::transform(first.begin(), first.end(), first.begin(), ::tolower);  // Normalize
-                if (first == "on" || first == "true" || first == "yes") {
-                  _key = true;
-                } else if (first == "off" || first == "false" || first == "no") {
-                  _key = false;
-                } else {
-                  _key = false;  // Default for unknown values
-                }
-              } else {
-                _key = false;  // Treat empty arrays or non-string first elements as false
-              }
-            } else {
-              // Fallback: Treat truthy/falsey cases
-              if (_key.is_boolean()) {
-                // Leave booleans as they are
-              } else if (_key.is_number()) {
-                _key = (_key.get<double>() != 0);  // Non-zero numbers are truthy
-              } else if (_key.is_null()) {
-                _key = false;  // Null is false
-              } else {
-                _key = !_key.empty();  // Non-empty objects/arrays are truthy, empty ones are falsey
-              }
-            }
-          }
-        }
-
-        for (const auto &key : integer_keys) {
-          if (app.contains(key) && app[key].is_string()) {
-            std::string s = app[key].get<std::string>();
-            app[key] = std::stoi(s);
-          }
-        }
-
-        // For each entry in the "prep-cmd" array, convert "elevated" if necessary.
-        if (app.contains("prep-cmd") && app["prep-cmd"].is_array()) {
-          for (auto &prep : app["prep-cmd"]) {
-            if (prep.contains("elevated") && prep["elevated"].is_string()) {
-              std::string s = prep["elevated"].get<std::string>();
-              prep["elevated"] = (s == "true");
-            }
-          }
-        }
-      }
-
-      // Update migration version to this_version.
-      fileTree["version"] = this_version;
-
-      BOOST_LOG(info) << "Migrated app list from v1 to v2.";
-    }
-  }
-
-  void migrate(nlohmann::json& fileTree, const std::string& fileName) {
-    int last_version = 2;
-
-    int file_version = 0;
-    if (fileTree.contains("version")) {
-      file_version = fileTree["version"].get<int>();
-    }
-
-    if (file_version < last_version) {
-      migration_v2(fileTree);
-      file_handler::write_file(fileName.c_str(), fileTree.dump(4));
-    }
-  }
-
-  std::optional<proc::proc_t> parse(const std::string &file_name) {
-
-    // Prepare environment variables.
-    auto this_env = boost::this_process::environment();
-
-    std::set<std::string> ids;
-    std::vector<proc::ctx_t> apps;
-    int i = 0;
-
-    size_t fail_count = 0;
-    do {
-      // Read the JSON file into a tree.
-      nlohmann::json tree;
-      try {
-        std::string content = file_handler::read_file(file_name.c_str());
-        tree = nlohmann::json::parse(content);
-      } catch (const std::exception& e) {
-        BOOST_LOG(warning) << "Couldn't read apps.json properly! Apps will not be loaded."sv;
-        break;
-      }
-
-      try {
-        migrate(tree, file_name);
-
-        if (tree.contains("env") && tree["env"].is_object()) {
-          for (auto &item : tree["env"].items()) {
-            this_env[item.key()] = parse_env_val(this_env, item.value().get<std::string>());
-          }
-        }
-
-        // Ensure the "apps" array exists.
-        if (!tree.contains("apps") || !tree["apps"].is_array()) {
-          BOOST_LOG(warning) << "No apps were defined in apps.json!!!"sv;
-          break;
-        }
-
-        // Iterate over each application in the "apps" array.
-        for (auto &app_node : tree["apps"]) {
-          proc::ctx_t ctx;
-          ctx.idx = std::to_string(i);
-          ctx.uuid = app_node.at("uuid");
-
-          // Build the list of preparation commands.
-          std::vector<proc::cmd_t> prep_cmds;
-          bool exclude_global_prep = app_node.value("exclude-global-prep-cmd", false);
-          if (!exclude_global_prep) {
-            prep_cmds.reserve(config::sunshine.prep_cmds.size());
-            for (auto &prep_cmd : config::sunshine.prep_cmds) {
-              auto do_cmd = parse_env_val(this_env, prep_cmd.do_cmd);
-              auto undo_cmd = parse_env_val(this_env, prep_cmd.undo_cmd);
-              prep_cmds.emplace_back(
-                std::move(do_cmd),
-                std::move(undo_cmd),
-                std::move(prep_cmd.elevated)
-              );
-            }
-          }
-          if (app_node.contains("prep-cmd") && app_node["prep-cmd"].is_array()) {
-            for (auto &prep_node : app_node["prep-cmd"]) {
-              std::string do_cmd = parse_env_val(this_env, prep_node.value("do", ""));
-              std::string undo_cmd = parse_env_val(this_env, prep_node.value("undo", ""));
-              bool elevated = prep_node.value("elevated", false);
-              prep_cmds.emplace_back(
-                std::move(do_cmd),
-                std::move(undo_cmd),
-                std::move(elevated)
-              );
-            }
-          }
-
-          // Build the list of pause/resume commands.
-          std::vector<proc::cmd_t> state_cmds;
-          bool exclude_global_state_cmds = app_node.value("exclude-global-state-cmd", false);
-          if (!exclude_global_state_cmds) {
-            state_cmds.reserve(config::sunshine.state_cmds.size());
-            for (auto &state_cmd : config::sunshine.state_cmds) {
-              auto do_cmd = parse_env_val(this_env, state_cmd.do_cmd);
-              auto undo_cmd = parse_env_val(this_env, state_cmd.undo_cmd);
-              state_cmds.emplace_back(
-                std::move(do_cmd),
-                std::move(undo_cmd),
-                std::move(state_cmd.elevated)
-              );
-            }
-          }
-          if (app_node.contains("state-cmd") && app_node["state-cmd"].is_array()) {
-            for (auto &prep_node : app_node["state-cmd"]) {
-              std::string do_cmd = parse_env_val(this_env, prep_node.value("do", ""));
-              std::string undo_cmd = parse_env_val(this_env, prep_node.value("undo", ""));
-              bool elevated = prep_node.value("elevated", false);
-              state_cmds.emplace_back(
-                std::move(do_cmd),
-                std::move(undo_cmd),
-                std::move(elevated)
-              );
-            }
-          }
-
-          // Build the list of detached commands.
-          std::vector<std::string> detached;
-          if (app_node.contains("detached") && app_node["detached"].is_array()) {
-            for (auto &detached_val : app_node["detached"]) {
-              detached.emplace_back(parse_env_val(this_env, detached_val.get<std::string>()));
-            }
-          }
-
-          // Process other fields.
-          if (app_node.contains("output"))
-            ctx.output = parse_env_val(this_env, app_node.value("output", ""));
-          std::string name = parse_env_val(this_env, app_node.value("name", ""));
-          if (app_node.contains("cmd"))
-            ctx.cmd = parse_env_val(this_env, app_node.value("cmd", ""));
-          if (app_node.contains("working-dir")) {
-            ctx.working_dir = parse_env_val(this_env, app_node.value("working-dir", ""));
-    #ifdef _WIN32
-            // The working directory, unlike the command itself, should not be quoted.
-            boost::erase_all(ctx.working_dir, "\"");
-            ctx.working_dir += '\\';
-    #endif
-          }
-          if (app_node.contains("image-path"))
-            ctx.image_path = parse_env_val(this_env, app_node.value("image-path", ""));
-
-          ctx.elevated = app_node.value("elevated", false);
-          ctx.auto_detach = app_node.value("auto-detach", true);
-          ctx.wait_all = app_node.value("wait-all", true);
-          ctx.exit_timeout = std::chrono::seconds { app_node.value("exit-timeout", 5) };
-          ctx.virtual_display = app_node.value("virtual-display", false);
-          ctx.scale_factor = app_node.value("scale-factor", 100);
-          ctx.use_app_identity = app_node.value("use-app-identity", false);
-          ctx.per_client_app_identity = app_node.value("per-client-app-identity", false);
-          ctx.allow_client_commands = app_node.value("allow-client-commands", true);
-          ctx.terminate_on_pause = app_node.value("terminate-on-pause", false);
-          ctx.gamepad = app_node.value("gamepad", "");
-
-          // Calculate a unique application id.
-          auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
-          if (ids.count(std::get<0>(possible_ids)) == 0) {
-            ctx.id = std::get<0>(possible_ids);
-          } else {
-            ctx.id = std::get<1>(possible_ids);
-          }
-          ids.insert(ctx.id);
-
-          ctx.name = std::move(name);
-          ctx.prep_cmds = std::move(prep_cmds);
-          ctx.state_cmds = std::move(state_cmds);
-          ctx.detached = std::move(detached);
-
-          apps.emplace_back(std::move(ctx));
-        }
-
-        fail_count = 0;
-      } catch (std::exception &e) {
-        BOOST_LOG(error) << "Error happened during app loading: "sv << e.what();
-
-        fail_count += 1;
-
-        if (fail_count >= 3) {
-          // No hope for recovering
-          BOOST_LOG(warning) << "Couldn't parse/migrate apps.json properly! Apps will not be loaded."sv;
-          break;
-        }
-
-        BOOST_LOG(warning) << "App format is still invalid! Trying to re-migrate the app list..."sv;
-
-        // Always try migrating from scratch when error happened
-        tree["version"] = 0;
-
-        try {
-          migrate(tree, file_name);
-        } catch (std::exception &e) {
-          BOOST_LOG(error) << "Error happened during migration: "sv << e.what();
-          break;
-        }
-
-        this_env = boost::this_process::environment();
-        ids.clear();
-        apps.clear();
-        i = 0;
-
-        continue;
-      }
-
-      break;
-    } while (fail_count < 3);
-
-    if (fail_count > 0) {
-      BOOST_LOG(warning) << "No applications configured, adding fallback Desktop entry.";
-      proc::ctx_t ctx;
-      ctx.idx = std::to_string(i);
-      ctx.uuid = FALLBACK_DESKTOP_UUID; // Placeholder UUID
-      ctx.name = "Desktop (fallback)";
-      ctx.image_path = parse_env_val(this_env, "desktop-alt.png");
-      ctx.virtual_display = false;
-      ctx.scale_factor = 100;
-      ctx.use_app_identity = false;
-      ctx.per_client_app_identity = false;
-      ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
-
-      ctx.elevated = false;
-      ctx.auto_detach = true;
-      ctx.wait_all = false; // Desktop doesn't have a specific command to wait for
-      ctx.exit_timeout = 5s;
-
-      // Calculate unique ID
-      auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
-      if (ids.count(std::get<0>(possible_ids)) == 0) {
-        // Avoid using index to generate id if possible
-        ctx.id = std::get<0>(possible_ids);
-      } else {
-        // Fallback to include index on collision
-        ctx.id = std::get<1>(possible_ids);
-      }
-      ids.insert(ctx.id);
-
-      apps.emplace_back(std::move(ctx));
-    }
-
-    // Virtual Display entry
-    if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
-      proc::ctx_t ctx;
-      ctx.idx = std::to_string(i);
-      ctx.uuid = VIRTUAL_DISPLAY_UUID;
-      ctx.name = "Virtual Display";
-      ctx.image_path = parse_env_val(this_env, "virtual_desktop.png");
-      ctx.virtual_display = true;
-      ctx.scale_factor = 100;
-      ctx.use_app_identity = false;
-      ctx.per_client_app_identity = false;
-      ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
-
-      ctx.elevated = false;
-      ctx.auto_detach = true;
-      ctx.wait_all = false;
-      ctx.exit_timeout = 5s;
-
-      auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
-      if (ids.count(std::get<0>(possible_ids)) == 0) {
-        // Avoid using index to generate id if possible
-        ctx.id = std::get<0>(possible_ids);
-      }
-      else {
-        // Fallback to include index on collision
-        ctx.id = std::get<1>(possible_ids);
-      }
-      ids.insert(ctx.id);
-
-      apps.emplace_back(std::move(ctx));
-    }
-
-    if (config::input.enable_input_only_mode) {
-      // Input Only entry
-      {
+      std::set<std::string, std::less<>> ids;
+      std::vector<proc::ctx_t> apps;
+      int i = 0;
+      for (auto &[_, app_node] : apps_node) {
         proc::ctx_t ctx;
         ctx.idx = std::to_string(i);
         ctx.uuid = REMOTE_INPUT_UUID;
@@ -1606,41 +1219,12 @@ namespace proc {
         apps.emplace_back(std::move(ctx));
       }
 
-      // Terminate entry
-      {
-        proc::ctx_t ctx;
-        ctx.idx = std::to_string(i);
-        ctx.uuid = TERMINATE_APP_UUID;
-        ctx.name = "Terminate";
-        ctx.image_path = parse_env_val(this_env, "terminate.png");
-        ctx.virtual_display = false;
-        ctx.scale_factor = 100;
-        ctx.use_app_identity = false;
-        ctx.per_client_app_identity = false;
-        ctx.allow_client_commands = false;
-        ctx.terminate_on_pause = false;
-
-        ctx.elevated = false;
-        ctx.auto_detach = true;
-        ctx.wait_all = true;
-        ctx.exit_timeout = 5s;
-
-        auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, i++);
-        if (ids.count(std::get<0>(possible_ids)) == 0) {
-          // Avoid using index to generate id if possible
-          ctx.id = std::get<0>(possible_ids);
-        }
-        else {
-          // Fallback to include index on collision
-          ctx.id = std::get<1>(possible_ids);
-        }
-        // ids.insert(ctx.id);
-
-        terminate_app_id_str = ctx.id;
-        terminate_app_id = util::from_view(ctx.id);
-
-        apps.emplace_back(std::move(ctx));
-      }
+      return proc::proc_t {
+        this_env,
+        std::move(apps)
+      };
+    } catch (std::exception &e) {
+      BOOST_LOG(error) << e.what();
     }
 
     return proc::proc_t {
@@ -1649,34 +1233,38 @@ namespace proc {
     };
   }
 
-  void refresh(const std::string &file_name, bool needs_terminate) {
-    if (needs_terminate) {
-      proc.terminate(false, false);
-    }
+  /**
+   * @brief Refresh cached platform state from the operating system.
+   *
+   * This function compares the current last modified time of the file to the time it was last parsed.
+   * If the file has been modified since it was last parsed (or if it has never been parsed),
+   * it will be re-parsed to update the app list.
+   *
+   * An optional is used rather than a bare file_time_type because value-initialized
+   * file_time_type{} is not a reliable "never parsed" sentinel. On some toolchains
+   * (e.g. MSYS2 UCRT64 GCC 16.2), file_time_type::clock::now() compares
+   * less-or-equal to file_time_type{}, which would cause the initial parse to be skipped.
+   *
+   * When an app is currently running, only the cached app configuration list and environment
+   * are updated — active process state (_app_id, _process, _process_group, etc.) is preserved
+   * so that the in-flight streaming session can still be terminated properly.
+   */
+  void refresh(const std::string &file_name) {
+    static std::optional<std::filesystem::file_time_type> last_apps_file_update;  ///< Timestamp of the last successful apps.json parse, or nullopt if never parsed.
 
-    // (Re)initialise the virtual display backend, retrying a few times while it is starting up.
-    // A platform without virtual display support reports `unavailable` and is not retried.
-    size_t fail_count = 0;
-    while (fail_count < 5 && platf::vdisplay::status() != platf::vdisplay::status_e::ok) {
-      const auto status = platf::vdisplay::init();
-      if (status == platf::vdisplay::status_e::ok || status == platf::vdisplay::status_e::unavailable) {
-        break;
-      }
+    std::error_code ec;
+    auto current_time = std::filesystem::last_write_time(file_name, ec);
 
-      fail_count += 1;
-      std::this_thread::sleep_for(1s);
-    }
-
-    // There is no watchdog on Linux: remove virtual displays a crashed earlier run left behind.
-    // Displays of the current session are kept.
-    if (platf::vdisplay::status() == platf::vdisplay::status_e::ok) {
-      platf::vdisplay::cleanup_stale();
+    // Only skip parsing when we have a known-good timestamp and the file hasn't changed
+    if (last_apps_file_update && !ec && current_time == *last_apps_file_update) {
+      return;
     }
 
     auto proc_opt = proc::parse(file_name);
 
     if (proc_opt) {
-      proc = std::move(*proc_opt);
+      proc.update_apps_and_env(std::move(*proc_opt));
+      last_apps_file_update = current_time;
     }
   }
 }  // namespace proc

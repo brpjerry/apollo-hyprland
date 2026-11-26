@@ -3,12 +3,12 @@
 The recommended method for running Sunshine is to use the [binaries](#binaries) included in the
 [latest release][latest-release], unless otherwise specified.
 
-[Pre-releases](https://github.com/LizardByte/Sunshine/releases) are also available. These should be considered beta,
+[Pre-releases](https://github.com/SunshineStream/Sunshine/releases) are also available. These should be considered beta,
 and release artifacts may be missing when merging changes on a faster cadence.
 
 ## Binaries
 
-Binaries of Sunshine are created for each release. They are available for Linux, macOS, and Windows.
+Binaries of Sunshine are created for each release. They are available for FreeBSD, Linux, macOS, and Windows.
 Binaries can be found in the [latest release][latest-release].
 
 > [!NOTE]
@@ -26,100 +26,120 @@ Binaries can be found in the [latest release][latest-release].
 Docker images are available on [Dockerhub.io](https://hub.docker.com/repository/docker/lizardbyte/sunshine)
 and [ghcr.io](https://github.com/orgs/LizardByte/packages?repo_name=sunshine).
 
+See [Docker](../DOCKER_README.md) for more information.
+
+### FreeBSD
+
+#### Install
+1. Download the appropriate package for your architecture
+
+   | Architecture  | Package                                                                                                                                |
+   |---------------|----------------------------------------------------------------------------------------------------------------------------------------|
+   | amd64/x86_64  | [Sunshine-FreeBSD-14.4-amd64.pkg](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-FreeBSD-14.3-amd64.pkg)     |
+   | arm64/aarch64 | [Sunshine-FreeBSD-14.4-aarch64.pkg](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-FreeBSD-14.3-aarch64.pkg) |
+
+2. Open terminal and run the following command.
+   ```sh
+   sudo pkg install ./Sunshine-FreeBSD-14.4-{arch}.pkg
+   ```
+
+#### Uninstall
+```sh
+sudo pkg delete Sunshine
+```
+
 ### Linux
+
+LizardByte publishes DEB and RPM packages to the
+[stable Cloudsmith repository](https://cloudsmith.io/~lizardbyte/repos/stable/) for releases and the
+[beta Cloudsmith repository](https://cloudsmith.io/~lizardbyte/repos/beta/) for prereleases. The packages also remain
+available for manual download from each GitHub release.
+
 **CUDA Compatibility**
 
-CUDA is used for NVFBC capture.
+CUDA is used for NVFBC capture and direct GPU-memory NVENC encoding.
 
-> [!NOTE]
-> See [CUDA GPUS](https://developer.nvidia.com/cuda-gpus) to cross-reference Compute Capability to your GPU.
-> The table below applies to packages provided by LizardByte. If you use an official LizardByte package, then you do not
-> need to install CUDA.
+> [!IMPORTANT]
+> CUDA support is selected when Sunshine is compiled. If you build Sunshine for an NVIDIA GPU yourself, including
+> through the AUR or for a third-party repository such as Omarchy, install the CUDA Toolkit before building Sunshine.
+> Installing CUDA after Sunshine has been compiled does not add CUDA support; Sunshine must be rebuilt.
+>
+> This requirement does not apply when installing a prebuilt package supplied by LizardByte. In particular, the
+> Arch Linux package from LizardByte's [pacman-repo](https://github.com/LizardByte/pacman-repo) is already built with
+> CUDA support, so its users do not need to install the CUDA Toolkit.
 
-<table>
-    <caption>CUDA Compatibility</caption>
-    <tr>
-        <th>CUDA Version</th>
-        <th>Min Driver</th>
-        <th>CUDA Compute Capabilities</th>
-        <th>Package</th>
-    </tr>
-    <tr>
-        <td rowspan="8">12.9.1</td>
-        <td rowspan="8">575.57.08</td>
-        <td rowspan="8">50;52;60;61;62;70;72;75;80;86;87;89;90;100;101;103;120;121</td>
-        <td>sunshine.AppImage</td>
-    </tr>
-    <tr>
-        <td>sunshine-ubuntu-22.04-{arch}.deb</td>
-    </tr>
-    <tr>
-        <td>sunshine-ubuntu-24.04-{arch}.deb</td>
-    </tr>
-    <tr>
-        <td>sunshine-debian-trixie-{arch}.deb</td>
-    </tr>
-    <tr>
-        <td>sunshine_{arch}.flatpak</td>
-    </tr>
-    <tr>
-        <td>Sunshine (copr - Fedora 41)</td>
-    </tr>
-    <tr>
-        <td>Sunshine (copr - Fedora 42)</td>
-    </tr>
-    <tr>
-        <td>sunshine.pkg.tar.zst</td>
-    </tr>
-</table>
+For official Linux packages built with CUDA 13, the CUDA paths require a GPU with compute capability 7.5 (Turing)
+or newer. [CUDA Toolkit 13 removed offline compilation support for Maxwell, Pascal, and Volta](https://docs.nvidia.com/cuda/cuda-features-archive/index.html).
+These GPUs can still have an NVENC hardware encoder, but that does not make the CUDA kernels in these packages
+compatible with them. Installing a different CUDA Toolkit alongside a prebuilt package does not change those kernels.
+
+Use [NVIDIA's GPU list](https://developer.nvidia.com/cuda-gpus) to check your GPU's compute capability.
+Toolkit versions can vary by package. Use an NVIDIA driver compatible with the package's toolkit and your GPU;
+see [NVIDIA's CUDA compatibility guide](https://docs.nvidia.com/deploy/cuda-compatibility/).
+
+#### Alpine Linux
+
+> [!IMPORTANT]
+> The Alpine package is dynamically linked against Alpine 3.24 libraries. CUDA and NVFBC capture are not available in
+> this package, but the other capture and encoding backends supported by the system remain enabled.
+
+##### Install
+
+1. Download `sunshine_{version}_alpine{distro-version}_{arch}.apk` from the [latest release][latest-release].
+2. Install the package as root. Release APKs use a per-build signing key, so explicitly allow the downloaded package.
+
+   ```sh
+   apk add --allow-untrusted ./sunshine_{version}_alpine{distro-version}_{arch}.apk
+   ```
+
+##### Uninstall
+
+```sh
+apk del sunshine
+```
 
 #### AppImage
 
 > [!CAUTION]
 > Use distro-specific packages instead of the AppImage if they are available.
+> AppImage does not support KMS capture.
 
-According to AppImageLint the supported distro matrix of the AppImage is below.
-
-- ✖ Debian bullseye
-- ✔ Debian bookworm
-- ✔ Debian trixie
-- ✔ Debian sid
-- ✔ Ubuntu plucky
-- ✔ Ubuntu noble
-- ✔ Ubuntu jammy
-- ✖ Ubuntu focal
-- ✖ Ubuntu bionic
-- ✖ Ubuntu xenial
-- ✖ Ubuntu trusty
-- ✖ Rocky Linux 8
-- ✖ Rocky Linux 9
+> [!NOTE]
+> The AppImage is built on Ubuntu 22.04, which requires `glibc 2.35` or newer and `libstdc++ 3.4.11` or newer.
+> It also requires the host's libva core and DRM libraries (`libva2` and `libva-drm2` on Debian/Ubuntu).
+> Install your GPU's VA-API driver to use VA-API encoding. Both libva libraries must come from the same system package version.
 
 ##### Install
-1. Download [sunshine.AppImage](https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage)
+1. Download `Sunshine_{version}_{arch}.AppImage`
    into your home directory.
    ```bash
    cd ~
-   wget https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage
+   wget https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine_{version}_{arch}.AppImage
    ```
 2. Open terminal and run the following command.
    ```bash
-   ./sunshine.AppImage --install
+   ./Sunshine_{version}_{arch}.AppImage --install
    ```
 
 ##### Run
 ```bash
-./sunshine.AppImage --install && ./sunshine.AppImage
+./Sunshine_{version}_{arch}.AppImage --install && ./Sunshine_{version}_{arch}.AppImage
 ```
 
 ##### Uninstall
 ```bash
-./sunshine.AppImage --remove
+./Sunshine_{version}_{arch}.AppImage --remove
 ```
 
 #### ArchLinux
 
 > [!CAUTION]
 > Use AUR packages at your own risk.
+
+> [!IMPORTANT]
+> NVIDIA users installing Sunshine from LizardByte's pacman-repo do not need the CUDA Toolkit. If Sunshine is compiled
+> locally from the AUR or by another package provider, such as Omarchy, the builder must install the CUDA Toolkit before
+> compilation. Installing CUDA after the package was built cannot enable CUDA support in that package.
 
 ##### Install Prebuilt Packages
 Each [release](https://github.com/brpjerry/apollo-hyprland/releases) of the Hyprland port carries
@@ -133,7 +153,14 @@ NVENC support is built in and needs only the NVIDIA driver (`nvidia-utils`), not
 ##### Build the Package
 `packaging/linux/Arch/PKGBUILD` builds the release tag `v{pkgver}` from GitHub (CUDA is a build dependency):
 ```bash
-cd packaging/linux/Arch
+wget https://github.com/SunshineStream/Sunshine/releases/latest/download/sunshine.pkg.tar.gz
+tar -xvf sunshine.pkg.tar.gz
+cd sunshine
+
+# install optional dependencies
+pacman -S cuda  # Nvidia GPU encoding support
+pacman -S libva-mesa-driver  # AMD GPU encoding support
+
 makepkg -si
 ```
 
@@ -143,15 +170,38 @@ sudo pacman -R apollo-hyprland
 ```
 
 #### Debian/Ubuntu
-##### Install
-Download `sunshine-{distro}-{distro-version}-{arch}.deb` and run the following command.
+
+##### Install from Cloudsmith
+
+Configure the `stable` repository for releases or the `beta` repository for prereleases. The setup script
+automatically selects the appropriate Debian or Ubuntu release.
+
+@tabs_grouped{release-channel|:|
+  @tab{ Stable |:| ```bash
+    curl -1sLf 'https://dl.cloudsmith.io/public/lizardbyte/stable/cfg/setup/bash.deb.sh' | sudo -E bash
+    ```}
+  @tab{ Beta |:| ```bash
+    curl -1sLf 'https://dl.cloudsmith.io/public/lizardbyte/beta/cfg/setup/bash.deb.sh' | sudo -E bash
+    ```}
+}
+
+Install Sunshine after configuring the repository.
+
 ```bash
-sudo dpkg -i ./sunshine-{distro}-{distro-version}-{arch}.deb
+sudo apt update
+sudo apt install sunshine
+```
+
+##### Install from GitHub releases
+
+Download `sunshine_{version}-1+{distro}{distro-version}_{arch}.deb` and run the following command.
+```bash
+sudo apt install ./sunshine_{version}-1+{distro}{distro-version}_{arch}.deb
 ```
 
 > [!NOTE]
-> The `{distro-version}` is the version of the distro we built the package on. The `{arch}` is the
-> architecture of your operating system.
+> The `{version}` is the Sunshine version. The `1+{distro}{distro-version}` suffix is the Debian package revision and
+> identifies the distro used to build it. The `{arch}` is the architecture of your operating system.
 
 > [!TIP]
 > You can double-click the deb file to see details about the package and begin installation.
@@ -161,12 +211,74 @@ sudo dpkg -i ./sunshine-{distro}-{distro-version}-{arch}.deb
 sudo apt remove sunshine
 ```
 
-#### Fedora
+#### Fedora/OpenSUSE
 
 > [!TIP]
 > The package name is case-sensitive.
 
-##### Install
+##### Install from Cloudsmith
+
+Configure the `stable` repository for releases or the `beta` repository for prereleases. Cloudsmith's setup script
+automatically selects Fedora or openSUSE and the appropriate release.
+
+@tabs_grouped{release-channel|:|
+  @tab{ Stable |:| ```bash
+    curl -1sLf 'https://dl.cloudsmith.io/public/lizardbyte/stable/cfg/setup/bash.rpm.sh' | sudo -E bash
+    ```}
+  @tab{ Beta |:| ```bash
+    curl -1sLf 'https://dl.cloudsmith.io/public/lizardbyte/beta/cfg/setup/bash.rpm.sh' | sudo -E bash
+    ```}
+}
+
+Install Sunshine with your distribution's package manager.
+
+@tabs_grouped{distribution|:|
+  @tab{ Fedora |:| ```bash
+    sudo dnf install Sunshine
+    ```}
+  @tab{ openSUSE |:| ```bash
+    sudo zypper install Sunshine
+    ```}
+}
+
+##### Install from GitHub releases
+
+Download `Sunshine-{version}-1.{distro+version}.{arch}.rpm` and run the following command.
+
+@tabs_grouped{distribution|:|
+  @tab{ Fedora |:| ```bash
+    sudo dnf install ./Sunshine-{version}-1.{distro+version}.{arch}.rpm
+    ```}
+  @tab{ openSUSE |:| ```bash
+    sudo zypper install ./Sunshine-{version}-1.{distro+version}.{arch}.rpm
+    ```}
+}
+
+> [!NOTE]
+> The `{version}` is the Sunshine version. The `1` is the RPM package release. The `{distro+version}` is the distro and
+> distro version of the distro we built the package on. The `{arch}` is the architecture of your operating system.
+
+> [!TIP]
+> You can double-click the rpm file to see details about the package and begin installation.
+
+##### Uninstall
+
+@tabs_grouped{distribution|:|
+  @tab{ Fedora |:| ```bash
+    sudo dnf remove Sunshine
+    ```}
+  @tab{ openSUSE |:| ```bash
+    sudo zypper remove Sunshine
+    ```}
+}
+
+##### Install (Copr)
+
+> [!IMPORTANT]
+> Stable builds are only available if the Sunshine release was made after the Fedora version release.
+> Because of this, it is often recommended to use the beta copr; however, you do not need to regularly update.
+> This could lead to annoyances in rare cases where there may be a breaking change.
+
 1. Enable copr repository.
    ```bash
    sudo dnf copr enable lizardbyte/stable
@@ -191,6 +303,7 @@ sudo dnf remove Sunshine
 
 > [!CAUTION]
 > Use distro-specific packages instead of the Flatpak if they are available.
+> Flatpak does not support KMS capture.
 
 Using this package requires that you have [Flatpak](https://flatpak.org/setup) installed.
 
@@ -223,18 +336,19 @@ flatpak install --user ./sunshine_{arch}.flatpak
 ```
 
 ##### Additional installation (required)
+Run this command after installing or updating the Flatpak so the privileged host
+udev rules stay synchronized with Sunshine:
+
 ```bash
 flatpak run --command=additional-install.sh dev.lizardbyte.app.Sunshine
 ```
 
-##### Run with NVFBC capture (X11 Only)
+The script prompts for administrator authorization. If a step fails, resolve the
+reported error and rerun the command before starting Sunshine.
+
+##### Run with NVFBC capture (X11 Only) or XDG Portal (Wayland Only)
 ```bash
 flatpak run dev.lizardbyte.app.Sunshine
-```
-
-##### Run with KMS capture (Wayland & X11)
-```bash
-sudo -i PULSE_SERVER=unix:/run/user/$(id -u $whoami)/pulse/native flatpak run dev.lizardbyte.app.Sunshine
 ```
 
 ##### Uninstall
@@ -256,6 +370,7 @@ brew update
 brew upgrade
 brew tap LizardByte/homebrew
 brew install sunshine
+sudo "$(brew --prefix sunshine)/bin/postinst"
 ```
 
 ##### Uninstall
@@ -263,16 +378,54 @@ brew install sunshine
 brew uninstall sunshine
 ```
 
+> [!TIP]
+> For beta you can replace `sunshine` with `sunshine-beta` in the above commands.
+
 ### macOS
 
 > [!IMPORTANT]
-> Sunshine on macOS is experimental. Gamepads do not work.
+> Virtual gamepads require the separately installed, licensed
+> [Virtual HID Broker](https://github.com/LizardByte/libvirtualhid/releases/latest).
+
+To use gamepads, download the macOS universal libvirtualhid DMG from the link above. Open it and run
+**Install libvirtualhid.command** to install Virtual HID Broker. In **System Settings > Privacy & Security >
+Device Control and Data Access**, add `/Applications/VirtualHIDBroker.app` and enable it. Restart the broker if
+you changed this permission with `sudo launchctl kickstart -k system/dev.lizardbyte.app.libvirtualhid`.
+Activate the machine license in Sunshine’s
+**Troubleshooting > Virtual HID Broker License** section. In **Configuration > Input**, turn on **Enable Gamepad Input**
+and choose the emulated gamepad. The Gamepad Backend setting can be set to **None** to disable gamepads without affecting
+keyboard or mouse input. Sunshine’s menu bar **Virtual HID Broker** submenu shows the license status and links
+for license management and downloads. Sunshine’s DMG does not contain the broker. Keyboard and mouse input use the
+standard macOS synthetic-input permission path.
+
+#### DMG
+
+Prebuilt DMG packages require macOS 15.0 (Sequoia) or newer.
+
+##### Install
+
+1. Download and install based on your architecture:
+
+   | Architecture          | Package                                                                                                                |
+   |-----------------------|------------------------------------------------------------------------------------------------------------------------|
+   | arm64 (Apple Silicon) | [Sunshine-macOS-arm64.dmg](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-macOS-arm64.dmg)   |
+   | x86_64 (Intel)        | [Sunshine-macOS-x86_64.dmg](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-macOS-x86_64.dmg) |
+
+2. Open the downloaded `.dmg` file.
+3. Drag `Sunshine.app` into the `Applications` folder.
+4. Eject the disk image.
+
+##### Uninstall
+1. Quit Sunshine if it is running.
+2. Open `Finder`, navigate to `Applications`, and drag `Sunshine.app` to the Trash.
 
 #### Homebrew
 This package requires that you have [Homebrew](https://docs.brew.sh/Installation) installed.
 
 ##### Install
 ```bash
+brew update
+brew upgrade
 brew tap LizardByte/homebrew
 brew install sunshine
 ```
@@ -287,10 +440,26 @@ brew uninstall sunshine
 
 ### Windows
 
+> [!NOTE]
+> Sunshine supports ARM64 on Windows; however, this should be considered experimental. This version does not properly
+> support GPU scheduling and any hardware acceleration.
+
 #### Installer (recommended)
 
-1. Download and install
-   [Sunshine-Windows-AMD64-installer.exe](https://github.com/LizardByte/Sunshine/releases/latest/download/Sunshine-Windows-AMD64-installer.exe)
+> [!CAUTION]
+> The msi installer is preferred moving forward. Before using a different type of installer, you should manually
+> uninstall the previous installation.
+
+1. Download and install based on your architecture:
+
+   | Architecture          | Installer                                                                                                                                    |
+   |-----------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
+   | AMD64/x64 (Intel/AMD) | [Sunshine-Windows-AMD64-installer.msi](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-Windows-AMD64-installer.msi) |
+   | ARM64                 | [Sunshine-Windows-ARM64-installer.msi](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-Windows-ARM64-installer.msi) |
+
+> [!TIP]
+> Installer logs can be found in the following directory:
+> `%%TEMP%/Sunshine/logs/install/`
 
 > [!CAUTION]
 > You should carefully select or unselect the options you want to install. Do not blindly install or
@@ -305,8 +474,13 @@ overflow menu. Different versions of Windows may provide slightly different step
 > By using this package instead of the installer, performance will be reduced. This package is not
 > recommended for most users. No support will be provided!
 
-1. Download and extract
-   [Sunshine-Windows-AMD64-portable.zip](https://github.com/LizardByte/Sunshine/releases/latest/download/Sunshine-Windows-AMD64-portable.zip)
+1. Download and extract based on your architecture:
+
+   | Architecture          | Installer                                                                                                                          |
+   |-----------------------|------------------------------------------------------------------------------------------------------------------------------------|
+   | AMD64/x64 (Intel/AMD) | [Sunshine-Windows-AMD64-lite.zip](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-Windows-AMD64-lite.zip) |
+   | ARM64                 | [Sunshine-Windows-ARM64-lite.zip](https://github.com/SunshineStream/Sunshine/releases/latest/download/Sunshine-Windows-ARM64lite.zip)  |
+
 2. Open command prompt as administrator
 3. Firewall rules
 
@@ -322,21 +496,7 @@ overflow menu. Different versions of Windows may provide slightly different step
    scripts/delete-firewall-rule.bat
    ```
 
-4. Virtual Gamepad Support
-
-   Install:
-   ```bash
-   cd /d {path to extracted directory}
-   scripts/install-gamepad.bat
-   ```
-
-   Uninstall:
-   ```bash
-   cd /d {path to extracted directory}
-   scripts/uninstall-gamepad.bat
-   ```
-
-5. Windows service
+4. Windows service
 
    Install:
    ```bash
@@ -354,179 +514,111 @@ overflow menu. Different versions of Windows may provide slightly different step
 ## Initial Setup
 After installation, some initial setup is required.
 
+### FreeBSD
+
+#### Virtual Input Devices
+
+> [!IMPORTANT]
+> To use virtual input devices (keyboard, mouse, gamepads), you must add your user to the `input` group.
+
+The installation process creates the `input` group and configures permissions for `/dev/uinput`.
+To allow your user to create virtual input devices, run:
+
+```bash
+pw groupmod input -m $USER
+```
+
+After adding yourself to the group, log out and log back in for the changes to take effect.
+
 ### Linux
 
-#### KMS Capture
-
-> [!WARNING]
-> Capture of most Wayland-based desktop environments will fail unless this step is performed.
-
-> [!NOTE]
-> `cap_sys_admin` may as well be root, except you don't need to be root to run the program. This is necessary to
-> allow Sunshine to use KMS capture.
-
-> [!NOTE]
-> The Debian/RPM post-install script and the Arch package no longer set this capability by default, because Wayland
-> capture (used on Hyprland) does not need it and a file capability makes the loader drop `LD_*` variables from
-> Sunshine's environment. Run the command below, or install with `APOLLO_ENABLE_KMS_CAPTURE=1` set, to use KMS capture.
-
-##### Enable
-```bash
-sudo setcap cap_sys_admin+p $(readlink -f $(which sunshine))
-```
-
-#### X11 Capture
-For X11 capture to work, you may need to disable the capabilities that were set for KMS capture.
-
-```bash
-sudo setcap -r $(readlink -f $(which sunshine))
-```
-
-#### Service
+#### Services
 
 **Start once**
 ```bash
-systemctl --user start sunshine
+systemctl --user start app-dev.lizardbyte.app.Sunshine
 ```
 
 **Start on login**
 ```bash
-systemctl --user enable sunshine
+systemctl --user --now enable app-dev.lizardbyte.app.Sunshine
 ```
 
-The user service is part of `graphical-session.target`: it starts once the desktop session is up and stops when it
-ends. Check what it is doing with `journalctl --user -u sunshine -f`.
-
-If you enabled the service under an older version, which started it with `xdg-desktop-autostart.target`, move its
-login link to the new target once:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user reenable sunshine
-```
-
-#### Running on Hyprland
-Sunshine uses Wayland capture on Hyprland, so it needs neither `cap_sys_admin` nor root. It does need to run inside
-your Hyprland session, with the session's environment, so that it can reach the compositor, Hyprland's IPC sockets,
-PipeWire and the session D-Bus. The systemd user manager does not get that environment by itself, so Hyprland has to
-export it when it starts.
-
-##### Input devices
-Mouse, keyboard and gamepad input go through `/dev/uinput`, and DualSense emulation through `/dev/uhid`. The packages
-install a udev rule (`60-sunshine.rules`) that gives the logged-in user access to both, and load the `uhid` module at
-boot (`60-sunshine.conf`). Check that your user has access:
-
-```bash
-getfacl /dev/uinput /dev/uhid    # should list "user:<you>:rw-"
-```
-
-If not (for example right after installing, before a reboot), reload the rules and load the modules:
-
-```bash
-sudo modprobe -a uinput uhid
-sudo udevadm control --reload-rules
-sudo udevadm trigger --property-match=DEVNAME=/dev/uinput
-sudo udevadm trigger --property-match=DEVNAME=/dev/uhid
-```
-
-##### With uwsm
-If you start Hyprland through [uwsm](https://github.com/Vladimir-csp/uwsm), it already imports the session's
-environment and activates `graphical-session.target`, so enabling the service is enough:
-
-```bash
-systemctl --user enable --now sunshine
-```
-
-##### Without uwsm
-Without uwsm, `graphical-session.target` is usually never reached, so Hyprland has to import the environment and start
-the service itself, and stop it when Hyprland exits. Importing `HYPRLAND_INSTANCE_SIGNATURE` again on each start
-matters: it changes every time Hyprland starts.
-
-For a Lua config (`hyprland.lua`):
-
-```lua
-hl.on("hyprland.start", function()
-    hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE "
-        .. "XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP && systemctl --user restart sunshine")
-end)
-hl.on("hyprland.shutdown", function()
-    hl.exec_cmd("systemctl --user stop sunshine")
-end)
-```
-
-For a hyprlang config (`hyprland.conf`):
-
-```
-exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP && systemctl --user restart sunshine
-exec-shutdown = systemctl --user stop sunshine
-```
-
-`restart` rather than `start` makes sure a copy left over from an earlier Hyprland instance, which still has the old
-environment, is replaced. The service does not need to be enabled in this setup.
-
-##### Check
-After logging in, `journalctl --user -u sunshine` should show `Screencasting with Wayland's protocol`. When you log
-out, the service stops: Sunshine receives `SIGTERM` (or `SIGHUP`), ends the running app and cleans up before exiting.
-
-##### Virtual displays
-On Hyprland, a virtual display is a headless output named `APOLLO-` followed by 8 hex digits, created for the
-session and removed when the app quits. Clients see virtual display support once Sunshine reaches Hyprland's IPC
-socket; the Audio/Video tab of the web UI shows the status. A virtual display is created when:
-
-- the client asks for one, the app has *Always create Virtual Display* set, or the client has *Always create virtual
-  display* set (PIN page);
-- `headless_mode` is enabled: every app then streams a virtual display, even when monitors are connected;
-- no monitor is active, i.e. every monitor is disabled or switched off with DPMS. Hyprland stops drawing a monitor
-  whose DPMS is off and captures it as solid black, so such a monitor does not count. Encoders are then probed on a
-  temporary 800x600 output, which is removed again right after.
-
-The output name is the same for a client on every session (for apps with *Use App Identity*, the same for the app),
-so a client's virtual display can be told apart from the others.
-
-**Focus and workspace.** When the stream starts, Sunshine shows a workspace named after the output (`apollo-` and the
-same 8 hex digits) on the virtual display and moves focus there, so the windows you open land on the stream rather
-than on a physical monitor. Windows of the app Sunshine launched are moved to that workspace even when they open
-elsewhere (they are recognised by the app's process group). When the app quits, focus goes back to the workspace
-that had it before the stream, if focus is still on the virtual display. Windows left on the stream's workspace move
-to a physical monitor with the workspace, and come back with it on the next session.
-
-**Remembered settings.** Changes you make to a client's virtual display during a stream are saved when the app quits
-and applied again on the next stream for that client: scale, transform, position (unless
-`isolated_virtual_display_option` is on, which places the display itself), and the workspace left showing on it.
-They are kept in `vdisplay_settings.json` next to `sunshine_state.json` (in the config directory by default); delete
-an entry there to forget it, or edit it while no stream runs (keys `scale`, `transform`, `bitdepth`, `position`,
-`workspace`; Hyprland does not report the bit depth of a headless output, so `bitdepth` is only learned on outputs
-that change format). A *Resolution Scale Factor* other than 100% (app settings, or requested by the client)
-becomes the output scale, so a 1920x1080 client at 200% gets a 3840x2160 display at scale 2 and the desktop keeps
-the client's size; a scale you set yourself on top of that is remembered for that scale factor.
-
-**Static monitor rules.** Since the names are stable, you can also configure a client's display in your Hyprland
-config instead, for example in `hyprland.lua`:
-
-```lua
-hl.monitor({ output = "APOLLO-1a2b3c4d", transform = 1, bitdepth = 10, cm = "hdr", sdrbrightness = 1.2 })
-hl.workspace_rule({ workspace = "name:apollo-1a2b3c4d", layout = "master" })
-```
-
-Sunshine always sets the mode (the client's resolution and refresh rate), the position (`auto-right`, or the
-remembered or isolated position) and the scale (1, the scale factor, or the remembered scale), so those three come
-from Sunshine, not from a static rule; change the scale during a stream and it is remembered instead. With the Lua
-config every other field of a static rule applies (Sunshine sets transform and bit depth only when it remembers a
-value for them). With a hyprlang `hyprland.conf`, Sunshine's runtime rule replaces the whole static rule, so use the
-remembered settings there.
+> [!NOTE]
+> The service has been renamed to "app-dev.lizardbyte.app.Sunshine" in order to increase compatibility with
+> XDG Desktop Portal, but it is also aliased to "sunshine.service" for convenience.
 
 ### macOS
-The first time you start Sunshine, you will be asked to grant access to screen recording and your microphone.
+On first launch, Sunshine requests Screen Recording and keyboard and mouse control when those features are enabled.
+It also requests Microphone access if you configured a custom **Audio Sink**, and optional Notifications access when
+the system tray is enabled. Open **Troubleshooting > Permissions** in the Web UI to review these permissions or
+open their System Settings pages. Sunshine restarts once after missing required permissions are granted, including
+when a permission was removed and later restored.
+If macOS offers **Quit & Reopen** after you allow Screen Recording, choose it so the running process receives the new
+access. Sunshine exits its tray and server threads before macOS reopens it.
 
-Sunshine can only access microphones on macOS due to system limitations. To stream system audio use
+On macOS 15 and newer, macOS requests Local Network access when Sunshine advertises itself with Bonjour. System Audio
+Recording access is requested once at startup with a brief audio tap, when the first stream captures audio if startup
+access was unavailable, or when you use its Web UI button. The button also opens Screen & System Audio Recording
+settings. macOS does not offer Sunshine a passive status check for Local Network
+or System Audio Recording, so the Web UI identifies them as permissions handled when used. The Local Network button
+opens **Privacy & Security**; choose **Local Network** there to manage app access.
+Sunshine uses libvirtualhid to send keyboard and mouse events through CoreGraphics. Virtual gamepads use the separately
+installed Virtual HID Broker described in the macOS gamepad setup above. Sunshine shows the broker's availability and
+license under **Troubleshooting > Virtual Input**.
+If a macOS privacy switch is enabled but Sunshine still reports access denied, remove that Sunshine entry and add the
+installed app again. Development builds should use a consistent Apple-issued signing identity so macOS can recognize
+the app across updates.
+
+Sunshine supports native system audio capture on macOS 14.0 (Sonoma) and newer via Apple’s Audio Tap API.
+To use it, simply leave the **Audio Sink** setting blank.
+
+If you prefer to manage your own loopback device, you can still use
 [Soundflower](https://github.com/mattingalls/Soundflower) or
-[BlackHole](https://github.com/ExistentialAudio/BlackHole).
+[BlackHole](https://github.com/ExistentialAudio/BlackHole)
+and enter its device name in the [audio_sink](configuration.md#audio_sink) field.
 
 > [!NOTE]
 > Command Keys are not forwarded by Moonlight. Right Option-Key is mapped to CMD-Key.
 
 > [!CAUTION]
 > Gamepads are not currently supported.
+
+### Windows
+Sunshine supports two virtual gamepad backends on Windows. You can install the
+[Virtual HID Broker](https://github.com/LizardByte/libvirtualhid/releases/latest) separately as an optional paid upgrade.
+Its Windows package includes a broker service and user-mode driver for a Raw Input keyboard and mouse plus full virtual
+gamepad support. ViGEmBus remains available as a limited alternative for Xbox 360 and DualShock 4 gamepads, but it has reached end of life.
+
+When Virtual HID Broker is used, Sunshine requires libvirtualhid version `2026.914.1218.10` or newer.
+
+Compared with the ViGEmBus fallback, Virtual HID Broker can create Xbox One, Xbox Series, DualSense, Nintendo Switch
+Pro, and Generic gamepads in addition to Xbox 360 and DualShock 4. It can also expose controller-specific features such
+as motion, touchpads, LEDs, and adaptive triggers when supported. Virtual HID Broker is actively developed and
+supported by the LizardByte team.
+
+With a compatible driver and active license, normal key transitions are exposed through a real HID keyboard so
+applications using Raw Input can receive them. Unicode text input and keys outside the supported HID keyboard page
+continue to use Windows input injection. When the driver-backed keyboard cannot be created because the driver,
+broker, or license is unavailable, libvirtualhid retains its legacy SendInput fallback.
+
+Relative mouse movement, buttons, and scrolling are exposed as a real HID
+mouse so applications using Raw Input can receive them. Absolute mouse positioning continues to use Windows input
+injection. When the driver-backed mouse cannot be created, libvirtualhid retains its legacy SendInput fallback.
+
+The Virtual HID Broker requires an active paid machine license for driver-backed devices, including gamepads and the Raw
+Input keyboard and mouse. Sunshine shows the current license status and actions on the Web UI Troubleshooting page and
+in the **Virtual HID Broker** system tray submenu. In **Configuration > Input**, choose whether Sunshine may use **All
+Available Drivers**, only **Virtual HID Broker**, or only **ViGEmBus**. Sunshine continues to show the selection prompt
+until this setting is saved. If an active Virtual HID Broker license is already present, Sunshine selects **All Available
+Drivers** automatically. That policy prefers Virtual HID Broker. When its license is not valid, Sunshine falls back to
+ViGEmBus for Xbox 360 and DualShock 4 gamepads and to SendInput for keyboard and mouse. Selecting only **ViGEmBus**
+suppresses Virtual HID Broker startup notifications and limits the available emulated gamepads to Xbox 360 and
+DualShock 4. **None** disables all virtual gamepads and their startup notices without affecting keyboard or mouse
+input. Sunshine recreates the shared keyboard and mouse after a successful license action, so switching between
+the HID and SendInput paths does not require restarting Sunshine.
+
+After installing or updating virtual input drivers, it is recommended to restart your computer.
 
 ## Usage
 
@@ -548,9 +640,8 @@ sunshine <directory of conf file>/sunshine.conf
 ```
 
 > [!NOTE]
-> You do not need to specify a config file. If no config file is entered, the default location will be used.
-
-> [!TIP]
+> This step is optional, you do not need to specify a config file.
+> If no config file is entered, the default location will be used.
 > The configuration file specified will be created if it doesn't exist.
 
 ### Start Sunshine over SSH (Linux/X11)
@@ -586,27 +677,39 @@ by default. You may replace *localhost* with your internal ip address.
 > [!CAUTION]
 > If running for the first time, make sure to note the username and password that you created.
 
-1. Add games and applications.
-2. Adjust any configuration settings as needed.
-3. In Moonlight, you may need to add the PC manually.
-4. When Moonlight requests for you insert the pin:
+1. Change the web-ui to your desired theme, using the dropdown menu in the navbar.
+   ![Theme Selection](images/split-themes.png)
+2. Add games and applications.
+   ![Applications](images/applications.png)
+3. Adjust any configuration settings as needed. You can search for options in the search bar.
+   ![Configuration](images/configuration-search.png)
+4. Find Moonlight clients and other tools for Sunshine in the `Featured Apps` tab.
+   ![Featured Apps](images/featured-apps.png)
+5. In Moonlight, you may need to add the PC manually.
+6. When Moonlight requests for you insert the pin:
 
-   - Login to the web ui
+   - Login to the web-ui
    - Go to "PIN" in the Navbar
-   - Type in your PIN and press Enter, you should get a Success Message
+   - Type in your PIN and press `Enter`, and enter a name of your choosing for the device.
+     You should get a Success Message!
    - In Moonlight, select one of the Applications listed
+
+7. If you run into issues, logs are available in the `Troubleshooting` tab.
+   You can navigate through each warning/error message for clues to the issue.
+
+   ![Logs](images/troubleshooting-logs.png)
 
 ### Arguments
 To get a list of available arguments, run the following command.
 
-@tabs{
-   @tab{ General | ```bash
+@tabs_grouped{linux-package|:|
+   @tab{ General |:| ```bash
       sunshine --help
       ```}
-   @tab{ AppImage | ```bash
-      ./sunshine.AppImage --help
+   @tab{ AppImage |:| ```bash
+      ./Sunshine_{version}_{arch}.AppImage --help
       ```}
-   @tab{ Flatpak | ```bash
+   @tab{ Flatpak |:| ```bash
       flatpak run --command=sunshine dev.lizardbyte.app.Sunshine --help
       ```}
 }
@@ -641,8 +744,17 @@ All shortcuts start with `Ctrl+Alt+Shift`, just like Moonlight.
 * The "Desktop" app works the same as any other application except it has no commands. It does not start an application,
   instead it simply starts a stream. If you removed it and would like to get it back, just add a new application with
   the name "Desktop" and "desktop.png" as the image path.
-* For the Linux flatpak you must prepend commands with `flatpak-spawn --host`.
-* If inputs (mouse, keyboard, gamepads...) aren't working after connecting, add the user running sunshine to the `input` group.
+* If inputs (mouse, keyboard, gamepads...) aren't working after connecting:
+
+  * On FreeBSD/Linux, add the user running sunshine to the `input` group.
+
+* The FreeBSD version of Sunshine is missing some features that are present on Linux.
+  The following are known limitations.
+
+  * Only X11 and Wayland capture are supported
+  * Gamepads use libvirtualhid's uinput backend, so descriptor-driven features such as motion, touchpad input,
+    battery state, RGB LEDs, adaptive triggers, and raw HID output reports are unavailable
+
 
 ### HDR Support
 Streaming HDR content is officially supported on Windows hosts and experimentally supported for Linux hosts.
@@ -662,14 +774,14 @@ Streaming HDR content is officially supported on Windows hosts and experimentall
 
 Additional information:
 
-@tabs{
-  @tab{ Windows |
+@tabs_grouped{platform|:|
+  @tab{ Windows |:|
   - HDR streaming is supported for Intel, AMD, and NVIDIA GPUs that support encoding HEVC Main 10 or AV1 10-bit profiles.
   - We recommend calibrating the display by streaming the Windows HDR Calibration app to your client device and saving an HDR calibration profile to use while streaming.
   - Older games that use NVIDIA-specific NVAPI HDR rather than native Windows HDR support may not display properly in HDR.
   }
 
-@tab{ Linux |
+@tab{ Linux |:|
   - HDR streaming is supported for Intel and AMD GPUs that support encoding HEVC Main 10 or AV1 10-bit profiles using VAAPI.
   - The KMS capture backend is required for HDR capture. Other capture methods, like NvFBC or X11, do not support HDR.
   - You will need a desktop environment with a compositor that supports HDR rendering, such as Gamescope or KDE Plasma 6.
@@ -684,20 +796,8 @@ Tutorial videos are available [here](https://www.youtube.com/playlist?list=PLMYr
 
 Guides are available [here](guides.md).
 
-@admonition{Community! |
+@admonition{Community! |:|
 Tutorials and Guides are community generated. Want to contribute? Reach out to us on our discord server.}
 
-<div class="section_buttons">
 
-| Previous                 |                      Next |
-|:-------------------------|--------------------------:|
-| [Overview](../README.md) | [Changelog](changelog.md) |
-
-</div>
-
-<details style="display: none;">
-  <summary></summary>
-  [TOC]
-</details>
-
-[latest-release]: https://github.com/LizardByte/Sunshine/releases/latest
+[latest-release]: https://github.com/SunshineStream/Sunshine/releases/latest
