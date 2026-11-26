@@ -26,11 +26,18 @@ export function isLocalHost(location) {
 /**
  * @brief Build the Artemis deep link that pairs with the generated PIN.
  *
+ * An IPv6 address gets the brackets an authority needs, and each query value is encoded on its own so a host
+ * name with `#` or `&` stays inside its value.
+ *
  * @param {{hostAddr: string, hostPort: (string|number), otp: string, passphrase: string, hostName: string}} info
  * @return {string} `art://` URL.
  */
 export function buildDeepLink({ hostAddr, hostPort, otp, passphrase, hostName }) {
-  return encodeURI(`art://${hostAddr}:${hostPort}?pin=${otp}&passphrase=${passphrase}&name=${hostName}`)
+  const host = hostAddr.includes(':') && !hostAddr.startsWith('[') ? `[${hostAddr}]` : hostAddr
+  const query = [['pin', otp], ['passphrase', passphrase], ['name', hostName]]
+    .map(([key, value]) => `${key}=${encodeURIComponent(value ?? '')}`)
+    .join('&')
+  return `art://${host}:${hostPort}?${query}`
 }
 
 /**

@@ -66,6 +66,7 @@
         hostAddr: '',
         hostName: '',
         hostPort: '',
+        issuedPassphrase: '',
         otp: '',
         otpMessage: '',
         otpStatus: 'warning',
@@ -74,8 +75,10 @@
       }
     },
     computed: {
+      /** The link carries the passphrase the PIN was issued for, not whatever the field holds now. */
       deepLink() {
-        return buildDeepLink(this)
+        const { hostAddr, hostPort, otp, hostName, issuedPassphrase } = this
+        return buildDeepLink({ hostAddr, hostPort, otp, hostName, passphrase: issuedPassphrase })
       },
       canSaveHost() {
         return !!(this.hostAddr && this.hostPort)
@@ -98,9 +101,10 @@
           return
         }
         this.requesting = true
+        const passphrase = this.passphrase
         let body
         try {
-          const response = await apiFetch('./api/otp', jsonRequest({ passphrase: this.passphrase, deviceName: this.deviceName }))
+          const response = await apiFetch('./api/otp', jsonRequest({ passphrase, deviceName: this.deviceName }))
           body = await response.json()
         } catch (e) {
           body = { status: false, error: e.message }
@@ -116,10 +120,13 @@
 
         this.expired = false
         this.otp = body.otp
+        this.issuedPassphrase = passphrase
         this.hostName = body.name
         this.otpStatus = 'success'
         this.otpMessage = this.i18n.t('pin.otp_success')
         Object.assign(this, readSavedHost(globalThis.sessionStorage) ?? guessHost(body.ip, globalThis.location))
+        // Without an address there is no link, and the editor is the only way to enter one.
+        this.editingHost = !this.hostAddr
 
         clearTimeout(this.expiryTimer)
         this.expiryTimer = setTimeout(() => this.expire(), OTP_LIFETIME_MS)
@@ -138,6 +145,7 @@
       /** @brief Forget the PIN once the server no longer accepts it. */
       expire() {
         this.expired = true
+        this.editingHost = false
         this.otp = this.i18n.t('pin.otp_expired')
         this.otpMessage = this.i18n.t('pin.otp_expired_msg')
         this.otpStatus = 'warning'

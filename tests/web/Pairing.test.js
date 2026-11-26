@@ -343,6 +343,15 @@ describe('OTP pairing', () => {
   })
 
   // Bugs caught: 0, False positives: 0
+  it('brackets IPv6 hosts and encodes each query value of the deep link', () => {
+    const link = { hostPort: 47989, otp: '1234', passphrase: 'abcd', hostName: 'Gaming PC #2 & co' }
+
+    expect(buildDeepLink({ ...link, hostAddr: 'fe80::1' }))
+      .toBe('art://[fe80::1]:47989?pin=1234&passphrase=abcd&name=Gaming%20PC%20%232%20%26%20co')
+    expect(buildDeepLink({ ...link, hostAddr: '[::1]' })).toMatch(/^art:\/\/\[::1\]:47989\?/)
+  })
+
+  // Bugs caught: 0, False positives: 0
   it('guesses the host from the page address, or the server address on the host itself', () => {
     expect(guessHost('192.168.1.5', { hostname: 'apollo.lan', port: '47990' })).toEqual({ hostAddr: 'apollo.lan', hostPort: 47989 })
     expect(guessHost('192.168.1.5', { hostname: 'localhost', port: '47990' })).toEqual({ hostAddr: '192.168.1.5', hostPort: 47989 })
@@ -376,6 +385,42 @@ describe('OTP pairing', () => {
     expect(wrapper.get('.otp-display').text()).toBe('4321')
     expect(wrapper.text()).toContain('art://192.168.1.5:47989')
     expect(QRCode).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  // The server binds the PIN to the passphrase it was requested with.
+  // Bugs caught: 0, False positives: 0
+  it('keeps the requested passphrase in the link when the field is edited afterwards', async () => {
+    vi.stubGlobal('location', { hostname: 'localhost', port: '47990', hash: '' })
+    vi.stubGlobal('QRCode', vi.fn())
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: true, otp: '4321', ip: '192.168.1.5', name: 'My PC' }))
+    const wrapper = mount(OtpPairing, { global: globalOptions })
+
+    await wrapper.get('#otp-passphrase').setValue('abcd')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await wrapper.get('#otp-passphrase').setValue('wxyz')
+
+    expect(wrapper.vm.deepLink).toContain('passphrase=abcd')
+    wrapper.unmount()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('opens the host editor when the server cannot tell its address', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('location', { hostname: 'localhost', port: '47990', hash: '' })
+    vi.stubGlobal('QRCode', vi.fn())
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: true, otp: '4321', ip: '', name: 'My PC' }))
+    const wrapper = mount(OtpPairing, { global: globalOptions })
+
+    await wrapper.get('#otp-passphrase').setValue('abcd')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.find('#otp-host').exists()).toBe(true)
+
+    vi.runOnlyPendingTimers()
+    await flushPromises()
+    expect(wrapper.find('#otp-host').exists()).toBe(false)
     wrapper.unmount()
   })
 
