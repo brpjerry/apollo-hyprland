@@ -546,8 +546,11 @@ namespace {
   };
 }  // namespace
 
-// Bugs caught: 0, False positives: 1
+// Bugs caught: 0, False positives: 2
 TEST_P(WlrCaptureLiveTest, ReusesBuffersAcrossFrames) {
+  if (is_vram(GetParam()) && test_wl::drm_render_node().empty()) {
+    GTEST_SKIP() << "No DRM render node (no GPU) to allocate dma-bufs on";
+  }
   auto output = test_wl::headless_output_t::create("1920x1080@120");
   ASSERT_TRUE(output) << "Couldn't create a headless output (is this Hyprland?)";
   test_wl::damage_source_t damage {output->name};

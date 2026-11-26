@@ -77,9 +77,14 @@ namespace wl {
   /**
    * @brief Waits up to the specified timeout to dispatch new events on the wl_display.
    * @param timeout The timeout in milliseconds.
-   * @return `true` if new events were dispatched or `false` if the timeout expired.
+   * @return `true` if new events were dispatched, `false` if the timeout expired or the connection is broken
+   *         (see broken()).
    */
   bool display_t::dispatch(std::chrono::milliseconds timeout) {
+    if (broken()) {
+      return false;
+    }
+
     // Check if any events are queued already. If not, flush
     // outgoing events, and prepare to wait for readability.
     if (wl_display_prepare_read(display_internal.get()) == 0) {
@@ -89,7 +94,8 @@ namespace wl {
       struct pollfd pfd = {};
       pfd.fd = wl_display_get_fd(display_internal.get());
       pfd.events = POLLIN;
-      if (poll(&pfd, 1, timeout.count()) == 1 && (pfd.revents & POLLIN)) {
+      // A hangup or socket error is read too: libwayland then records the broken connection.
+      if (poll(&pfd, 1, timeout.count()) == 1 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
         // Read the new event(s)
         wl_display_read_events(display_internal.get());
       } else {
@@ -100,8 +106,11 @@ namespace wl {
     }
 
     // Dispatch any existing or new pending events
-    wl_display_dispatch_pending(display_internal.get());
-    return true;
+    return wl_display_dispatch_pending(display_internal.get()) >= 0;
+  }
+
+  bool display_t::broken() {
+    return wl_display_get_error(display_internal.get()) != 0;
   }
 
   namespace {
@@ -677,8 +686,12 @@ namespace wl {
     status = REINIT;
   }
 
-  void screencopy_t::buffer(zwlr_screencopy_frame_v1 *, std::uint32_t format, std::uint32_t width, std::uint32_t height, std::uint32_t stride) {
+  void screencopy_t::buffer(zwlr_screencopy_frame_v1 *frame, std::uint32_t format, std::uint32_t width, std::uint32_t height, std::uint32_t stride) {
     announced.shm = screencopy_constraints_t::shm_t {format, width, height, stride};
+    // Before version 3 there is no buffer_done: this is the only buffer event, so copy now.
+    if (zwlr_screencopy_frame_v1_get_version(frame) < ZWLR_SCREENCOPY_FRAME_V1_BUFFER_DONE_SINCE_VERSION) {
+      buffer_done(frame);
+    }
   }
 
   void screencopy_t::linux_dmabuf(zwlr_screencopy_frame_v1 *, std::uint32_t format, std::uint32_t width, std::uint32_t height) {

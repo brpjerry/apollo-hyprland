@@ -1586,8 +1586,17 @@ namespace nvhttp {
       return;
     }
 
-    std::string content = platf::get_clipboard();
-    response->write(content);
+    auto content = platf::get_clipboard();
+    if (!content) {
+      // Not an empty clipboard: a client syncing it must not replace its own with nothing.
+      BOOST_LOG(debug) << "Reading clipboard failed!";
+
+      response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    response->write(*content);
     return;
   }
 

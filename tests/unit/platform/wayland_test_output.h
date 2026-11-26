@@ -8,6 +8,7 @@
 #if defined(__linux__) && defined(SUNSHINE_BUILD_WAYLAND)
 
   // standard includes
+  #include <algorithm>
   #include <atomic>
   #include <chrono>
   #include <cstring>
@@ -19,6 +20,7 @@
 
   // platform includes
   #include <poll.h>
+  #include <xf86drm.h>
   #include <single-pixel-buffer-v1.h>
   #include <viewporter.h>
   #include <wayland-client.h>
@@ -32,6 +34,23 @@
 
 namespace test_wl {
   using namespace std::chrono_literals;
+
+  /**
+   * @brief The first DRM render node, or "" without one: no GPU, e.g. CI's vkms, which has only a primary node.
+   *        Video memory capture and the GL converter need a render node.
+   */
+  inline std::string drm_render_node() {
+    drmDevicePtr devices[16];
+    int count = drmGetDevices2(0, devices, 16);
+    std::string node;
+    for (int i = 0; i < count && node.empty(); ++i) {
+      if (devices[i]->available_nodes & (1 << DRM_NODE_RENDER)) {
+        node = devices[i]->nodes[DRM_NODE_RENDER];
+      }
+    }
+    drmFreeDevices(devices, std::max(count, 0));
+    return node;
+  }
 
   /**
    * @brief A headless Hyprland output named APOLLO-TEST-<suffix>, removed again when this object is destroyed

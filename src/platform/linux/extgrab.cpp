@@ -393,6 +393,12 @@ namespace wl {
         }
         auto timeout = std::chrono::ceil<std::chrono::milliseconds>(wake - now);
         display.dispatch(std::max(timeout, 0ms));
+        if (display.broken()) {
+          // The frame in flight will never complete.
+          BOOST_LOG(error) << "Lost the Wayland connection; reinitializing capture"sv;
+          abandon_frame();
+          return platf::capture_e::reinit;
+        }
 
         // The output switched between SDR and HDR (or its HDR metadata changed): the encoder has to be recreated
         // with the new colorspace. The loop wakes at least every idle_repeat_interval, which bounds the delay.
@@ -764,6 +770,18 @@ namespace wl {
 namespace platf {
   std::shared_ptr<display_t> ext_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
     return wl::make_ext_display(hwdevice_type, display_name, config, {});
+  }
+
+  bool ext_capture_supported() {
+    wl::display_t display;
+    if (display.init()) {
+      return false;
+    }
+    wl::interface_t interface;
+    interface.listen(display.registry());
+    display.roundtrip();
+    return interface[wl::interface_t::XDG_OUTPUT] && interface[wl::interface_t::EXT_IMAGE_COPY_CAPTURE] &&
+           interface[wl::interface_t::EXT_OUTPUT_CAPTURE_SOURCE];
   }
 
   std::vector<std::string> ext_display_names() {

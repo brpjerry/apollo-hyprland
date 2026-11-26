@@ -18,7 +18,7 @@
 namespace platf::command {
   namespace {
     /// The `sh -c` script used when the helper is not installed; same arguments as apollo-run-elevated.
-    constexpr auto chdir_script = R"(cd -- "$1" 2>/dev/null || cd /; shift; exec "$@")";
+    constexpr auto chdir_script = R"(cd -- "$1" || exit 1; shift; exec "$@")";
 
     struct terminal_t {
       std::string_view name;

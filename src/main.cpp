@@ -8,6 +8,14 @@
 #include <fstream>
 #include <iostream>
 
+#ifndef _WIN32
+  #include <cerrno>
+  #include <cstring>
+  #include <fcntl.h>
+  #include <thread>
+  #include <unistd.h>
+#endif
+
 // local includes
 #include "confighttp.h"
 #include "display_device.h"
@@ -38,14 +46,105 @@ using namespace std::literals;
 
 std::map<int, std::function<void()>> signal_handlers;
 
+#ifdef _WIN32
+// Windows runs signal handlers on a thread of their own, not on the thread that was interrupted.
 void on_signal_forwarder(int sig) {
   signal_handlers.at(sig)();
 }
+
+void start_signal_thread() {}
+
+void stop_signal_thread() {}
+#else
+namespace {
+  // POSIX signal handlers interrupt whatever thread receives the signal, maybe while it holds a lock the shutdown
+  // handlers need (logging, the running app, the tray). So the handler only writes the signal number to a pipe,
+  // and signal_thread runs the registered handler. A 0 byte stops the thread.
+  int signal_pipe[2] {-1, -1};
+  std::thread signal_thread;
+
+  void on_signal_forwarder(int sig) {
+    const int saved_errno = errno;
+    const auto byte = static_cast<unsigned char>(sig);
+    [[maybe_unused]] auto written = write(signal_pipe[1], &byte, 1);
+    errno = saved_errno;
+  }
+
+  void run_signal_handlers() {
+    while (true) {
+      unsigned char sig;
+      auto n = read(signal_pipe[0], &sig, 1);
+      if (n < 0 && errno == EINTR) {
+        continue;
+      }
+      if (n != 1 || sig == 0) {
+        return;
+      }
+      if (auto handler = signal_handlers.find(sig); handler != signal_handlers.end()) {
+        handler->second();
+      }
+    }
+  }
+
+  bool open_signal_pipe() {
+    if (signal_pipe[0] >= 0) {
+      return true;
+    }
+    // The write end never blocks the signal handler; a full pipe already holds a pending shutdown.
+    if (pipe2(signal_pipe, O_CLOEXEC) < 0) {
+      return false;
+    }
+    if (fcntl(signal_pipe[1], F_SETFL, O_NONBLOCK) < 0) {
+      close(signal_pipe[0]);
+      close(signal_pipe[1]);
+      signal_pipe[0] = signal_pipe[1] = -1;
+      return false;
+    }
+    return true;
+  }
+}  // namespace
+
+/**
+ * @brief Starts running the handlers of signals received so far and from now on. Call it once every handler is
+ *        registered: the thread reads signal_handlers without a lock.
+ */
+void start_signal_thread() {
+  if (signal_pipe[0] >= 0 && !signal_thread.joinable()) {
+    signal_thread = std::thread {run_signal_handlers};
+  }
+}
+
+/**
+ * @brief Restores the default action of the registered signals and stops the thread running their handlers, after
+ *        any handler in progress has finished. The handlers refer to main()'s locals, so main() calls this first
+ *        when it returns.
+ */
+void stop_signal_thread() {
+  for (const auto &[sig, handler] : signal_handlers) {
+    std::signal(sig, SIG_DFL);
+  }
+  if (!signal_thread.joinable()) {
+    return;
+  }
+  // The pipe stays open: a handler started just before SIG_DFL took effect may still write to it.
+  const unsigned char stop = 0;
+  while (write(signal_pipe[1], &stop, 1) < 0 && (errno == EINTR || errno == EAGAIN)) {
+    std::this_thread::yield();
+  }
+  signal_thread.join();
+}
+#endif
 
 template<class FN>
 void on_signal(int sig, FN &&fn) {
   signal_handlers.emplace(sig, std::forward<FN>(fn));
 
+#ifndef _WIN32
+  if (!open_signal_pipe()) {
+    BOOST_LOG(error) << "Couldn't create the signal pipe: "sv << std::strerror(errno);
+    return;
+  }
+#endif
   std::signal(sig, on_signal_forwarder);
 }
 
@@ -331,6 +430,9 @@ int main(int argc, char *argv[]) {
   on_signal(SIGTERM, make_shutdown_handler("Terminate handler called"sv, true));
   on_signal(SIGHUP, make_shutdown_handler("Hangup handler called"sv, true));
 #endif
+  start_signal_thread();
+  // Declared after the locals the handlers refer to, so it runs before they are destroyed.
+  auto signal_thread_guard = util::fail_guard(stop_signal_thread);
 
 #ifdef _WIN32
   // Terminate gracefully on Windows when console window is closed

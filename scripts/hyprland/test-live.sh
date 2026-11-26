@@ -8,7 +8,8 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 src="$(cd "$here/../.." && pwd)"
-build="${1:-$src/build}"
+# Absolute, since the logs path built from it is used after changing into $build/tests.
+build="$(cd -- "${1:-$src/build}" && pwd)"
 shift || true
 
 # gtest suites that talk to a compositor. Name new suites *LiveTest and they are picked up; list any other suite
@@ -62,7 +63,8 @@ status=${PIPESTATUS[0]}
 set -e
 
 # A live test skips itself when it finds no compositor, so a broken harness would look green. Fail if nothing ran.
-passed="$(sed -n 's/^\[  PASSED  \] \([0-9]*\) test.*/\1/p' "$logs/test_sunshine.out" | tail -n 1)"
+# Strip colours first: with --gtest_color=yes the summary line starts with an escape sequence.
+passed="$(sed -e 's/\x1b\[[0-9;]*m//g' "$logs/test_sunshine.out" | sed -n 's/^\[  PASSED  \] \([0-9]*\) test.*/\1/p' | tail -n 1)"
 if ((status == 0)) && [[ ${passed:-0} == 0 ]]; then
   echo "test-live: every live test was skipped; the headless Hyprland is not reachable from the tests" >&2
   status=1

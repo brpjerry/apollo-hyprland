@@ -390,6 +390,9 @@ namespace wl {
     // Wait up to the timeout to read and dispatch new events
     bool dispatch(std::chrono::milliseconds timeout);
 
+    /// True once the connection failed (compositor gone, protocol error): nothing will be dispatched any more.
+    bool broken();
+
     // Get the registry associated with the display
     // No need to manually free the registry
     wl_registry *registry();

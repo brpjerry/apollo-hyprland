@@ -6,7 +6,9 @@
   Installed to /usr/share/polkit-1/actions (installing needs root). Without it Apollo falls back to pkexec's generic
   action for /bin/sh, which asks for the same authorization.
 
-  The helper runs whatever command Apollo passes it. To skip the password for one user, add a polkit rule such as
+  The helper runs whatever command Apollo passes it, so every command asks again (auth_admin, not auth_admin_keep):
+  a kept authorization would let any other command run as root without a prompt for the next few minutes.
+  To skip the password for one user, add a polkit rule such as
   /etc/polkit-1/rules.d/50-apollo.rules (equivalent to a NOPASSWD sudoers entry for that user):
     polkit.addRule(function(action, subject) {
       if (action.id == "@PROJECT_FQDN@.run-elevated" && subject.user == "USER" && subject.local && subject.active)
@@ -23,7 +25,7 @@
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>auth_admin</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">@APOLLO_ELEVATION_HELPER@</annotate>
   </action>

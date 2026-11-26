@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 
 // lib includes
@@ -922,7 +923,11 @@ namespace platf {
    */
   std::unique_ptr<high_precision_timer> create_high_precision_timer();
 
-  std::string
+  /**
+   * @brief The clipboard text.
+   * @return The text ("" for an empty or non-text clipboard), or std::nullopt if it could not be read.
+   */
+  std::optional<std::string>
   get_clipboard();
 
   bool

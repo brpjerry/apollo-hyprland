@@ -82,8 +82,12 @@ namespace {
   };
 }  // namespace
 
-// Bugs caught: 0, False positives: 0
+// Bugs caught: 0, False positives: 1
 TEST_F(WaylandHdrLiveTest, VideoMemoryFramesOfAnHdrOutputBecomePq) {
+  const auto node = test_wl::drm_render_node();
+  if (node.empty()) {
+    GTEST_SKIP() << "No DRM render node (no GPU) for the GL converter";
+  }
   auto output = test_wl::headless_output_t::create("1280x720@60");
   ASSERT_TRUE(output) << "Couldn't create a headless output (is this Hyprland?)";
   test_wl::damage_source_t damage {output->name};
@@ -137,16 +141,6 @@ TEST_F(WaylandHdrLiveTest, VideoMemoryFramesOfAnHdrOutputBecomePq) {
   std::cout << output->name << ": captured format " << util::hex(descriptor.sd.fourcc).to_string_view() << std::endl;
 
   // The GL converter, set up like the CUDA path does.
-  drmDevicePtr devices[16];
-  int count = drmGetDevices2(0, devices, 16);
-  std::string node;
-  for (int i = 0; i < count && node.empty(); ++i) {
-    if (devices[i]->available_nodes & (1 << DRM_NODE_RENDER)) {
-      node = devices[i]->nodes[DRM_NODE_RENDER];
-    }
-  }
-  drmFreeDevices(devices, std::max(count, 0));
-  ASSERT_FALSE(node.empty());
   int fd = ::open(node.c_str(), O_RDWR | O_CLOEXEC);
   ASSERT_GE(fd, 0);
   {

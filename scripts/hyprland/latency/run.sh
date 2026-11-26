@@ -94,7 +94,13 @@ for phase in $PHASES; do
   else
     reactor_args=()
     probe_args=(--press 250,500)
-    automation-notice "Latency test: a full-screen reactor takes the keyboard on $vout for ~$((DURATION + 10))s; the laptop types Left Shift into Artemis"
+    notice="Latency test: a full-screen reactor takes the keyboard on $vout for ~$((DURATION + 10))s; the client types Left Shift into $CLIENT_BIN"
+    # automation-notice (a local desktop notification helper) is optional; without it the notice only goes to the log.
+    if command -v automation-notice > /dev/null; then
+      automation-notice "$notice"
+    else
+      log "$notice"
+    fi
     ssh_client "notify-send -t 5000 'Apollo latency test' 'Pressing Left Shift into Artemis for ${DURATION}s'" || true
   fi
   log "phase $phase: reactor on $vout"

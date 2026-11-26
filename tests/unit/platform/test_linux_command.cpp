@@ -33,7 +33,7 @@ namespace {
   using platf::command::plan;
   using strings = std::vector<std::string>;
 
-  const std::string chdir_script = R"(cd -- "$1" 2>/dev/null || cd /; shift; exec "$@")";
+  const std::string chdir_script = R"(cd -- "$1" || exit 1; shift; exec "$@")";
 
   /**
    * @brief A temporary directory, removed on destruction.
@@ -277,6 +277,25 @@ TEST(LinuxCommandTest, HelperScriptChangesDirectory) {
   EXPECT_EQ(read_file(out), tmp.path.string() + "\n");
   // Missing arguments: usage error, not 126.
   EXPECT_EQ(WEXITSTATUS(std::system((helper.string() + " / 2>/dev/null").c_str())), 2);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(LinuxCommandTest, ElevatedRunnersRefuseAMissingDirectory) {
+  temp_dir_t tmp;
+  auto helper = fs::path {SUNSHINE_SOURCE_DIR} / "src_assets/linux/misc/apollo-run-elevated";
+  ASSERT_TRUE(fs::exists(helper));
+  auto missing = tmp.path / "gone";
+  auto marker = tmp.path / "ran";
+  // A relative path in the command must not resolve against / (or anywhere else) instead.
+  auto command = " '" + missing.string() + "' /bin/sh -c 'touch " + marker.string() + "' 2>/dev/null";
+
+  EXPECT_NE(WEXITSTATUS(std::system((helper.string() + command).c_str())), 0);
+  EXPECT_FALSE(fs::exists(marker)) << "the helper ran the command";
+
+  // The sh -c fallback used without an installed helper behaves the same.
+  auto fallback = "/bin/sh -c '" + chdir_script + "' apollo-run-elevated" + command;
+  EXPECT_NE(WEXITSTATUS(std::system(fallback.c_str())), 0);
+  EXPECT_FALSE(fs::exists(marker)) << "the fallback ran the command";
 }
 
 #endif

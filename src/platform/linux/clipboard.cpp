@@ -640,8 +640,17 @@ namespace platf::clipboard {
         return;
       }
       int fds[2];
-      if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) < 0) {
+      if (pipe2(fds, O_CLOEXEC) < 0) {
         BOOST_LOG(warning) << "Clipboard: pipe2 failed: "sv << std::strerror(errno);
+        result->set_value(std::nullopt);
+        return;
+      }
+      // Only our end is nonblocking. O_NONBLOCK belongs to the open file, which the owner shares through the
+      // descriptor we pass it: a source writing with plain blocking writes would get EAGAIN and stop early.
+      if (int flags = fcntl(fds[0], F_GETFL); flags < 0 || fcntl(fds[0], F_SETFL, flags | O_NONBLOCK) < 0) {
+        BOOST_LOG(warning) << "Clipboard: cannot make the pipe nonblocking: "sv << std::strerror(errno);
+        close(fds[0]);
+        close(fds[1]);
         result->set_value(std::nullopt);
         return;
       }
@@ -705,6 +714,7 @@ namespace platf::clipboard {
       return nullptr;
     }
 
+    // The listener points at this stack frame, so the registry is destroyed before connect() returns.
     globals_t globals;
     impl->registry = wl_display_get_registry(impl->display);
     wl_registry_add_listener(impl->registry, &registry_listener, &globals);
@@ -741,6 +751,10 @@ namespace platf::clipboard {
       impl->backend = std::make_unique<data_control_t<wlr_traits_t>>(manager, impl->seat, std::move(send));
       impl->protocol_name = wlr_traits_t::name;
     }
+    // Only needed to bind the seat and the manager. Kept, it would deliver later globals (another seat, a
+    // replaced manager) to the event thread with a pointer to `globals`, which is gone by then.
+    wl_registry_destroy(impl->registry);
+    impl->registry = nullptr;
 
     // Receive the current selection before the first get().
     if (wl_display_roundtrip(impl->display) < 0 || !impl->backend->ok()) {

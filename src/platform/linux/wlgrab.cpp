@@ -187,6 +187,11 @@ namespace wl {
 
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
         if (remaining.count() < 0 || !display.dispatch(remaining)) {
+          if (display.broken()) {
+            // The pending frame will never complete.
+            BOOST_LOG(error) << "Lost the Wayland connection; reinitializing capture"sv;
+            return platf::capture_e::reinit;
+          }
           return platf::capture_e::timeout;
         }
 
@@ -409,6 +414,17 @@ namespace platf {
     }
 
     return wlr;
+  }
+
+  bool wl_capture_supported() {
+    wl::display_t display;
+    if (display.init()) {
+      return false;
+    }
+    wl::interface_t interface;
+    interface.listen(display.registry());
+    display.roundtrip();
+    return interface[wl::interface_t::XDG_OUTPUT] && interface[wl::interface_t::WLR_EXPORT_DMABUF];
   }
 
   std::vector<std::string> wl_display_names() {

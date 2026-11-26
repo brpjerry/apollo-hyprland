@@ -5,8 +5,9 @@
   clocksync.py client HOST [PORT] [N]   print JSON with offset_ns = server_clock - client_clock
 
 The client keeps the samples with the smallest round trip and takes the median of their offsets, so queueing
-delay on the network (Wi-Fi in particular) mostly drops out. The remaining error is the up/down asymmetry of the
-fastest round trips, at most rtt_min_ns / 2.
+delay on the network (Wi-Fi in particular) mostly drops out. What remains is the up/down asymmetry of the kept
+round trips: each kept sample's offset is off by at most half its own round trip, so (with the clock offset
+constant while sampling) the median is off by at most rtt_kept_max_ns / 2.
 """
 import json
 import socket
@@ -60,6 +61,7 @@ def client(host, port, count):
         "offset_ns": offsets[len(offsets) // 2],
         "offset_spread_ns": offsets[-1] - offsets[0],
         "rtt_min_ns": rtts[0],
+        "rtt_kept_max_ns": best[-1][0],
         "rtt_median_ns": rtts[len(rtts) // 2],
         "rtt_p95_ns": rtts[int(len(rtts) * 0.95)],
         "replies": len(samples),

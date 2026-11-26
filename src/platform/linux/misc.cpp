@@ -1058,18 +1058,22 @@ std::string get_local_ip_for_gateway() {
 #endif
 
 #ifdef SUNSHINE_BUILD_WAYLAND
+  // The Wayland backends are chosen by the protocols the compositor offers, not by its current outputs: Apollo may
+  // start with every monitor disabled and stream a virtual display it creates later.
+  bool wl_capture_supported();
   std::vector<std::string> wl_display_names();
   std::shared_ptr<display_t> wl_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
   bool verify_wl() {
-    return window_system == window_system_e::WAYLAND && !wl_display_names().empty();
+    return window_system == window_system_e::WAYLAND && wl_capture_supported();
   }
 
+  bool ext_capture_supported();
   std::vector<std::string> ext_display_names();
   std::shared_ptr<display_t> ext_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
   bool verify_ext() {
-    return window_system == window_system_e::WAYLAND && !ext_display_names().empty();
+    return window_system == window_system_e::WAYLAND && ext_capture_supported();
   }
 #endif
 
@@ -1268,15 +1272,15 @@ std::string get_local_ip_for_gateway() {
   }  // namespace
 #endif
 
-  std::string
+  std::optional<std::string>
   get_clipboard() {
 #ifdef SUNSHINE_BUILD_WAYLAND
     std::lock_guard lock {clipboard_mutex};
     if (auto clipboard = wayland_clipboard()) {
-      return clipboard->get().value_or(std::string {});
+      return clipboard->get();
     }
 #endif
-    return "";
+    return std::nullopt;
   }
 
   bool

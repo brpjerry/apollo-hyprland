@@ -19,6 +19,10 @@ namespace test_pulse {
   public:
     /** @return true if the private instance runs. */
     bool start() {
+#ifndef __linux__
+      // There is no PulseAudio API to keep away from elsewhere (and no setenv() on Windows).
+      return false;
+#else
       save("PULSE_SERVER");
       save("PULSE_RUNTIME_PATH");
       save("PIPEWIRE_RUNTIME_DIR");
@@ -26,7 +30,7 @@ namespace test_pulse {
       // Nothing below may reach the desktop's server, whatever happens next.
       setenv("PULSE_SERVER", "unix:/nonexistent/apollo-test-no-pulse", 1);
 
-#if defined(__linux__) && defined(SUNSHINE_SOURCE_DIR)
+  #ifdef SUNSHINE_SOURCE_DIR
       std::string cmd = "'" SUNSHINE_SOURCE_DIR "/scripts/hyprland/run-private-pipewire.sh' start";
       FILE *pipe = popen(cmd.c_str(), "r");
       if (!pipe) {
@@ -58,8 +62,9 @@ namespace test_pulse {
         }
       }
       return true;
-#else
+  #else
       return false;
+  #endif
 #endif
     }
 
@@ -81,13 +86,14 @@ namespace test_pulse {
     }
 
     void stop() {
-#if defined(__linux__) && defined(SUNSHINE_SOURCE_DIR)
+#ifdef __linux__
+  #ifdef SUNSHINE_SOURCE_DIR
       if (!_dir.empty()) {
         std::string cmd = "'" SUNSHINE_SOURCE_DIR "/scripts/hyprland/run-private-pipewire.sh' stop '" + _dir + "'";
         std::system(cmd.c_str());
         _dir.clear();
       }
-#endif
+  #endif
       for (const auto &[name, value] : _saved) {
         if (value) {
           setenv(name.c_str(), value->c_str(), 1);
@@ -96,6 +102,7 @@ namespace test_pulse {
         }
       }
       _saved.clear();
+#endif
     }
 
     bool running() const {
