@@ -8,7 +8,7 @@ UDP exchange estimates the offset between the two machines' clocks.
 |---|---|---|
 | `reactor.c` | host | Layer-shell surface on the APOLLO output that flips black/white on a key press (`react`) or a jittered timer (`--blink`); logs presentation times. `--animate` also redraws a corner square every frame, so the stream never goes idle (game-like). |
 | `probe.c` | client | Captures a small region of the client's screen with wlr-screencopy and logs its brightness with the compositor's timestamp; optionally presses Left Shift through its own uinput keyboard. |
-| `clocksync.py` | both | UDP offset estimate between the two CLOCK_MONOTONICs (accurate to about half the fastest round trip). |
+| `clocksync.py` | both | UDP offset estimate between the two CLOCK_MONOTONICs (off by at most half the slowest round trip it keeps, `rtt_kept_max_ns`). |
 | `analyze.py` | host | Matches presses, host flips and client frames, and prints p50/p95/p99 per stage. |
 | `run.sh` | host | Starts the stream over SSH, runs the blink and react phases, collects logs, analyzes. |
 
