@@ -8,6 +8,9 @@
       <p class="pre-wrap text-muted small">{{ $t('apps.applications_tips') }}</p>
     </div>
 
+    <!-- Errors of list actions (reorder, delete, launch, close): the edit dialog has its own. -->
+    <div v-if="actionError" role="alert" class="alert alert-danger">{{ actionError }}</div>
+
     <!-- Actions toolbar -->
     <div class="toolbar apps-toolbar d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
       <!-- Left side actions -->
@@ -146,7 +149,6 @@
           <div class="modal-body">
             <!-- Error -->
             <div v-if="editFormError" class="alert alert-danger py-2 small">{{ editFormError }}</div>
-            <div v-if="actionError" class="alert alert-danger py-2 small">{{ actionError }}</div>
             <!-- Application Name -->
             <div class="mb-3">
               <label for="appName" class="form-label">{{ $t('apps.app_name') }}</label>
@@ -864,13 +866,20 @@
       canElevate() {
         return this.platform === 'windows' || this.platform === 'linux';
       },
+      /**
+       * The saved order can only change when every application has a UUID: one without is edited and deleted by
+       * its position, and the reorder request cannot place it. The whole list must also be shown.
+       */
+      reorderable() {
+        return this.apps.every(app => app.uuid) && !this.searchQuery.trim();
+      },
       /** Dragging changes the saved order, so it is only offered on the unfiltered, unsorted list. */
       dragEnabled() {
-        return this.sortMode === "default" && !this.searchQuery.trim() && !this.actionDisabled;
+        return this.reorderable && this.sortMode === "default" && !this.actionDisabled;
       },
       /** A dragged order, or the name-sorted view of the whole list, can be saved as the app order. */
       canSaveOrder() {
-        return !this.searchQuery.trim() && (this.orderChanged || (this.sortMode !== "default" && this.apps.length > 1));
+        return this.reorderable && (this.orderChanged || (this.sortMode !== "default" && this.apps.length > 1));
       },
       displayedApps() {
         let list = this.apps.map((app, index) => ({ app, index }));
@@ -1217,6 +1226,9 @@
       /**
        * @brief Save the order shown (dragged, or sorted by name) with `POST /api/apps/reorder`.
        *
+       * On success the list is reloaded before actions are enabled again. On failure the order shown is kept, so
+       * the user can retry, and the error is shown on the list.
+       *
        * @return {Promise<void>} Completion of the request and reload.
        */
       async saveOrder() {
@@ -1233,12 +1245,14 @@
           });
           if (r.status !== 200) {
             this.actionError = this.$t('apps.reorder_failed') + (await this.errorText(r));
-          } else {
-            this.sortMode = "default";
+            return;
           }
+          await this.loadApps();
+          this.sortMode = "default";
+        } catch (e) {
+          this.actionError = this.$t('apps.reorder_failed') + e.message;
         } finally {
           this.actionDisabled = false;
-          await this.loadApps();
         }
       },
       addDetached() {

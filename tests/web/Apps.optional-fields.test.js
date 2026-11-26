@@ -336,4 +336,76 @@ describe('applications page', () => {
     wrapper.unmount()
     apiFetch.mockReset()
   })
+
+  /**
+   * @brief Mount the applications page with a list of applications.
+   *
+   * @param {object[]} apps Applications returned by /api/apps.
+   * @param {Function} [answer] Response for any other URL, given the URL and options.
+   * @return {Promise<object>} Wrapper.
+   */
+  async function mountApps(apps, answer = async () => ({ status: 200, json: async () => ({ platform: 'linux' }) })) {
+    const { mount, flushPromises } = await import('@vue/test-utils')
+    apiFetch.mockImplementation(async (url, options) => (url === './api/apps'
+      ? { status: 200, json: async () => ({ apps: structuredClone(apps) }) }
+      : answer(url, options)))
+    const wrapper = mount(Apps, {
+      global: {
+        mocks: { $t: key => key },
+        stubs: { Checkbox: true, 'i18n-t': true },
+      },
+    })
+    await flushPromises()
+    return wrapper
+  }
+
+  // Bugs caught: 0, False positives: 0
+  it('keeps a dragged order that the server rejected and shows why on the list', async () => {
+    const { flushPromises } = await import('@vue/test-utils')
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }, { name: 'B', uuid: 'b' }], async url => (url === './api/apps/reorder'
+      ? { status: 500, json: async () => ({ error: 'Disk full' }) }
+      : { status: 200, json: async () => ({ platform: 'linux' }) }))
+
+    wrapper.vm.moveApp(0, 1)
+    await wrapper.vm.saveOrder()
+    await flushPromises()
+
+    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['B', 'A'])
+    expect(wrapper.vm.canSaveOrder).toBe(true)
+    const alerts = wrapper.findAll('.alert-danger').filter(alert => !alert.element.closest('.modal'))
+    expect(alerts.map(alert => alert.text()).join()).toContain('Disk full')
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('reports a reorder request that never reached the server', async () => {
+    const { flushPromises } = await import('@vue/test-utils')
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }, { name: 'B', uuid: 'b' }], async url => {
+      if (url === './api/apps/reorder') throw new Error('offline')
+      return { status: 200, json: async () => ({ platform: 'linux' }) }
+    })
+
+    wrapper.vm.moveApp(0, 1)
+    await wrapper.vm.saveOrder()
+    await flushPromises()
+
+    expect(wrapper.vm.actionError).toContain('offline')
+    expect(wrapper.vm.actionDisabled).toBe(false)
+    expect(wrapper.vm.orderChanged).toBe(true)
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // Dragging an application without a UUID would change the position its edit and delete requests use.
+  // Bugs caught: 0, False positives: 0
+  it('offers no reordering while an application has no UUID', async () => {
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }, { name: 'B', uuid: 'b' }, { name: 'Legacy' }])
+
+    expect(wrapper.vm.dragEnabled).toBe(false)
+    wrapper.vm.sortMode = 'asc'
+    expect(wrapper.vm.canSaveOrder).toBe(false)
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
 })
