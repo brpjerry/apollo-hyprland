@@ -646,6 +646,31 @@ TEST(HyprlandSettingsManagerTest, PhysicalHdrUsesColourManagement) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, PhysicalMonitorAlreadyInHdrKeepsItsPreset) {
+  // The user runs DP-3 with the EDID-based HDR preset (and a bit depth Apollo would not pick itself).
+  auto c = desk();
+  c->current.outputs[0].hdr_capable = true;
+  c->current.outputs[0].cm = "hdredid";
+  c->current.outputs[0].bitdepth = 8;
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+
+  // HDR is already on: nothing to change and nothing to restore.
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::VerifyOnly, {}, {}, HdrState::Enabled)), ApplyResult::Ok);
+  EXPECT_TRUE(c->rules.empty());
+  EXPECT_EQ(out(*c, "DP-3").cm, "hdredid");
+  EXPECT_EQ(out(*c, "DP-3").bitdepth, 8);
+  EXPECT_FALSE(p->data);
+
+  // Switching it off for an SDR client is restored afterwards.
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::VerifyOnly, {}, {}, HdrState::Disabled)), ApplyResult::Ok);
+  EXPECT_EQ(out(*c, "DP-3").cm, "srgb");
+  ASSERT_EQ(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(out(*c, "DP-3").cm, "hdredid");
+  EXPECT_EQ(out(*c, "DP-3").bitdepth, 8);
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(HyprlandSettingsManagerTest, ResetForgetsTheSavedState) {
   auto c = desk();
   auto p = std::make_shared<memory_persistence_t>();

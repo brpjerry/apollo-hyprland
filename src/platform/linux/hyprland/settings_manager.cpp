@@ -660,9 +660,11 @@ namespace hyprland::dd {
         }
       } else if (target_now->hdr_capable) {
         const bool initially = is_hdr_preset(target->cm);
-        d.cm = enable ? "hdr"s : (initially || target->cm.empty() ? "srgb"s : target->cm);
-        d.bitdepth = enable ? 10 : (initially ? 8 : target->bitdepth.value_or(8));
+        // Already in the requested state: keep the user's preset (hdredid, say) and bit depth. Only a change is
+        // recorded for revert, so anything changed here would not come back.
         if (enable != initially) {
+          d.cm = enable ? "hdr"s : "srgb"s;
+          d.bitdepth = enable ? 10 : 8;
           touched.hdr = true;
         }
       } else {
