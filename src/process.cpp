@@ -288,6 +288,14 @@ namespace proc {
     return display_name;
   }
 
+  bool may_stream_without_virtual_display(platf::vdisplay::status_e status, bool display_attempted) {
+#ifdef _WIN32
+    return true;
+#else
+    return !display_attempted && status == platf::vdisplay::status_e::unavailable;
+#endif
+  }
+
   int proc_t::execute(const ctx_t& app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
     if (_app_id == input_only_app_id) {
       terminate(false, false);
@@ -363,15 +371,12 @@ namespace proc {
         // empty name when probing graphics cards.
         config::video.output_name = platf::vdisplay::output_name_for(this->display_name);
       }
-#ifndef _WIN32
-      else if (launch_session->virtual_display) {
-        // The backend works but could not set up the display. Windows falls back to the configured physical display;
-        // here that would stream (and reconfigure) the host's desktop for a client that asked for its own display.
-        // A backend that is not available at all (not Hyprland) cleared virtual_display and keeps that fallback.
+      else if (!may_stream_without_virtual_display(platf::vdisplay::status(), launch_session->virtual_display)) {
+        // Falling back to the configured physical display would stream (and reconfigure) the host's desktop for a
+        // client that asked for its own display.
         BOOST_LOG(error) << "Could not prepare the virtual display for this session"sv;
         return 503;
       }
-#endif
     }
 
     display_device::configure_display(config::video, *launch_session);
