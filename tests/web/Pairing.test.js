@@ -231,6 +231,39 @@ describe('client manager', () => {
   })
 
   // Bugs caught: 0, False positives: 0
+  it('keeps the editor and its changes open when the save is rejected', async () => {
+    const wrapper = await mountManager()
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: false, error: 'Disk full' }))
+
+    await wrapper.findAll('.client-row')[1].get('.btn-primary').trigger('click')
+    await wrapper.get('#client-name-c2').setValue('Living room tablet')
+    await wrapper.get('form.client-editor').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Disk full')
+    expect(wrapper.get('#client-name-c2').element.value).toBe('Living room tablet')
+    wrapper.unmount()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('keeps an open editor and the client list across a background refresh', async () => {
+    const wrapper = await mountManager()
+
+    await wrapper.findAll('.client-row')[0].get('.btn-primary').trigger('click')
+    await wrapper.get('#client-name-c1').setValue('Renamed phone')
+    await wrapper.vm.refreshClients()
+    await flushPromises()
+    expect(wrapper.get('#client-name-c1').element.value).toBe('Renamed phone')
+
+    apiFetch.mockRejectedValueOnce(new Error('offline'))
+    await wrapper.vm.refreshClients()
+    await flushPromises()
+    expect(wrapper.get('#client-name-c1').element.value).toBe('Renamed phone')
+    expect(wrapper.findAll('.client-row')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  // Bugs caught: 0, False positives: 0
   it('enables, disconnects and unpairs by UUID', async () => {
     const wrapper = await mountManager()
 

@@ -102,22 +102,25 @@
       isPowerful,
       permToStr,
       /**
-       * @brief Reload the paired clients. An open editor is closed.
+       * @brief Reload the paired clients.
+       *
+       * An open editor keeps its changes unless its client is gone. A failed request keeps the last list.
        *
        * @return {Promise<void>} Completion of the request.
        */
       async refreshClients() {
-        this.draft = null
         try {
           const response = await apiFetch('./api/clients/list')
           const body = await response.json()
           this.platform = body.platform ?? this.platform
-          this.clients = body.status && Array.isArray(body.named_certs)
-            ? sortClients(body.named_certs.map(normalizeClient))
-            : []
+          if (body.status && Array.isArray(body.named_certs)) {
+            this.clients = sortClients(body.named_certs.map(normalizeClient))
+            if (this.draft && !this.clients.some(client => client.uuid === this.draft.uuid)) {
+              this.draft = null
+            }
+          }
         } catch (e) {
           console.error('Failed to load paired clients', e)
-          this.clients = []
         }
       },
       editClient(client) {
@@ -128,7 +131,8 @@
         this.draft = null
       },
       /**
-       * @brief Save Apollo's per-client settings.
+       * @brief Save Apollo's per-client settings. The editor closes on success and stays open, with the changes,
+       * when the save fails.
        *
        * @param {object} draft Edited client.
        * @return {Promise<void>} Completion of the save and refresh.
@@ -142,8 +146,12 @@
           if (!body.status) {
             throw new Error(body.error || body.message || `HTTP ${response.status}`)
           }
+          if (this.draft === draft) {
+            this.draft = null
+          }
         } catch (e) {
           this.saveError = e.message
+          return
         } finally {
           this.saving = false
         }
