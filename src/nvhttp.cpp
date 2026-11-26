@@ -723,8 +723,9 @@ namespace nvhttp {
       response->close_connection_after_response = true;
     });
 
-    // Held for the whole request; declared after the fail guard, so the reply is written after it is released.
-    std::lock_guard lock {pair_mutex};
+    // Held for the whole request (except while reading a console PIN); declared after the fail guard, so the reply is
+    // written after it is released.
+    std::unique_lock lock {pair_mutex};
 
     if (!config::sunshine.enable_pairing) {
       tree.put("root.<xmlattr>.status_code", 403);
@@ -760,9 +761,25 @@ namespace nvhttp {
 
         BOOST_LOG(debug) << sess.client.cert;
         sess.async_insert_pin.salt = std::move(get_arg(args, "salt"));
-        auto &pair_sess = start_pair_session(std::move(sess));
 
         auto it = args.find("otpauth");
+        if (it == std::end(args) && config::sunshine.flags[config::flag::PIN_STDIN]) {
+          // The console prompt can wait forever: read it without pair_mutex, or every other pairing request, OTP and
+          // the session clear at shutdown would wait with it. The session is published once there is a PIN.
+          lock.unlock();
+          std::string pin;
+          {
+            static std::mutex prompt_mutex;
+            std::lock_guard prompt {prompt_mutex};
+            std::cout << "Please insert pin: "sv;
+            std::getline(std::cin, pin);
+          }
+          lock.lock();
+          getservercert(start_pair_session(std::move(sess)), tree, pin);
+          return;
+        }
+
+        auto &pair_sess = start_pair_session(std::move(sess));
         if (it != std::end(args)) {
           if (one_time_pin.empty() || (std::chrono::steady_clock::now() - otp_creation_time > OTP_EXPIRE_DURATION)) {
             one_time_pin.clear();
@@ -793,22 +810,13 @@ namespace nvhttp {
           return;
         }
 
-        if (config::sunshine.flags[config::flag::PIN_STDIN]) {
-          std::string pin;
-
-          std::cout << "Please insert pin: "sv;
-          std::getline(std::cin, pin);
-
-          getservercert(pair_sess, tree, pin);
-        } else {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-          system_tray::update_tray_require_pin();
+        system_tray::update_tray_require_pin();
 #endif
-          pair_sess.async_insert_pin.response = std::move(response);
+        pair_sess.async_insert_pin.response = std::move(response);
 
-          fg.disable();
-          return;
-        }
+        fg.disable();
+        return;
       } else if (it->second == "pairchallenge"sv) {
         tree.put("root.paired", 1);
         tree.put("root.<xmlattr>.status_code", 200);
