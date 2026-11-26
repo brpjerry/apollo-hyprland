@@ -245,7 +245,9 @@ namespace platf::pa {
 
     if (_assigned.empty() || *current == _assigned) {
       if (_assigned.empty() && options.auto_capture) {
-        // Capturing the default sink: follow it.
+        // Apollo never set a default (the configured sink, if any, already was it): follow the new one. Recording
+        // it matters when a sink is configured, which capture_sink() would otherwise pick again.
+        _assigned = *current;
         ++*_generation;
       }
       return;

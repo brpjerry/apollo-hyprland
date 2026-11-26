@@ -385,6 +385,18 @@ TEST_F(AudioSinkManagerTest, AutoCaptureFollowsTheDefaultWhenApolloNeverSetOne) 
 }
 
 // Bugs caught: 0, False positives: 0
+TEST_F(AudioSinkManagerTest, AutoCaptureFollowsTheDefaultAwayFromAConfiguredSinkThatWasAlreadyDefault) {
+  // audio_sink names the current default, so the stream start never calls set_sink().
+  EXPECT_EQ(manager.capture_sink("speakers"), "speakers");
+  auto gen = generation();
+  server.default_name = "headset";
+  manager.on_server_changed({.keep_default = true, .auto_capture = true});
+  EXPECT_EQ(generation(), gen + 1);
+  EXPECT_EQ(manager.capture_sink("speakers"), "headset") << "the restarted capture must record the new default";
+  EXPECT_EQ(server.default_name, "headset") << "a hardware sink is not put back";
+}
+
+// Bugs caught: 0, False positives: 0
 TEST_F(AudioSinkManagerTest, CaptureSinkPriority) {
   EXPECT_EQ(manager.capture_sink(""), "speakers");
   EXPECT_EQ(manager.capture_sink("headset"), "headset");
