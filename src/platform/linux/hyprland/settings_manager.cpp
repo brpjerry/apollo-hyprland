@@ -116,6 +116,21 @@ namespace hyprland::dd {
       }
     }
 
+    RevertResult revert_result(failure_e failure) {
+      switch (failure) {
+        case failure_e::unreachable:
+          return RevertResult::ApiTemporarilyUnavailable;
+        case failure_e::mode:
+          return RevertResult::RevertingDisplayModesFailed;
+        case failure_e::hdr:
+          return RevertResult::RevertingHdrStatesFailed;
+        case failure_e::position:
+          return RevertResult::RevertingPrimaryDeviceFailed;
+        default:
+          return RevertResult::SwitchingTopologyFailed;
+      }
+    }
+
     std::string describe(const display_device::SingleDisplayConfiguration &config) {
       std::string prep;
       switch (config.m_device_prep) {
@@ -1072,18 +1087,7 @@ namespace hyprland::dd {
     std::string failure;
     if (const auto failed = execute(plan, *current, failure); failed != failure_e::none) {
       BOOST_LOG(error) << "Hyprland display device: reverting failed: "sv << failure;
-      switch (failed) {
-        case failure_e::unreachable:
-          return RevertResult::ApiTemporarilyUnavailable;
-        case failure_e::mode:
-          return RevertResult::RevertingDisplayModesFailed;
-        case failure_e::hdr:
-          return RevertResult::RevertingHdrStatesFailed;
-        case failure_e::position:
-          return RevertResult::RevertingPrimaryDeviceFailed;
-        default:
-          return RevertResult::SwitchingTopologyFailed;
-      }
+      return revert_result(failed);
     }
 
     auto after = compositor_->layout();
@@ -1104,8 +1108,12 @@ namespace hyprland::dd {
           positions[s.name].position = std::pair {s.x, s.y};
         }
       }
-      if (!positions.empty() && execute(positions, *after, failure) != failure_e::none) {
-        BOOST_LOG(warning) << "Hyprland display device: cannot restore the monitor positions: "sv << failure;
+      if (!positions.empty()) {
+        // Keep the saved state on failure: the layout is not back yet.
+        if (const auto failed = execute(positions, *after, failure); failed != failure_e::none) {
+          BOOST_LOG(error) << "Hyprland display device: cannot restore the monitor positions: "sv << failure;
+          return revert_result(failed);
+        }
       }
       if (auto again = compositor_->layout()) {
         after = std::move(again);
@@ -1113,28 +1121,40 @@ namespace hyprland::dd {
     }
 
     // Workspaces of monitors that were disabled return to them (Hyprland usually does this itself), and each shows
-    // the workspace it showed before.
+    // the workspace it showed before. A command that fails keeps the saved state, so the retry finishes the job; it
+    // only sends what is still out of place.
+    const auto dispatch_failed = [](std::string_view what) {
+      BOOST_LOG(warning) << "Hyprland display device: cannot "sv << what << "; will retry"sv;
+      return RevertResult::ApiTemporarilyUnavailable;
+    };
     for (const auto &[name, t] : state.touched) {
       const auto *s = state.find(name);
       const auto *now = after->find(name);
       if (!t.enabled || !s || !s->enabled || !now || !now->enabled) {
         continue;
       }
+      // Moving a workspace to the monitor also shows it there.
+      bool moved = false;
       for (const auto &w : state.workspaces) {
         const auto *ws = after->find_workspace(w.name);
         if (w.monitor == name && w.name != s->active_workspace && ws && ws->monitor != name) {
-          compositor_->show_workspace(name, w.name);
+          if (!compositor_->show_workspace(name, w.name)) {
+            return dispatch_failed(std::format("move workspace {} back to {}", w.name, name));
+          }
+          moved = true;
         }
       }
       if (!s->active_workspace.empty() && after->find_workspace(s->active_workspace) &&
-          (now->active_workspace != s->active_workspace || after->find_workspace(s->active_workspace)->monitor != name)) {
-        compositor_->show_workspace(name, s->active_workspace);
+          (moved || now->active_workspace != s->active_workspace || after->find_workspace(s->active_workspace)->monitor != name)) {
+        if (!compositor_->show_workspace(name, s->active_workspace)) {
+          return dispatch_failed(std::format("show workspace {} on {}", s->active_workspace, name));
+        }
       }
     }
     if (state.focus_changed && !state.focused.empty()) {
       const auto *f = after->find(state.focused);
-      if (f && f->enabled && !f->focused) {
-        compositor_->focus_monitor(state.focused);
+      if (f && f->enabled && !f->focused && !compositor_->focus_monitor(state.focused)) {
+        return dispatch_failed("focus " + state.focused);
       }
     }
 

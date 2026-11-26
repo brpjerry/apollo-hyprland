@@ -72,6 +72,7 @@ namespace {
     bool steal_active = false;  ///< A monitor receiving workspaces of a disabled one shows the moved workspace.
     std::function<void(const monitor_rule_t &)> on_rule;
     std::set<std::string> refuse;  ///< Outputs whose rules are rejected.
+    bool refuse_dispatch = false;  ///< Reject focus and workspace dispatches.
 
     std::vector<monitor_rule_t> queued;
     int polls = 0;
@@ -169,6 +170,9 @@ namespace {
 
     bool focus_monitor(const std::string &name) override {
       calls.push_back("focus " + name);
+      if (refuse_dispatch) {
+        return false;
+      }
       for (auto &o : current.outputs) {
         o.focused = o.name == name;
       }
@@ -177,7 +181,10 @@ namespace {
 
     bool show_workspace(const std::string &monitor, const std::string &workspace) override {
       calls.push_back("show " + monitor + " " + workspace);
-      auto it = std::ranges::find(current.workspaces, workspace, &workspace_t::name);
+      if (refuse_dispatch) {
+        return false;
+      }
+      auto it =std::ranges::find(current.workspaces, workspace, &workspace_t::name);
       if (it == current.workspaces.end()) {
         current.workspaces.push_back({workspace, monitor});
       } else {
@@ -423,6 +430,77 @@ TEST(HyprlandSettingsManagerTest, OnlyDisplayWithClientModeThenRevert) {
   c->rules.clear();
   EXPECT_EQ(m.revertSettings(), RevertResult::Ok);
   EXPECT_TRUE(c->rules.empty());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, RevertKeepsTheStateUntilThePositionsAreBack) {
+  auto c = desk();
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  ASSERT_EQ(m.applySettings(cfg("HDMI-A-1", Prep::EnsureOnlyDisplay, Resolution {1920, 1080}, 60.0)), ApplyResult::Ok);
+
+  // Re-enabling DP-3 pushes HDMI-A-1 aside (as for an `auto` position), and Hyprland rejects moving it back.
+  c->on_rule = [&](const monitor_rule_t &rule) {
+    if (rule.output == "DP-3" && rule.disabled == false) {
+      c->find("HDMI-A-1")->x = 3840;
+    }
+    if (rule.output == "HDMI-A-1" && rule.position && !rule.mode) {
+      c->refuse.insert("HDMI-A-1");
+    }
+  };
+  EXPECT_NE(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(out(*c, "HDMI-A-1").x, 3840);
+  EXPECT_TRUE(p->data) << "the original layout was forgotten before it was back";
+  EXPECT_TRUE(m.state());
+
+  c->on_rule = nullptr;
+  c->refuse.clear();
+  ASSERT_EQ(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(std::pair(out(*c, "HDMI-A-1").x, out(*c, "HDMI-A-1").y), std::pair(2560, -560));
+  EXPECT_FALSE(p->data);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, RevertShowsTheActiveWorkspaceAfterMovingOthersBack) {
+  auto c = desk();
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  ASSERT_EQ(m.applySettings(cfg("HDMI-A-1", Prep::EnsureOnlyDisplay)), ApplyResult::Ok);
+  ASSERT_EQ(ws(*c, "3").monitor, "HDMI-A-1");
+
+  // Hyprland gives the re-enabled DP-3 back the workspace it showed, but not workspace 3.
+  c->on_rule = [&](const monitor_rule_t &rule) {
+    if (rule.output == "DP-3" && rule.disabled == false) {
+      std::ranges::find(c->current.workspaces, "1", &workspace_t::name)->monitor = "DP-3";
+      c->find("DP-3")->active_workspace = "1";
+    }
+  };
+  ASSERT_EQ(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(ws(*c, "3").monitor, "DP-3");
+  // Moving workspace 3 over showed it on DP-3; DP-3 must end up showing workspace 1 again.
+  EXPECT_EQ(out(*c, "DP-3").active_workspace, "1");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, RevertKeepsTheStateWhenWorkspacesCannotBeRestored) {
+  auto c = desk();
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  ASSERT_EQ(m.applySettings(cfg("HDMI-A-1", Prep::EnsureOnlyDisplay)), ApplyResult::Ok);
+
+  c->refuse_dispatch = true;
+  EXPECT_EQ(m.revertSettings(), RevertResult::ApiTemporarilyUnavailable);
+  EXPECT_TRUE(out(*c, "DP-3").enabled);
+  EXPECT_TRUE(p->data);
+
+  // The retry finishes the job.
+  c->refuse_dispatch = false;
+  ASSERT_EQ(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(ws(*c, "1").monitor, "DP-3");
+  EXPECT_EQ(ws(*c, "3").monitor, "DP-3");
+  EXPECT_EQ(out(*c, "DP-3").active_workspace, "1");
+  EXPECT_TRUE(out(*c, "DP-3").focused);
+  EXPECT_FALSE(p->data);
 }
 
 // Bugs caught: 0, False positives: 0
