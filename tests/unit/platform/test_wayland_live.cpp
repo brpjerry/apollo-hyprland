@@ -116,6 +116,8 @@ TEST_F(WaylandLiveTest, SelectsOutputsByNameAndLegacyIndex) {
 TEST_F(WaylandLiveTest, MissingOutputIsAnError) {
   EXPECT_FALSE(platf::display(platf::mem_type_e::system, "APOLLO-TEST-does-not-exist", config()));
   EXPECT_FALSE(platf::display(platf::mem_type_e::system, std::to_string(names.size()), config()));
+  // wlr-screencopy too: Sunshine's version fell back to the first monitor, which would stream the host's desktop.
+  EXPECT_FALSE(platf::wl_display(platf::mem_type_e::system, "APOLLO-TEST-does-not-exist", config()));
 }
 
 // Bugs caught: 1, False positives: 0

@@ -391,27 +391,13 @@ namespace wl {
       }
       display.roundtrip();
 
-      auto monitor = interface.monitors[0].get();
-
-      if (!display_name.empty()) {
-        // Match by xdg_output name first (stable across hotplug, e.g.
-        // "eDP-1", "HEADLESS-2"). Fall back to numeric index for
-        // backward compatibility with existing configs.
-        bool matched = false;
-        for (auto &m : interface.monitors) {
-          if (m->name == display_name) {
-            monitor = m.get();
-            matched = true;
-            break;
-          }
-        }
-        if (!matched) {
-          auto streamedMonitor = util::from_view(display_name);
-          if (streamedMonitor >= 0 && streamedMonitor < interface.monitors.size()) {
-            monitor = interface.monitors[streamedMonitor].get();
-          }
-        }
+      // An output that is named but missing (e.g. a virtual display that is not up yet) is an error, never another
+      // monitor: falling back to monitor 0 would stream the host's desktop instead of the client's display.
+      const auto index = wl::select_output(interface, display_name);
+      if (!index) {
+        return -1;
       }
+      auto monitor = interface.monitors[*index].get();
 
       output = monitor->output;
 
