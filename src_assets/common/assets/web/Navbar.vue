@@ -105,7 +105,13 @@ export default {
     /**
      * @brief End the Web UI session: drop the login cookie and the browser's cached Basic credentials.
      */
-    logout() {
+    async logout() {
+      // End the session on the server too; a failure (e.g. already expired) must not block the rest of the logout.
+      try {
+        await fetch('./api/logout', { method: 'POST', credentials: 'include' })
+      } catch (e) {
+        console.debug('logout: /api/logout failed', e)
+      }
       clearSessionCookie()
       const cacheBuster = Date.now().toString()
       const logoutPageUrl = new URL('/logout', globalThis.location.href)

@@ -345,6 +345,8 @@ protected:
     server->resource["^/pairing-test$"]["POST"] = confighttp::savePin;
     server->resource["^/portal-token-reset-test$"]["POST"] = confighttp::resetPortalToken;
     server->resource["^/api/apps$"]["POST"] = confighttp::saveApp;
+    server->resource["^/login-test$"]["POST"] = confighttp::login;
+    server->resource["^/logout-test$"]["POST"] = confighttp::logout;
     server->default_resource["GET"] = confighttp::getFallbackPage;
 
     // Start server
@@ -2256,4 +2258,45 @@ TEST_F(ConfigHttpTest, SaveAppOmitsNullOptionalFieldsAndPreservesConfiguredValue
     EXPECT_FALSE(app.at("prep-cmd").at(0).contains("undo"));
     EXPECT_FALSE(app.at("prep-cmd").at(0).contains("elevated"));
   }
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, BrowserWithoutCredentialsIsSentToLogin) {
+  // Apollo: a browser asking for a page with no session goes to the login page, which returns to the page afterwards.
+  SimpleWeb::CaseInsensitiveMultimap headers;
+  headers.emplace("Accept", "text/html,application/xhtml+xml");
+  const auto response = client->request("GET", "/page-test", "", headers);
+  ASSERT_EQ(response->status_code, "307 Temporary Redirect");
+  const auto location = response->header.find("Location");
+  ASSERT_NE(location, response->header.end());
+  EXPECT_EQ(location->second, "/login?redir=%2Fpage-test");
+
+  // Wrong Basic credentials still get a 401, so a Basic-auth client sees the failure.
+  headers.emplace("Authorization", create_auth_header("testuser", "wrong"));
+  EXPECT_EQ(client->request("GET", "/page-test", "", headers)->status_code, "401 Unauthorized");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, LogoutEndsTheLoginSession) {
+  SimpleWeb::CaseInsensitiveMultimap json_headers;
+  json_headers.emplace("Content-Type", "application/json");
+  const auto login = client->request("POST", "/login-test", R"({"username":"testuser","password":"testpass"})", json_headers);
+  ASSERT_EQ(login->status_code, "200 OK");
+  const auto set_cookie = login->header.find("Set-Cookie");
+  ASSERT_NE(set_cookie, login->header.end());
+  const auto cookie = set_cookie->second.substr(0, set_cookie->second.find(';'));
+
+  SimpleWeb::CaseInsensitiveMultimap session_headers;
+  session_headers.emplace("Cookie", cookie);
+  session_headers.emplace("Accept", "text/html");
+  ASSERT_EQ(client->request("GET", "/page-test", "", session_headers)->status_code, "200 OK");
+
+  const auto logout = client->request("POST", "/logout-test", "", session_headers);
+  ASSERT_EQ(logout->status_code, "200 OK");
+  const auto expired = logout->header.find("Set-Cookie");
+  ASSERT_NE(expired, logout->header.end());
+  EXPECT_NE(expired->second.find("Max-Age=0"), std::string::npos);
+
+  // The old cookie no longer opens pages.
+  EXPECT_EQ(client->request("GET", "/page-test", "", session_headers)->status_code, "307 Temporary Redirect");
 }

@@ -1007,10 +1007,37 @@ namespace confighttp {
     return true;
   }
 
+  /**
+   * @brief Whether a page request comes from a browser that has no credentials at all (Apollo).
+   *
+   * Such a browser is sent to the login page instead of getting a 401. A request with an Authorization header, or
+   * one that does not ask for HTML (scripts, Basic-auth clients), still gets the 401.
+   */
+  bool is_browser_without_credentials(const req_https_t &request) {
+    const auto accept = request->header.find("accept");
+    if (accept == request->header.end() || accept->second.find("text/html") == std::string::npos) {
+      return false;
+    }
+    if (request->header.find("authorization") != request->header.end()) {
+      return false;
+    }
+    return !has_valid_session_cookie(request);
+  }
+
   void getPage(const resp_https_t &response, const req_https_t &request, const bool require_auth, const bool redirect_if_username) {
     // Special handling for welcome page: redirect if the username is already set
     if (redirect_if_username && !config::sunshine.username.empty()) {
       send_redirect(response, request, "/");
+      return;
+    }
+
+    if (require_auth && !config::sunshine.username.empty() && is_browser_without_credentials(request)) {
+      if (!checkIPOrigin(response, request)) {
+        return;
+      }
+      // The login page only follows same-site paths; request->path never carries a scheme or host.
+      const std::string login_path = "/login?redir=" + SimpleWeb::Percent::encode(request->path);
+      send_redirect(response, request, login_path.c_str());
       return;
     }
 
@@ -2661,6 +2688,35 @@ namespace confighttp {
   }
 
   /**
+   * @brief End the Web UI login session (Apollo).
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * Clears the server side of the session cookie and expires it in the browser. Basic auth is unaffected.
+   */
+  void logout(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+
+    {
+      std::lock_guard lock {session_cookie_mutex};
+      sessionCookie.clear();
+    }
+    const SimpleWeb::CaseInsensitiveMultimap headers {
+      {"Set-Cookie", "auth=; Secure; SameSite=Strict; Max-Age=0; Path=/"}
+    };
+    response->write(headers);
+  }
+
+  /**
    * @brief Return permission status for the current host platform.
    *
    * @api_examples{/api/permissions|:| GET|:| null}
@@ -3157,6 +3213,7 @@ namespace confighttp {
     server.resource["^/api/pin$"]["GET"] = getPendingPairings;
     server.resource["^/api/pin$"]["POST"] = savePin;
     server.resource["^/api/login$"]["POST"] = login;  // Apollo
+    server.resource["^/api/logout$"]["POST"] = logout;  // Apollo
     server.resource["^/api/logs$"]["GET"] = getLogs;
     server.resource["^/api/otp$"]["POST"] = getOTP;  // Apollo
     server.resource["^/api/reset-display-device-persistence$"]["POST"] = resetDisplayDevicePersistence;

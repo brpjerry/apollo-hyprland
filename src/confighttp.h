@@ -121,6 +121,20 @@ namespace confighttp {
   void savePin(const resp_https_t &response, const req_https_t &request);
 
   /**
+   * @brief Start a Web UI login session from a JSON username and password, setting the `auth` cookie (Apollo).
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   */
+  void login(const resp_https_t &response, const req_https_t &request);
+
+  /**
+   * @brief End the Web UI login session (Apollo).
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   */
+  void logout(const resp_https_t &response, const req_https_t &request);
+
+  /**
    * @brief Check whether a detected driver version identifies a development build.
    *
    * Numeric versions beginning with `0.0` and containing at least three
