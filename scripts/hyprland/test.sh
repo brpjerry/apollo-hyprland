@@ -21,4 +21,20 @@ runtime="$(mktemp -d "${TMPDIR:-/tmp}/apollo-unit-runtime.XXXXXX")"
 trap 'rm -rf -- "$runtime"' EXIT
 export XDG_RUNTIME_DIR="$runtime"
 
-./test_sunshine --gtest_brief=1 --gtest_filter="-${baseline_failures}:${live_suites}" "$@"
+# Keep virtual input devices off the desktop too. platf::input() creates real libvirtualhid devices whenever this user
+# can write /dev/uinput, and the desktop's libinput adopts every uinput device, even one a test only creates. Run the
+# tests in a mount namespace where /dev/uinput and /dev/uhid are an inaccessible file, so libvirtualhid reports no
+# backend and the tests that need devices use its fake backend or skip.
+no_access="$runtime/no-input-device"
+: > "$no_access"
+chmod 000 "$no_access"
+sandbox=()
+if command -v bwrap > /dev/null; then
+  sandbox=(bwrap --dev-bind / / --ro-bind "$no_access" /dev/uinput --ro-bind "$no_access" /dev/uhid --)
+elif [[ ${APOLLO_TEST_ALLOW_UINPUT:-} != 1 ]]; then
+  echo "test.sh: bwrap (bubblewrap) is needed to hide /dev/uinput from the tests; install it, or set" \
+    "APOLLO_TEST_ALLOW_UINPUT=1 to let the tests create virtual input devices on this session" >&2
+  exit 1
+fi
+
+"${sandbox[@]}" ./test_sunshine --gtest_brief=1 --gtest_filter="-${baseline_failures}:${live_suites}" "$@"
