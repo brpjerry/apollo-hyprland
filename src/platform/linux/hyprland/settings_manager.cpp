@@ -881,9 +881,6 @@ namespace hyprland::dd {
   }
 
   std::string settings_manager_t::getDisplayName(const std::string &device_id) const {
-    if (device_id.empty()) {
-      return {};
-    }
     const auto current = compositor_->layout();
     if (!current) {
       // Capture may still know the name; don't hide it.
@@ -892,8 +889,14 @@ namespace hyprland::dd {
     state_t lookup;
     for (const auto &o : current->outputs) {
       lookup.initial.push_back(save(o));
+      if (o.focused) {
+        lookup.focused = o.name;
+      }
     }
-    const auto name = resolve_device(lookup, *current, device_id);
+    // An empty id means the primary display, which applySettings() picked from the layout it saved. Capture must
+    // pick the same output: on its own it would take the first one Wayland lists.
+    const auto &selection = device_id.empty() && state_ ? *state_ : lookup;
+    const auto name = resolve_device(selection, *current, device_id);
     if (!name) {
       // Not an output Hyprland reports (e.g. the legacy display index capture also accepts): pass it on.
       return device_id;

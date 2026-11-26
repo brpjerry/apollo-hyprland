@@ -8,6 +8,7 @@
 #ifdef SUNSHINE_BUILD_WAYLAND
 
   // standard includes
+  #include <algorithm>
   #include <format>
   #include <functional>
   #include <map>
@@ -338,7 +339,7 @@ TEST(HyprlandSettingsManagerTest, EnumeratesOutputsAndMapsNames) {
   EXPECT_EQ(devices[2].m_info->m_hdr_state, HdrState::Enabled);
   EXPECT_FALSE(devices[2].m_info->m_primary);
 
-  EXPECT_EQ(m.getDisplayName(""), "");
+  EXPECT_EQ(m.getDisplayName(""), "DP-3");  // the primary display, as applySettings() resolves it
   EXPECT_EQ(m.getDisplayName("DP-3"), "DP-3");
   EXPECT_EQ(m.getDisplayName("Monitor DP-3"), "DP-3");
   EXPECT_EQ(m.getDisplayName("desc:Monitor D"), "DP-3");
@@ -347,6 +348,33 @@ TEST(HyprlandSettingsManagerTest, EnumeratesOutputsAndMapsNames) {
   c->reachable = false;
   EXPECT_EQ(m.getDisplayName("DP-3"), "DP-3");
   EXPECT_TRUE(m.enumAvailableDevices().empty());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, DefaultDisplayIsTheOneApplySettingsConfigures) {
+  // Wayland lists HDMI-A-1 first; capture on its own would take it. The primary display is DP-3, at the origin.
+  auto c = desk();
+  std::ranges::reverse(c->current.outputs);
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  EXPECT_EQ(m.getDisplayName(""), "DP-3");
+
+  ASSERT_EQ(m.applySettings(cfg("", Prep::EnsureActive, Resolution {1920, 1080})), ApplyResult::Ok);
+  EXPECT_EQ(out(*c, "DP-3").mode, (output_mode_t {1920, 1080, 240.0}));
+  // The layout changes during the stream and HDMI-A-1 ends up at the origin: the stream stays on the display that
+  // was configured for it.
+  c->find("DP-3")->x = 3840;
+  c->find("HDMI-A-1")->x = 0;
+  c->find("HDMI-A-1")->y = 0;
+  EXPECT_EQ(m.getDisplayName(""), "DP-3");
+
+  ASSERT_EQ(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(m.getDisplayName(""), "DP-3");
+
+  // Nothing at the origin: the focused monitor, as applySettings() would choose.
+  c->find("DP-3")->x = 100;
+  c->focus_monitor("HDMI-A-1");
+  EXPECT_EQ(m.getDisplayName(""), "HDMI-A-1");
 }
 
 // Bugs caught: 0, False positives: 0
