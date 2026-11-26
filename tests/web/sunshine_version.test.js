@@ -94,6 +94,22 @@ describe('Apollo Hyprland release versions', () => {
   })
 
   // Bugs caught: 0, False positives: 0
+  it('picks the highest version in each channel, whatever the publication order', async () => {
+    const fetchJson = vi.fn(async () => [
+      { tag_name: 'v0.4.7.5', prerelease: false },
+      { tag_name: 'v0.4.9-alpha.1', prerelease: true },
+      { tag_name: 'v0.4.8.1', prerelease: false },
+      { tag_name: 'v0.4.9-beta.1', prerelease: true },
+      { tag_name: 'vnext', prerelease: false },
+    ])
+
+    const { stable, preRelease } = await fetchReleaseVersions(fetchJson)
+
+    expect(stable.version).toBe('v0.4.8.1')
+    expect(preRelease.version).toBe('v0.4.9-beta.1')
+  })
+
+  // Bugs caught: 0, False positives: 0
   it('returns no versions when GitHub answers with an error object', async () => {
     const { stable, preRelease } = await fetchReleaseVersions(async () => ({ message: 'Not Found' }))
 

@@ -129,20 +129,31 @@ export function isVersionedRelease(release) {
 }
 
 /**
- * @brief Fetch the fork's latest stable release and newest pre-release from GitHub.
+ * @brief Fetch the fork's highest stable release and highest pre-release from GitHub.
+ *
+ * The highest version wins, not the most recently published one: a maintenance release of an older branch can be
+ * published after a newer version. Only the first page of releases (GitHub's 30 most recent) is read.
  *
  * @param {Function} [fetchJson] Loader returning parsed JSON for a URL.
  * @return {Promise<{stable: ?SunshineVersion, preRelease: ?SunshineVersion}>} Release versions, null when absent.
  */
 export async function fetchReleaseVersions(fetchJson = async url => (await fetch(url)).json()) {
   const releases = await fetchJson(FORK_RELEASES_API);
-  const versioned = Array.isArray(releases) ? releases.filter(release => isVersionedRelease(release) && !release.draft) : [];
-  const stable = versioned.find(release => !release.prerelease);
-  const preRelease = versioned.find(release => release.prerelease);
-  return {
-    stable: stable ? new SunshineVersion(stable) : null,
-    preRelease: preRelease ? new SunshineVersion(preRelease) : null,
-  };
+  const newest = { stable: null, preRelease: null };
+  for (const release of Array.isArray(releases) ? releases : []) {
+    if (!isVersionedRelease(release) || release.draft) {
+      continue;
+    }
+    const version = new SunshineVersion(release);
+    if (version.versionParts.some(Number.isNaN)) {
+      continue;
+    }
+    const channel = release.prerelease ? 'preRelease' : 'stable';
+    if (!newest[channel] || version.isGreater(newest[channel])) {
+      newest[channel] = version;
+    }
+  }
+  return newest;
 }
 
 export default SunshineVersion;

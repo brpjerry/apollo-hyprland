@@ -170,4 +170,49 @@ describe('Apollo Hyprland release check', () => {
     expect(wrapper.text()).toContain('v0.4.9 beta 1')
     wrapper.unmount()
   })
+
+  // Bugs caught: 0, False positives: 0
+  it('shows release notes as text, never as markup', async () => {
+    const body = '<img src="x" onerror="alert(1)">\n**Fixes**'
+    const wrapper = await mountHome('linux', {
+      version: '0.4.8.1',
+      notifyPreReleases: true,
+      releases: [
+        { tag_name: 'v0.4.9-beta.1', prerelease: true, name: 'v0.4.9 beta 1', body },
+        { tag_name: 'v0.4.8.2', prerelease: false, name: 'v0.4.8.2', body },
+      ],
+    })
+
+    const notes = wrapper.findAll('.release-notes')
+    expect(notes).toHaveLength(2)
+    for (const note of notes) {
+      expect(note.find('img').exists()).toBe(false)
+      expect(note.text()).toContain('<img src="x" onerror="alert(1)">')
+    }
+    wrapper.unmount()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('does not claim the installed build is the latest when the release check failed', async () => {
+    const wrapper = await mountHome('linux', {
+      version: '0.4.8.1',
+      releases: { message: 'API rate limit exceeded' },
+    })
+
+    expect(wrapper.text()).not.toContain('index.version_latest')
+    expect(wrapper.text()).not.toContain('index.new_stable')
+    wrapper.unmount()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('offers a newer pre-release when the fork has no stable release yet', async () => {
+    const wrapper = await mountHome('linux', {
+      version: '0.4.8.1',
+      notifyPreReleases: true,
+      releases: [{ tag_name: 'v0.4.9-beta.1', prerelease: true, name: 'v0.4.9 beta 1' }],
+    })
+
+    expect(wrapper.text()).toContain('index.new_pre_release')
+    wrapper.unmount()
+  })
 })

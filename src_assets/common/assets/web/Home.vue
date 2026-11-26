@@ -72,7 +72,7 @@
           {{ $t('index.installed_version_not_stable') }}
         </div>
 
-        <div v-else-if="(!preReleaseBuildAvailable || !notifyPreReleases) && !stableBuildAvailable && !buildVersionIsDirty">
+        <div v-else-if="githubVersion && (!preReleaseBuildAvailable || !notifyPreReleases) && !stableBuildAvailable && !buildVersionIsDirty">
           <div class="alert alert-success my-3">
             <check-circle :size="18" class="icon"></check-circle>
             {{ $t('index.version_latest') }}
@@ -94,8 +94,9 @@
               </a>
             </div>
 
-            <!-- body row (full width) -->
-            <div class="markdown-body release-notes" v-html="convertMarkdownToHtml(preReleaseVersion.release.body)"></div>
+            <!-- body row (full width). Release notes come from GitHub, so they are shown as text: rendered as HTML,
+                 a release's markup would run with this page's authenticated access to the API. -->
+            <div class="markdown-body release-notes pre-wrap">{{ preReleaseVersion.release.body }}</div>
           </div>
         </div>
 
@@ -115,7 +116,7 @@
             </div>
 
             <!-- body row (full width) -->
-            <div class="markdown-body release-notes" v-html="convertMarkdownToHtml(githubVersion.release.body)"></div>
+            <div class="markdown-body release-notes pre-wrap">{{ githubVersion.release.body }}</div>
           </div>
         </div>
       </div>
@@ -130,7 +131,6 @@
 </template>
 
 <script>
-  import { marked } from 'marked'
   import Navbar from './Navbar.vue'
   import ClientCard from './ClientCard.vue'
   import ResourceCard from './ResourceCard.vue'
@@ -147,15 +147,6 @@
     Download,
     Gamepad2
   } from '@lucide/vue'
-
-  // Configure marked to allow HTML
-  marked.setOptions({
-    breaks: true,
-    gfm: true,
-    headerIds: true,
-    mangle: false,
-    sanitize: false
-  });
 
   console.log("Hello, Apollo!")
   export default {
@@ -313,10 +304,11 @@
         return this.githubVersion.isGreater(this.version);
       },
       preReleaseBuildAvailable() {
-        if (!this.preReleaseVersion || !this.githubVersion || !this.version) {
+        if (!this.preReleaseVersion || !this.version) {
           return false;
         }
-        return this.preReleaseVersion.isGreater(this.version) && this.preReleaseVersion.isGreater(this.githubVersion);
+        return this.preReleaseVersion.isGreater(this.version) &&
+          (!this.githubVersion || this.preReleaseVersion.isGreater(this.githubVersion));
       },
       buildVersionIsDirty() {
         return this.version.version?.split(".").length === 5 &&
@@ -414,10 +406,6 @@
         }
         return null;
       },
-      convertMarkdownToHtml(markdown) {
-        if (!markdown) return '';
-        return marked.parse(markdown);
-      }
     }
   }
 </script>
