@@ -707,6 +707,18 @@ namespace rtsp_stream {
       return nullptr;
     }
 
+    std::vector<std::shared_ptr<stream::session_t>>
+    find_sessions(std::string_view uuid) {
+      std::vector<std::shared_ptr<stream::session_t>> sessions;
+      auto lg = _session_slots.lock();
+      for (auto &slot : *_session_slots) {
+        if (slot && stream::session::uuid_match(*slot, uuid)) {
+          sessions.push_back(slot);
+        }
+      }
+      return sessions;
+    }
+
     std::list<std::string>
     get_all_session_uuids() {
       std::list<std::string> uuids;
@@ -753,6 +765,10 @@ namespace rtsp_stream {
 
   std::shared_ptr<stream::session_t> find_session(const std::string_view& uuid) {
     return server.find_session(uuid);
+  }
+
+  std::vector<std::shared_ptr<stream::session_t>> find_sessions(std::string_view uuid) {
+    return server.find_sessions(uuid);
   }
 
   std::list<std::string> get_all_session_uuids() {
@@ -1212,6 +1228,13 @@ namespace rtsp_stream {
         } else {
           config.monitor.encodingFramerate = config.monitor.framerate * 1000;
         }
+      }
+
+      // The encoder divides by these rates: refuse a stream without one rather than crash.
+      if (config.monitor.encodingFramerate <= 0 || config.monitor.framerate <= 0 || session.fps <= 0) {
+        BOOST_LOG(error) << "Rejecting a stream without a frame rate (maxFPS "sv << config.monitor.framerate << ", session "sv << session.fps << ')';
+        respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+        return;
       }
 
       // When fractional refresh rate requested from client side, it should be well above 1000fps

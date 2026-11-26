@@ -6,11 +6,13 @@
 
 // standard includes
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdio>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 // local includes
 #include "utility.h"
@@ -62,14 +64,35 @@ namespace uuid_util {
     }
 
     /**
+     * @brief Whether text is a UUID in canonical form: 36 characters, hex digits with dashes at 8, 13, 18 and 23.
+     *
+     * @param text Text to check.
+     * @return `true` when parse() accepts the text.
+     */
+    static bool valid_text(const std::string_view text) {
+      if (text.size() != 36) {
+        return false;
+      }
+      for (std::size_t i = 0; i < text.size(); ++i) {
+        const bool separator = i == 8 || i == 13 || i == 18 || i == 23;
+        if (separator ? text[i] != '-' : !std::isxdigit(static_cast<unsigned char>(text[i]))) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    /**
      * @brief Parse a UUID from canonical text form (Apollo).
      *
      * @param uuid_str UUID string in xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx form.
      * @return Parsed UUID.
+     * @throws std::invalid_argument when the text is not a canonical UUID (valid_text()); sscanf() would otherwise
+     * leave fields uninitialized.
      */
     static uuid_t parse(const std::string &uuid_str) {
-      if (uuid_str.length() != 36) {
-        throw std::invalid_argument("Invalid UUID string length");
+      if (!valid_text(uuid_str)) {
+        throw std::invalid_argument("Invalid UUID string");
       }
 
       uuid_t uuid;

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <stdexcept>
 #include <type_traits>
 
 // local includes
@@ -67,5 +68,23 @@ TEST(UuidTest, ComparesBothWordsInTheirEstablishedOrder) {
     EXPECT_TRUE(higher > base);
     EXPECT_FALSE(higher < base);
     EXPECT_FALSE(base > higher);
+  }
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(UuidTest, ParseRejectsMalformedCanonicalLengthText) {
+  // 36 characters is not enough: sscanf() would leave the fields after a bad one uninitialized.
+  EXPECT_TRUE(uuid_util::uuid_t::valid_text("0123abcd-0000-4000-8000-000000000001"));
+  EXPECT_TRUE(uuid_util::uuid_t::valid_text("E16CBE1B-295D-4632-9A76-EC4180C857D3"));
+  for (const auto *text : {
+         "0123abcd-0000-4000-8000-00000000000z",
+         "0123abcd00000-4000-8000-000000000001",
+         "0123abcd-0000-4000-8000-0000000000-1",
+         "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",
+         "0123abcd-0000-4000-8000-0000000001",
+       }) {
+    SCOPED_TRACE(text);
+    EXPECT_FALSE(uuid_util::uuid_t::valid_text(text));
+    EXPECT_THROW(uuid_util::uuid_t::parse(text), std::invalid_argument);
   }
 }

@@ -564,6 +564,7 @@ namespace stream {
       std::string expected_peer_address;  ///< Expected address for legacy clients without `ML_FF_SESSION_ID_V1`.
 
       net::peer_t peer;  ///< Connected ENet peer for the control channel.
+      std::atomic_bool send_termination {false};  ///< graceful_stop() asks the control thread to notify the client.
       std::uint32_t seq;  ///< Sequence number for the next encrypted control message.
 
       platf::feedback_queue_t feedback_queue;  ///< Queue of controller feedback awaiting control-channel delivery.
@@ -573,9 +574,9 @@ namespace stream {
     std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
     std::string client_cert;  ///< PEM certificate for the paired client owning the stream.
     std::string input_session_id;  ///< Stable client identity used to retain input devices across resume.
-    std::string device_name;  ///< Apollo: name of the paired client.
+    std::string device_name;  ///< Apollo: name of the paired client when the stream started (for logs; not updated).
     std::string device_uuid;  ///< Apollo: UUID of the paired client.
-    crypto::PERM permission;  ///< Apollo: permissions of the paired client.
+    std::atomic<crypto::PERM> permission;  ///< Apollo: permissions of the paired client; the Web UI changes them live.
 
     std::list<crypto::command_entry_t> do_cmds;  ///< Apollo: client commands run when the stream starts.
     std::list<crypto::command_entry_t> undo_cmds;  ///< Apollo: client commands run when the stream ends.
@@ -1201,6 +1202,31 @@ namespace stream {
   }
 
   /**
+   * @brief Send the graceful-termination notice on a session's control channel.
+   *
+   * @param server Control server; only its thread may call this.
+   * @param session Session with a connected control peer.
+   */
+  void send_termination(control_server_t *server, session_t *session) {
+    // reason: graceful termination
+    constexpr std::uint32_t reason = 0x80030023;
+
+    control_terminate_t plaintext;
+    plaintext.header.type = packetTypes[IDX_TERMINATION];
+    plaintext.header.payloadLength = sizeof(plaintext.ec);
+    plaintext.ec = util::endian::big<uint32_t>(reason);
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+      encrypted_payload;
+    auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+
+    if (server->send(payload, session->control.peer)) {
+      TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
+      BOOST_LOG(warning) << "Couldn't send termination code to ["sv << addr << ':' << port << ']';
+    }
+  }
+
+  /**
    * @brief Run the broadcast control-channel worker thread.
    *
    * @param server RTSP server instance handling the request.
@@ -1276,18 +1302,23 @@ namespace stream {
         std::copy(payload.end() - 16, payload.end(), std::begin(iv));
       }
 
-      input::passthrough(session->input, std::move(plaintext), session->permission);
+      input::passthrough(session->input, std::move(plaintext), session->permission.load());
     });
 
     server->map(packetTypes[IDX_EXEC_SERVER_CMD], [server](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_EXEC_SERVER_CMD]"sv;
 
-      if (!(session->permission & crypto::PERM::server_cmd)) {
+      if (!(session->permission.load() & crypto::PERM::server_cmd)) {
         BOOST_LOG(debug) << "Permission Exec Server Cmd deined for [" << session->device_name << "]";
         return;
       }
 
-      uint8_t cmdIndex = *(uint8_t*)payload.data();
+      // The payload is the one-byte command index (Apollo's moonlight-common-c patch).
+      if (payload.size() != 1) {
+        BOOST_LOG(warning) << "Ignoring a server command with a "sv << payload.size() << "-byte payload"sv;
+        return;
+      }
+      const auto cmdIndex = static_cast<std::uint8_t>(payload.front());
 
       if (cmdIndex < config::sunshine.server_cmds.size()) {
         const auto& cmd = config::sunshine.server_cmds[cmdIndex];
@@ -1313,18 +1344,20 @@ namespace stream {
     });
 
     server->map(packetTypes[IDX_SET_CLIPBOARD], [server](session_t *session, const std::string_view &payload) {
-      BOOST_LOG(info) << "type [IDX_SET_CLIPBOARD]: "sv << payload << " size: " << payload.size();
+      // Never log the payload: it is the client's clipboard.
+      BOOST_LOG(debug) << "type [IDX_SET_CLIPBOARD], size: "sv << payload.size();
 
-      if (!(session->permission & crypto::PERM::clipboard_set)) {
+      if (!(session->permission.load() & crypto::PERM::clipboard_set)) {
         BOOST_LOG(debug) << "Permission Clipboard Set deined for [" << session->device_name << "]";
         return;
       }
     });
 
     server->map(packetTypes[IDX_FILE_TRANSFER_NONCE_REQUEST], [server](session_t *session, const std::string_view &payload) {
-      BOOST_LOG(info) << "type [IDX_FILE_TRANSFER_NONCE_REQUEST]: "sv << payload << " size: " << payload.size();
+      // Never log the payload: it carries the transfer nonce.
+      BOOST_LOG(debug) << "type [IDX_FILE_TRANSFER_NONCE_REQUEST], size: "sv << payload.size();
 
-      if (!(session->permission & crypto::PERM::file_upload)) {
+      if (!(session->permission.load() & crypto::PERM::file_upload)) {
         BOOST_LOG(debug) << "Permission File Upload deined for [" << session->device_name << "]";
         return;
       }
@@ -1390,7 +1423,7 @@ namespace stream {
       // IDX_INPUT_DATA callback will attempt to decrypt unencrypted data, therefore we need pass it directly
       if (type == packetTypes[IDX_INPUT_DATA]) {
         plaintext.erase(std::begin(plaintext), std::begin(plaintext) + 4);
-        input::passthrough(session->input, std::move(plaintext), session->permission);
+        input::passthrough(session->input, std::move(plaintext), session->permission.load());
       } else {
         server->call(type, session, next_payload, true);
       }
@@ -1429,6 +1462,12 @@ namespace stream {
 
           if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
             pos = server->_sessions->erase(pos);
+
+            if (session->control.peer && session->control.send_termination.load(std::memory_order_acquire)) {
+              // A graceful stop: tell the client before the disconnect drops whatever is still queued.
+              send_termination(server, session);
+              server->flush();
+            }
 
             if (session->control.peer) {
               {
@@ -1478,29 +1517,13 @@ namespace stream {
     }
 
     // Let all remaining connections know the server is shutting down
-    // reason: graceful termination
-    std::uint32_t reason = 0x80030023;
-
-    control_terminate_t plaintext;
-    plaintext.header.type = packetTypes[IDX_TERMINATION];
-    plaintext.header.payloadLength = sizeof(plaintext.ec);
-    plaintext.ec = util::endian::big<uint32_t>(reason);
-
-    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-      encrypted_payload;
-
     auto lg = server->_sessions.lock();
     for (auto pos = std::begin(*server->_sessions); pos != std::end(*server->_sessions); ++pos) {
       auto session = *pos;
 
       // We may not have gotten far enough to have an ENet connection yet
       if (session->control.peer) {
-        auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
-
-        if (server->send(payload, session->control.peer)) {
-          TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
-          BOOST_LOG(warning) << "Couldn't send termination code to ["sv << addr << ':' << port << ']';
-        }
+        send_termination(server, session);
       }
 
       session->shutdown_event->raise(true);
@@ -2334,10 +2357,6 @@ namespace stream {
       return session.state.load(std::memory_order_relaxed);
     }
 
-    inline bool send(session_t& session, const std::string_view &payload) {
-      return session.broadcast_ref->control_server.send(payload, session.control.peer);
-    }
-
     std::string uuid(const session_t& session) {
       return session.device_uuid;
     }
@@ -2356,9 +2375,10 @@ namespace stream {
 
       BOOST_LOG(debug) << "Session: Permission updated for [" << session.device_name << "]";
 
+      // device_name stays: the control thread reads it without a lock. A renamed client shows its new name from the
+      // next stream on.
       if (session.device_name != name) {
-        BOOST_LOG(debug) << "Session: Device name changed from [" << session.device_name << "] to [" << name << "]";
-        session.device_name = name;
+        BOOST_LOG(debug) << "Session: Device [" << session.device_name << "] was renamed to [" << name << "]";
       }
 
       return false;
@@ -2387,35 +2407,17 @@ namespace stream {
 
     void graceful_stop(session_t& session) {
       while_starting_do_nothing(session.state);
+      // Only the control thread may use the control channel (its cipher state, peer and ENet host), so ask it to send
+      // the termination notice: it does that before it disconnects the peer and drops the session, then raises
+      // controlEnd (controlBroadcastThread()).
+      session.control.send_termination.store(true, std::memory_order_release);
       auto expected = state_e::RUNNING;
       auto already_stopping = !session.state.compare_exchange_strong(expected, state_e::STOPPING);
       if (already_stopping) {
         return;
       }
 
-      // reason: graceful termination
-      std::uint32_t reason = 0x80030023;
-
-      control_terminate_t plaintext;
-      plaintext.header.type = packetTypes[IDX_TERMINATION];
-      plaintext.header.payloadLength = sizeof(plaintext.ec);
-      plaintext.ec = util::endian::big<uint32_t>(reason);
-
-      // We may not have gotten far enough to have an ENet connection yet
-      if (session.control.peer) {
-        std::array<std::uint8_t,
-          sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-          encrypted_payload;
-        auto payload = stream::encode_control(&session, util::view(plaintext), encrypted_payload);
-
-        if (send(session, payload)) {
-          TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session.control.peer->address.address));
-          BOOST_LOG(warning) << "Couldn't send termination code to ["sv << addr << ':' << port << ']';
-        }
-      }
-
       session.shutdown_event->raise(true);
-      session.controlEnd.raise(true);
     }
 
     /**

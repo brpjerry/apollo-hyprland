@@ -96,8 +96,49 @@ namespace nvhttp {
   cmd_list_t
   extract_command_entries(const nlohmann::json& j, const std::string& key);
 
+  /**
+   * @brief Build the launch session of a GameStream launch or resume request.
+   *
+   * The paired client's own commands are only copied when the client may run them (`allow_client_commands`); the
+   * caller still drops them when the app forbids client commands.
+   */
   std::shared_ptr<rtsp_stream::launch_session_t>
   make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t* named_cert_p);
+
+  /**
+   * @brief Whether a launch request names the app that is already running.
+   *
+   * An omitted appid reads as 0, which is also what an idle host reports as running, so a numeric id only counts
+   * when it names an app.
+   *
+   * @param appid Numeric app id of the request, 0 when omitted.
+   * @param appuuid App UUID of the request, empty when omitted.
+   * @param current_appid Id of the running app, 0 when none.
+   * @param current_app_uuid UUID of the running app.
+   */
+  bool launch_targets_running_app(std::int64_t appid, std::string_view appuuid, std::int64_t current_appid, std::string_view current_app_uuid);
+
+  /**
+   * @brief Whether either identifier of a launch request names the Terminate entry.
+   *
+   * @param appid Numeric app id of the request.
+   * @param appuuid App UUID of the request.
+   */
+  bool launch_names_terminate(std::int64_t appid, std::string_view appuuid);
+
+  /**
+   * @brief The permission a launch request needs.
+   *
+   * Joining the running app (or the input-only session) only needs view permission; starting or terminating an app
+   * needs launch permission, whichever identifier names it.
+   *
+   * @param appid Numeric app id of the request, 0 when omitted.
+   * @param appuuid App UUID of the request, empty when omitted.
+   * @param is_input_only Whether the request joins the input-only session.
+   * @param current_appid Id of the running app, 0 when none.
+   * @param current_app_uuid UUID of the running app.
+   */
+  crypto::PERM launch_permission(std::int64_t appid, std::string_view appuuid, bool is_input_only, std::int64_t current_appid, std::string_view current_app_uuid);
 
   /**
    * @brief Setup the nvhttp server.
@@ -566,6 +607,14 @@ namespace nvhttp {
      * @brief Reload paired-client authorization state from the configured state file.
      */
     void reload_client_state();
+
+    /**
+     * @brief Run the per-request client check of GameStream HTTPS handlers (verified_handler()).
+     *
+     * @param cert PEM certificate the connection presented.
+     * @return Copy of the client's current record, or nullptr when it may no longer connect.
+     */
+    std::shared_ptr<crypto::named_cert_t> current_client_record(std::string_view cert);
   }  // namespace test_support
 #endif
 }  // namespace nvhttp

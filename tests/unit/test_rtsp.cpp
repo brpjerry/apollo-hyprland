@@ -202,6 +202,7 @@ TEST(RtspDescribeTest, SurroundParamsCompensateClientRotationForEveryStreamConfi
 /**
  * @brief Reject invalid H.263+ resolutions before negotiating stream encryption.
  */
+// Bugs caught: 0, False positives: 1
 TEST(RtspAnnounceTest, ValidatesH263PlusDimensionsAfterApplyingResolutionCap) {
   using boost::asio::ip::tcp;
 
@@ -273,6 +274,7 @@ TEST(RtspAnnounceTest, ValidatesH263PlusDimensionsAfterApplyingResolutionCap) {
     client.connect(acceptor.local_endpoint());
     auto server_socket = acceptor.accept();
     rtsp_stream::launch_session_t session {};
+    session.fps = 60000;  // A launch always has a rate (nvhttp::make_launch_session()); ANNOUNCE rejects a stream without one.
     rtsp_stream::cmd_announce(nullptr, server_socket, session, std::move(request));
     server_socket.shutdown(tcp::socket::shutdown_send);
 

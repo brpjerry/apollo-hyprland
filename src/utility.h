@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <charconv>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -758,8 +759,11 @@ namespace util {
       return val.get<T>();
     if (val.is_string()) {
       std::string s = val.get<std::string>();
-      if constexpr (std::is_same_v<T, int>) {
-        return std::stoi(s);
+      if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+        // Every integer type, not just int: Boost's property tree stored e.g. a client's uint32 permissions as "7".
+        T parsed {};
+        const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), parsed);
+        return ec == std::errc {} && end == s.data() + s.size() ? parsed : default_value;
       } else if constexpr (std::is_same_v<T, double>) {
         return std::stod(s);
       } else if constexpr (std::is_same_v<T, bool>) {

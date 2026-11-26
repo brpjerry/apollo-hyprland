@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <memory>
 #include <list>
 
@@ -156,6 +157,14 @@ namespace rtsp_stream {
 
   std::shared_ptr<stream::session_t>
   find_session(const std::string_view& uuid);
+
+  /**
+   * @brief Every active session of a paired client (a client may stream more than once).
+   *
+   * @param uuid UUID of the paired client.
+   * @return The client's sessions.
+   */
+  std::vector<std::shared_ptr<stream::session_t>> find_sessions(std::string_view uuid);
 
   std::list<std::string>
   get_all_session_uuids();
