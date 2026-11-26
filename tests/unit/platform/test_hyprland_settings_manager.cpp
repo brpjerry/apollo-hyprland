@@ -73,6 +73,7 @@ namespace {
     std::function<void(const monitor_rule_t &)> on_rule;
     std::set<std::string> refuse;  ///< Outputs whose rules are rejected.
     bool refuse_dispatch = false;  ///< Reject focus and workspace dispatches.
+    std::map<std::string, std::string> cm_becomes;  ///< Colour presets the output takes as a different one.
 
     std::vector<monitor_rule_t> queued;
     int polls = 0;
@@ -127,7 +128,8 @@ namespace {
         o->y = std::stoi(rule.position->substr(x + 1));
       }
       if (rule.cm && o->hdr_capable) {
-        o->cm = *rule.cm;
+        auto it = cm_becomes.find(*rule.cm);
+        o->cm = it == cm_becomes.end() ? *rule.cm : it->second;
       }
       if (rule.bitdepth) {
         o->bitdepth = rule.bitdepth;
@@ -860,6 +862,53 @@ TEST(HyprlandSettingsManagerTest, RejectedHyprlangRuleIsReportedByWhatItChanges)
 
   c->refuse = {"HDMI-A-1"};
   EXPECT_EQ(m.applySettings(cfg("HDMI-A-1", Prep::EnsurePrimary)), ApplyResult::PrimaryDevicePrepFailed);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, RepeatApplyPutsAnExternallyChangedHdrStateBack) {
+  auto c = desk();
+  c->current.outputs[0].hdr_capable = true;
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  // An SDR stream on the SDR monitor: only the topology changes.
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::EnsureOnlyDisplay, {}, {}, HdrState::Disabled)), ApplyResult::Ok);
+  ASSERT_TRUE(p->data);
+
+  // Something switches DP-3 to HDR during the session; the client reconnects, still asking for SDR.
+  c->find("DP-3")->cm = "hdr";
+  c->find("DP-3")->bitdepth = 10;
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::EnsureOnlyDisplay, {}, {}, HdrState::Disabled)), ApplyResult::Ok);
+  EXPECT_EQ(out(*c, "DP-3").cm, "srgb");
+  EXPECT_EQ(out(*c, "DP-3").bitdepth, 8);
+
+  // Already as asked: no colour change is sent.
+  c->rules.clear();
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::EnsureOnlyDisplay, {}, {}, HdrState::Disabled)), ApplyResult::Ok);
+  EXPECT_TRUE(std::ranges::none_of(c->rules, [](const monitor_rule_t &r) {
+    return r.cm.has_value();
+  }));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, RevertWaitsForTheExactColourPreset) {
+  auto c = desk();
+  c->current.outputs[0].hdr_capable = true;
+  c->current.outputs[0].cm = "hdredid";
+  c->current.outputs[0].bitdepth = 10;
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  ASSERT_EQ(m.applySettings(cfg("DP-3", Prep::VerifyOnly, {}, {}, HdrState::Disabled)), ApplyResult::Ok);
+  ASSERT_EQ(out(*c, "DP-3").cm, "srgb");
+
+  // The monitor takes hdredid as plain hdr: still HDR, but not the preset the user had.
+  c->cm_becomes["hdredid"] = "hdr";
+  EXPECT_EQ(m.revertSettings(), RevertResult::RevertingHdrStatesFailed);
+  EXPECT_TRUE(p->data);
+
+  c->cm_becomes.clear();
+  ASSERT_EQ(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(out(*c, "DP-3").cm, "hdredid");
+  EXPECT_FALSE(p->data);
 }
 
 // Bugs caught: 0, False positives: 0

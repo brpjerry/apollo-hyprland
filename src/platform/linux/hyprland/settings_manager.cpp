@@ -682,6 +682,10 @@ namespace hyprland::dd {
           d.cm = enable ? "hdr"s : "srgb"s;
           d.bitdepth = enable ? 10 : 8;
           touched.hdr = true;
+        } else if (is_hdr_preset(target_now->cm) != enable) {
+          // Asked for the original state, but something switched the monitor away from it since: put it back.
+          d.cm = target->cm.empty() ? "srgb"s : target->cm;
+          d.bitdepth = target->bitdepth;
         }
       } else {
         BOOST_LOG(info) << "Hyprland display device: "sv << target->name << " does not support HDR, leaving it alone"sv;
@@ -809,7 +813,9 @@ namespace hyprland::dd {
       if (d.position && *d.position != std::pair {now->x, now->y}) {
         return fail(failure_e::position, std::format("{} is at {}x{} instead of {}x{}", name, now->x, now->y, d.position->first, d.position->second));
       }
-      if (d.cm && is_hdr_preset(*d.cm) != is_hdr_preset(now->cm)) {
+      // The exact preset: hdr and hdredid (or two SDR presets) are not interchangeable when restoring one. An
+      // unreported preset is Hyprland's default, as in restore_fields().
+      if (d.cm && *d.cm != (now->cm.empty() ? "srgb"s : now->cm)) {
         return fail(failure_e::hdr, std::format("{} has colour preset {} instead of {}", name, now->cm, *d.cm));
       }
     }
