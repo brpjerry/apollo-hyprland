@@ -1,6 +1,6 @@
 /**
  * @file tests/unit/platform/hyprland_fakes.h
- * @brief Fake Hyprland sockets for unit tests of src/platform/linux/hyprland/*.
+ * @brief Fake Hyprland sockets for unit tests of the code in src/platform/linux/hyprland.
  */
 #pragma once
 

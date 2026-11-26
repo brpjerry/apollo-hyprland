@@ -15,6 +15,9 @@ struct AudioTest: PlatformTestSuite, testing::WithParamInterface<std::tuple<std:
   // desktop's sound server. Without a private instance, audio fails to initialise and the stream has no audio.
   static void SetUpTestSuite() {
     PlatformTestSuite::SetUpTestSuite();
+    if (IsSkipped()) {
+      return;
+    }
     if (!pulse.start()) {
       BOOST_LOG(warning) << "No private PipeWire instance; audio capture will fail to initialise";
     }
