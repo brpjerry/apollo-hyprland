@@ -276,8 +276,13 @@ namespace proc {
     }
 
 #ifndef _WIN32
-    // Focus the display and give it its workspace, so windows open on it rather than on a physical monitor.
-    vdisplay::activate(display_name);
+    // Focus the display and give it its workspace, so windows open on it rather than on a physical monitor. Without
+    // that the app would open on the host's desktop while the client watches an empty display: fail instead.
+    // launch_session.virtual_display stays set, so terminate() removes the display.
+    if (!vdisplay::activate(display_name)) {
+      BOOST_LOG(error) << "Could not activate the virtual display " << display_name;
+      return {};
+    }
 #endif
 
     return display_name;
@@ -358,6 +363,15 @@ namespace proc {
         // empty name when probing graphics cards.
         config::video.output_name = platf::vdisplay::output_name_for(this->display_name);
       }
+#ifndef _WIN32
+      else if (launch_session->virtual_display) {
+        // The backend works but could not set up the display. Windows falls back to the configured physical display;
+        // here that would stream (and reconfigure) the host's desktop for a client that asked for its own display.
+        // A backend that is not available at all (not Hyprland) cleared virtual_display and keeps that fallback.
+        BOOST_LOG(error) << "Could not prepare the virtual display for this session"sv;
+        return 503;
+      }
+#endif
     }
 
     display_device::configure_display(config::video, *launch_session);

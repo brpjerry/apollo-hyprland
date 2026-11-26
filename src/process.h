@@ -197,7 +197,8 @@ namespace proc {
    *
    * Re-initialises the backend when it is not ready. Sets `launch_session.display_guid`, and sets
    * `launch_session.virtual_display` to whether a display may now exist and must be removed on terminate.
-   * @return The display name (for `proc_t::display_name`), or "" if no usable display was created.
+   * @return The display name (for `proc_t::display_name`), or "" if no usable display was created (outside
+   *         Windows also when the display could not be activated).
    */
   std::string create_virtual_display(const ctx_t &app, rtsp_stream::launch_session_t &launch_session, uint32_t render_width, uint32_t render_height);
 
