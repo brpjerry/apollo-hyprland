@@ -32,7 +32,8 @@ namespace platf::keyboard {
     /**
      * @brief Types @p text: one keymap upload per batch of up to 247 distinct characters, then the normal
      *        keymap again. Characters that cannot be typed (most control characters) are skipped.
-     * @return false if the connection to the compositor is broken (the text may be partly typed).
+     * @return false if the connection to the compositor is broken or a keymap could not be uploaded (the text may be
+     *         partly typed, and the keyboard should not be used again).
      */
     bool type(std::u32string_view text);
 

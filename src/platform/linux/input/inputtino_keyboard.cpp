@@ -249,7 +249,7 @@ namespace platf::keyboard {
     BOOST_LOG(debug) << "Unicode, typing "sv << text.size() << " characters through the virtual keyboard"sv;
     if (!raw->text_keyboard->type(text)) {
       // Part of the text may be typed already, so don't type it again through IBus; reconnect next time.
-      BOOST_LOG(warning) << "Unicode, the virtual keyboard's connection broke while typing"sv;
+      BOOST_LOG(warning) << "Unicode, the virtual keyboard failed while typing"sv;
       raw->text_keyboard.reset();
     }
     return true;

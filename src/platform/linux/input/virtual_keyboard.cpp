@@ -235,8 +235,10 @@ namespace platf::keyboard {
     if (batches.empty()) {
       return true;
     }
+    bool complete = true;
     for (const auto &batch : batches) {
       if (!impl->upload(unicode_keymap::keymap_text(batch.keysyms))) {
+        complete = false;
         break;
       }
       for (auto key : batch.keys) {
@@ -246,12 +248,14 @@ namespace platf::keyboard {
       }
     }
     // Every key is up again, so the normal keymap can come back.
-    impl->upload(impl->restore);
+    const bool restored = impl->upload(impl->restore);
     if (wl_display_roundtrip(impl->display) < 0) {
       impl->check();
       return false;
     }
-    return impl->check();
+    // A failed upload means only part of the text was typed, or the temporary keymap is still in place: report it,
+    // so the caller drops this keyboard (and its keymap) instead of typing on with it.
+    return impl->check() && complete && restored;
   }
 
   bool virtual_keyboard_t::alive() const {
