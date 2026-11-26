@@ -9,7 +9,7 @@ vi.mock('../../src_assets/common/assets/web/Navbar.vue', () => ({
   default: { template: '<div />' },
 }))
 
-import { cleanConfigForSave, parseJsonOptions } from '../../src_assets/common/assets/web/Config.vue'
+import Config, { cleanConfigForSave, parseJsonOptions } from '../../src_assets/common/assets/web/Config.vue'
 import configTabs from '../../src_assets/common/assets/web/configs/config_tabs.json'
 import Advanced from '../../src_assets/common/assets/web/configs/tabs/Advanced.vue'
 import AudioVideo from '../../src_assets/common/assets/web/configs/tabs/AudioVideo.vue'
@@ -114,6 +114,30 @@ describe('Apollo configuration options', () => {
     expect(config.server_cmd).toEqual([{ name: 'Lock', cmd: 'lock' }])
     expect(config).not.toHaveProperty('fallback_mode')
     expect(cleanConfigForSave({ fallback_mode: '2560x1440x120' }).fallback_mode).toBe('2560x1440x120')
+  })
+
+  // Saving without the invalid value would remove the previously saved mode from the configuration file.
+  // Bugs caught: 0, False positives: 0
+  it('stops Save and Apply at an invalid fallback mode and shows its tab', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ status: 200 })))
+    const ctx = {
+      config: { fallback_mode: '1920x1080' },
+      currentTab: 'general',
+      tabs: [],
+      saved: false,
+      restarted: false,
+      serialize: Config.methods.serialize,
+    }
+    ctx.save = Config.methods.save.bind(ctx)
+
+    expect(await Config.methods.save.call(ctx)).toBe(false)
+    Config.methods.apply.call(ctx)
+    await Promise.resolve()
+
+    expect(fetch).not.toHaveBeenCalled()
+    expect(ctx.currentTab).toBe('av')
+    expect(ctx.restarted).toBe(false)
+    vi.unstubAllGlobals()
   })
 
   // Bugs caught: 0, False positives: 0

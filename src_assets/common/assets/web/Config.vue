@@ -397,6 +397,13 @@
         this.saved = false;
         this.restarted = false;
 
+        // The server rewrites the whole file from what is sent, so saving without the invalid value would drop the
+        // saved mode. Stop on the Audio/Video tab, which shows the error.
+        if (this.config.fallback_mode && !FALLBACK_MODE_PATTERN.test(this.config.fallback_mode.trim())) {
+          this.currentTab = 'av';
+          return Promise.resolve(false);
+        }
+
         // create a temp copy of this.config to use for the post request
         let config = this.serialize();
 
