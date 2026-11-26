@@ -88,14 +88,18 @@ script to support other distributions.
 
 ##### Arch Linux + Hyprland
 ```bash
-sudo pacman -S --needed base-devel cmake ninja boost libva libdrm wayland wayland-protocols libpulse libevdev \
-  avahi libayatana-appindicator libnotify nodejs npm miniupnpc nlohmann-json libcap numactl opus cuda
-git submodule update --init --recursive
-scripts/hyprland/build.sh        # configures build/ with tests, CUDA and the system Boost
+sudo pacman -S --needed base-devel git cmake ninja boost boost-libs nlohmann-json nodejs npm python-jinja shaderc \
+  vulkan-headers wayland wayland-protocols libva libdrm libpipewire libpulse libevdev libxkbcommon avahi miniupnpc \
+  libcap numactl opus qt6-base qt6-svg vulkan-icd-loader cuda
+scripts/hyprland/build.sh        # configures build/ with tests and CUDA, then builds
 scripts/hyprland/test.sh         # runs unit tests, skipping known baseline failures
 ```
-`BOOST_ALLOW_NEWER_SYSTEM=ON` lets CMake use Arch's newer Boost instead of fetching Boost 1.89, whose CMake files
-fail under CMake 4.
+`packaging/linux/Arch/PKGBUILD` has the full dependency list. Most other dependencies (moonlight-common-c,
+Simple-Web-Server, libdisplaydevice, libvirtualhid, the tray and the Wayland protocol files that Arch does not package)
+are fetched by [CPM](https://github.com/cpm-cmake/CPM.cmake) at configure time, at the versions pinned in
+`package-lock.cmake`. Set `CPM_SOURCE_CACHE` to a directory to share the downloads between build directories. Apollo's
+changes to moonlight-common-c and Simple-Web-Server are applied from `patches/`. `build.sh` checks out the one
+remaining submodule, `third-party/lizardbyte-common`.
 
 Without an NVIDIA GPU, leave out `cuda` and pass extra CMake options through `CMAKE_EXTRA_ARGS` (this is what CI does,
 see `.github/workflows/ci.yml`):

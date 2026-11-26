@@ -149,4 +149,12 @@ check() {
 
 package() {
   DESTDIR="${pkgdir}" cmake --install build
+
+  # 0.4.8.1-1 shipped the user unit as sunshine.service; Sunshine now names it after the app id so that
+  # xdg-desktop-portal can identify it. Keep the old name as a vendor alias, so units enabled under the old name
+  # still resolve after an upgrade.
+  local unit_dir="${pkgdir}/usr/lib/systemd/user"
+  if [[ -f "${unit_dir}/app-dev.lizardbyte.app.Sunshine.service" && ! -e "${unit_dir}/sunshine.service" ]]; then
+    ln -s app-dev.lizardbyte.app.Sunshine.service "${unit_dir}/sunshine.service"
+  fi
 }
