@@ -286,6 +286,11 @@ namespace {
       if (platf::ext_display_names().empty()) {
         GTEST_SKIP() << "The compositor does not support ext-image-copy-capture";
       }
+      // Since Sunshine #5873, a capture GPU that isn't the CUDA device hands CUDA frames over through system memory,
+      // so there are no dma-bufs to check (CI: vkms and llvmpipe, no NVIDIA GPU).
+      if (is_vram(GetParam().mem_type) && !wl::use_vram_capture(GetParam().mem_type)) {
+        GTEST_SKIP() << "The capture GPU is not the CUDA device; video memory frames go through the RAM bridge";
+      }
     }
 
     std::shared_ptr<platf::display_t> make(const std::string &name, int framerate = 120) {
@@ -308,7 +313,7 @@ namespace {
   }
 }  // namespace
 
-// Bugs caught: 0, False positives: 2
+// Bugs caught: 0, False positives: 3
 TEST_P(ExtCaptureLiveTest, CapturesHeadlessOutputIntoReusedBuffers) {
   auto output = headless("1920x1080@120");
   ASSERT_TRUE(output);
