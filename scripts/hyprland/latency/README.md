@@ -25,4 +25,4 @@ The react phase gives the reactor exclusive keyboard focus on the host for about
 - The probe only sees repaints it has a capture request pending for. On Hyprland a request is serviced roughly every
   other repaint, so detection can be up to one capture interval late (check the gaps between `F` timestamps). More
   requests in flight (`--inflight`) sample more often but load the client's compositor, which matters on weak GPUs.
-- Clock offset error is at most half the fastest round trip (about 0.5 ms on a good Wi-Fi link).
+- Clock offset error is at most half the slowest round trip clocksync.py keeps (`rtt_kept_max_ns` in its output).
