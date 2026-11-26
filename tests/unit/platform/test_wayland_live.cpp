@@ -306,7 +306,7 @@ namespace {
   }
 }  // namespace
 
-// Bugs caught: 0, False positives: 1
+// Bugs caught: 0, False positives: 2
 TEST_P(ExtCaptureLiveTest, CapturesHeadlessOutputIntoReusedBuffers) {
   auto output = headless("1920x1080@120");
   ASSERT_TRUE(output);
@@ -319,7 +319,8 @@ TEST_P(ExtCaptureLiveTest, CapturesHeadlessOutputIntoReusedBuffers) {
   EXPECT_EQ(disp->height, 1080);
 
   // Hide the cursor: the session is reopened without paint_cursors.
-  auto run = run_capture(*disp, GetParam().mem_type, 240, 10s, false, true);
+  // The time limit only catches a stalled capture: CI renders in software (llvmpipe) and manages 20-30 fps there.
+  auto run = run_capture(*disp, GetParam().mem_type, 240, 30s, false, true);
   std::cout << output->name << ' ' << GetParam().name << ": " << run.frames << " frames in " << run.elapsed.count() / 1e6 << " ms ("
             << run.fps() << " fps), captured " << run.stats.frames_captured << ", buffers allocated " << run.stats.buffers_allocated << std::endl;
 
