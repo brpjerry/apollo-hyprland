@@ -554,7 +554,15 @@ TEST(HyprlandVdisplayTest, ReusesItsOwnOutputButReplacesLeftovers) {
   hypr.wait_for_listener();
   ASSERT_TRUE(hypr.monitor(client_output)) << "pid 1 is alive, so the output must not count as stale";
 
-  // Not created by this backend: removed and created afresh.
+  // Another running instance's output: neither taken over nor removed.
+  EXPECT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), "");
+  EXPECT_FALSE(vd.remove(client_identity()));
+  ASSERT_TRUE(hypr.monitor(client_output));
+  EXPECT_EQ(hypr.count_requests("/output remove"), 0u);
+  EXPECT_EQ(hypr.count_requests("/output create"), 0u);
+
+  // Its owner has exited: a leftover, removed and created afresh.
+  write_owner(hypr.state_dir(), client_output, dead_pid());
   ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
   auto reqs = hypr.requests();
   auto remove_it = std::ranges::find(reqs, "/output remove APOLLO-1a2b3c4d");

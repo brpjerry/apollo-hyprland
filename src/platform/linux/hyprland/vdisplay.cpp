@@ -294,7 +294,12 @@ namespace hyprland {
         return name;
       }
 
-      // Left over from a crash, or created by someone else under our naming scheme: start from a fresh output.
+      // Another running Apollo owns it (cleanup_stale_locked() leaves those alone too): not ours to take over.
+      if (auto pid = read_owner_pid(name); pid && *pid != ::getpid() && process_alive(*pid)) {
+        BOOST_LOG(error) << "Hyprland virtual display: "sv << name << " belongs to running process "sv << *pid;
+        return {};
+      }
+      // Left over from a crash, or created under our naming scheme without an owner: start from a fresh output.
       BOOST_LOG(info) << "Hyprland virtual display: removing leftover output "sv << name << " before re-creating it"sv;
       if (!remove_output_locked(name)) {
         BOOST_LOG(error) << "Hyprland virtual display: cannot remove leftover output "sv << name;
@@ -442,7 +447,8 @@ namespace hyprland {
     const auto name = vdisplay_output_name(identity);
 
     std::lock_guard lock {mutex_};
-    if (!ensure_connected_locked()) {
+    // Only what this backend created: after a failed create() the output may belong to another instance.
+    if (!owned_.contains(name) || !ensure_connected_locked()) {
       return false;
     }
 
