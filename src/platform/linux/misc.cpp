@@ -1268,15 +1268,15 @@ std::string get_local_ip_for_gateway() {
   }  // namespace
 #endif
 
-  std::string
+  std::optional<std::string>
   get_clipboard() {
 #ifdef SUNSHINE_BUILD_WAYLAND
     std::lock_guard lock {clipboard_mutex};
     if (auto clipboard = wayland_clipboard()) {
-      return clipboard->get().value_or(std::string {});
+      return clipboard->get();
     }
 #endif
-    return "";
+    return std::nullopt;
   }
 
   bool

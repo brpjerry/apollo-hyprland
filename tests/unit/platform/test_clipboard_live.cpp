@@ -466,7 +466,7 @@ TEST_P(ClipboardLiveTest, PlatformFunctionsUseTheSessionClipboard) {
   auto deadline = std::chrono::steady_clock::now() + 5s;
   std::string seen;
   do {
-    seen = platf::get_clipboard();
+    seen = platf::get_clipboard().value_or("<read failed>");
     if (seen != "from test") {
       std::this_thread::sleep_for(50ms);
     }
