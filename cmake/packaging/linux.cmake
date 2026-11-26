@@ -49,9 +49,8 @@ endif()
 set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
 set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
 
-# Apply setcap for RPM
-# https://github.com/coreos/rpm-ostree/discussions/5036#discussioncomment-10291071
-set(CPACK_RPM_USER_FILELIST "%caps(cap_sys_admin+p) ${SUNSHINE_EXECUTABLE_PATH}")
+# No %caps(cap_sys_admin+p) on the RPM: only KMS capture needs it, and postinst sets it on request
+# (APOLLO_ENABLE_KMS_CAPTURE=1). File metadata would grant it on every install.
 
 # Dependencies
 set(CPACK_DEB_COMPONENT_INSTALL ON)

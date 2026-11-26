@@ -222,6 +222,16 @@ modprobe uhid
 if [ ! -x "$(command -v rpm-ostree)" ]; then
   echo "Not in an rpm-ostree environment, proceeding with post install steps."
 
+  # CAP_SYS_ADMIN is only needed for KMS capture, so it is opt-in (see the postinst script).
+  path_to_sunshine=$(readlink -f %{_bindir}/sunshine)
+  if [ "${APOLLO_ENABLE_KMS_CAPTURE:-0}" = "1" ]; then
+    echo "Setting CAP_SYS_ADMIN capability on Sunshine binary for KMS capture."
+    setcap cap_sys_admin+p "$path_to_sunshine"
+  else
+    echo "Not setting CAP_SYS_ADMIN (only KMS capture needs it). To enable KMS capture, run:"
+    echo "  sudo setcap cap_sys_admin+p $path_to_sunshine"
+  fi
+
   # Trigger udev rule reload for /dev/uinput and /dev/uhid
   path_to_udevadm=$(which udevadm)
   if [ -x "$path_to_udevadm" ]; then
@@ -239,8 +249,8 @@ fi
 
 %files
 # Executables
-%caps(cap_sys_admin+p) %{_bindir}/sunshine
-%caps(cap_sys_admin+p) %{_bindir}/sunshine-*
+%{_bindir}/sunshine
+%{_bindir}/sunshine-*
 
 # Systemd unit file for user services
 %{_userunitdir}/sunshine.service
