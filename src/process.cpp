@@ -547,7 +547,7 @@ namespace proc {
     const bool sync_hdr = this->virtual_display;
 #endif
     if (sync_hdr) {
-      auto resetHDRThread = std::thread([this, enable_hdr = launch_session->enable_hdr]{
+      auto sync_display_hdr = [this, enable_hdr = launch_session->enable_hdr]{
         // Windows doesn't seem to be able to set HDR correctly when a display is just connected / changed resolution,
         // so we have tooggle HDR for the virtual display manually after a delay.
         auto retryInterval = 200ms;
@@ -615,9 +615,15 @@ namespace proc {
           }
     #endif
         }
-      });
+      };
 
-      resetHDRThread.detach();
+#ifdef _WIN32
+      std::thread(std::move(sync_display_hdr)).detach();
+#else
+      // Hyprland applies the state right away, and a detached thread would race terminate() over display_name,
+      // initial_hdr and mode_changed_display (and could apply this session's HDR state to the next one's display).
+      sync_display_hdr();
+#endif
     }
 
     fg.disable();
