@@ -120,7 +120,8 @@ jobs:
           fi
 
       # The test binary looks for fixture scripts (run-private-pipewire.sh) under the source path it was built from in
-      # the package job, so the checkout is mounted there too. pipewire-pulse, WirePlumber and dbus run that fixture.
+      # the package job, so the checkout is mounted there too. pipewire-pulse, WirePlumber and dbus run that fixture;
+      # wl-clipboard, wev and zenity are the test clients of the clipboard, app-exit and toolkit-typing suites.
       - name: Run live tests
         if: steps.vkms.outputs.available == 'true'
         run: |
@@ -128,7 +129,7 @@ jobs:
             -w /w archlinux:latest bash -euo pipefail -c '
             pacman -Syu --noconfirm --needed base-devel hyprland mesa \
               libva libdrm wayland libpulse libevdev avahi libayatana-appindicator libnotify miniupnpc libcap numactl \
-              opus icu pipewire pipewire-pulse wireplumber dbus
+              opus icu pipewire pipewire-pulse wireplumber dbus wl-clipboard wev zenity
             chmod +x build/tests/test_sunshine
             if ldd build/tests/test_sunshine | grep "not found"; then
               echo "test_sunshine has unresolved libraries; update the package list above" >&2
