@@ -297,6 +297,7 @@ TEST_F(PipeWireDisplayTest, PortalRetriesWithoutMaxFramerateOnlyIfTheStreamNever
 }
   #endif
 
+// Bugs caught: 0, False positives: 0 (hung twice in local full runs, cause not yet known: HYP-42)
 TEST_F(PipeWireDisplayTest, NewConnectionResetsStartupHistory) {
   std::array<int, 2> sockets {};
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets.data()), 0);
@@ -305,7 +306,9 @@ TEST_F(PipeWireDisplayTest, NewConnectionResetsStartupHistory) {
   auto display = std::make_shared<test_display_t>();
   display->connect(sockets[0], state);
   EXPECT_FALSE(state->has_streamed.load());
-  display.reset();
+  // Rarely, teardown against the silent peer has hung the whole test run (seen twice in about 20 full runs); fail
+  // instead of hanging, like the other teardown tests here.
+  EXPECT_TRUE(reset_within(display, std::chrono::seconds(10)));
   close(sockets[1]);
 }
 
