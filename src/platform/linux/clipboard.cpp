@@ -705,6 +705,7 @@ namespace platf::clipboard {
       return nullptr;
     }
 
+    // The listener points at this stack frame, so the registry is destroyed before connect() returns.
     globals_t globals;
     impl->registry = wl_display_get_registry(impl->display);
     wl_registry_add_listener(impl->registry, &registry_listener, &globals);
@@ -741,6 +742,10 @@ namespace platf::clipboard {
       impl->backend = std::make_unique<data_control_t<wlr_traits_t>>(manager, impl->seat, std::move(send));
       impl->protocol_name = wlr_traits_t::name;
     }
+    // Only needed to bind the seat and the manager. Kept, it would deliver later globals (another seat, a
+    // replaced manager) to the event thread with a pointer to `globals`, which is gone by then.
+    wl_registry_destroy(impl->registry);
+    impl->registry = nullptr;
 
     // Receive the current selection before the first get().
     if (wl_display_roundtrip(impl->display) < 0 || !impl->backend->ok()) {
