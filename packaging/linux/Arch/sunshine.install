@@ -12,10 +12,11 @@ do_setcap() {
   fi
 }
 
+# Best effort: none of this works in a container or chroot, and a failure must not fail the install.
 do_udev_reload() {
-  udevadm control --reload-rules
-  udevadm trigger --property-match=DEVNAME=/dev/uinput
-  udevadm trigger --property-match=DEVNAME=/dev/uhid
+  udevadm control --reload-rules || true
+  udevadm trigger --property-match=DEVNAME=/dev/uinput || true
+  udevadm trigger --property-match=DEVNAME=/dev/uhid || true
   modprobe uinput || true
   modprobe uhid || true
 }
@@ -23,11 +24,9 @@ do_udev_reload() {
 post_install() {
   do_setcap
   do_udev_reload
-  modprobe uhid
 }
 
 post_upgrade() {
   do_setcap
   do_udev_reload
-  modprobe uhid
 }

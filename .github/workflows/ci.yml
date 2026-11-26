@@ -1,81 +1,82 @@
 ---
-# Builds Apollo on Arch Linux (the Hyprland port's reference platform), runs the unit tests, and runs the live
-# compositor tests against a headless Hyprland on every PR.
-# Uses the same scripts as a local build (docs/building.md, "Arch Linux + Hyprland"), with CUDA disabled because
-# the runners have no CUDA toolkit or NVIDIA GPU.
-name: Linux (Arch, Hyprland)
+# Builds the Arch Linux package (packaging/linux/Arch/PKGBUILD) with makepkg, runs the unit tests in its check(), and
+# runs the live compositor tests against a headless Hyprland. release.yml calls this workflow to build release packages.
+name: CI
 permissions:
   contents: read
 
 on:
   pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
   push:
     branches:
-      - master
+      - main
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build_and_test:
-    name: Build and unit test
+  package:
+    name: Arch package
     runs-on: ubuntu-latest
-    container:
-      image: archlinux:latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
-      # git must be present before checkout, or actions/checkout falls back to a tarball without submodules.
-      - name: Install dependencies
+      # The CUDA toolkit alone is several GiB installed; the runner's preinstalled SDKs are not needed.
+      - name: Free disk space
         run: |
-          pacman -Syu --noconfirm --needed \
-            git base-devel cmake ninja boost libva libdrm wayland wayland-protocols libpulse libevdev \
-            avahi libayatana-appindicator libnotify nodejs npm miniupnpc nlohmann-json libcap numactl opus
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
+          df -h /
 
+      # makepkg clones this checkout, so it needs the history of the commit; it fetches the submodules itself.
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          fetch-depth: 0
 
-      # The workspace is owned by the runner user, not the container's root; CMake runs git for the version.
-      - name: Trust workspace
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Build package
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w archlinux:latest scripts/ci/arch-package.sh
 
-      - name: Build
-        env:
-          CMAKE_EXTRA_ARGS: -DSUNSHINE_ENABLE_CUDA=OFF -DCUDA_FAIL_ON_MISSING=OFF
-        run: |
-          echo "::add-matcher::.github/matchers/gcc.json"
-          scripts/hyprland/build.sh "$GITHUB_WORKSPACE/build"
-
-      - name: Run unit tests
-        run: scripts/hyprland/test.sh "$GITHUB_WORKSPACE/build" --gtest_color=yes --gtest_output=xml:test_results.xml
-
-      - name: Upload test results
-        if: always()
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
-          path: build/tests/test_results.xml
-          if-no-files-found: ignore
+          name: arch-package
+          path: |
+            dist/*.pkg.tar.zst
+            dist/SHA256SUMS
+          if-no-files-found: error
 
-      # The live job runs on the host VM (it needs /dev/dri), so hand it the test binary without debug info.
-      - name: Stage test binary
-        run: |
-          mkdir -p live-tests
-          strip --strip-debug -o live-tests/test_sunshine build/tests/test_sunshine
-
+      # The live job runs on the host VM (it needs /dev/dri), so hand it the test binary.
       - name: Upload test binary
         uses: actions/upload-artifact@v4
         with:
           name: test-binary
-          path: live-tests/test_sunshine
+          path: dist/tests/test_sunshine
           retention-days: 3
+
+  # Installs the package into a fresh container the way a user would, and checks that it starts.
+  install_check:
+    name: Install check
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package
+          path: dist
+
+      - name: Install and run
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE/dist:/dist:ro" archlinux:base bash -euo pipefail -c '
+            pacman -Syu --noconfirm
+            pacman -U --noconfirm /dist/*.pkg.tar.zst
+            pacman -Qk "$(pacman -Qqp /dist/*.pkg.tar.zst)"
+            useradd --create-home tester
+            su tester -c "cd /tmp && sunshine --version"
+          '
 
   # Runs the *LiveTest suites against a private headless Hyprland (scripts/hyprland/test-live.sh).
   # Hyprland 0.57 cannot run without a DRM device, even with only headless outputs, and the runners have no GPU, so this
@@ -85,7 +86,7 @@ jobs:
   # on a GPU render node). Remove it once this job has been green on a few PRs.
   live_hyprland:
     name: Live Hyprland tests (headless)
-    needs: build_and_test
+    needs: package
     runs-on: ubuntu-latest
     timeout-minutes: 15
     continue-on-error: true

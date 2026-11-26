@@ -26,8 +26,6 @@ Binaries can be found in the [latest release][latest-release].
 Docker images are available on [Dockerhub.io](https://hub.docker.com/repository/docker/lizardbyte/sunshine)
 and [ghcr.io](https://github.com/orgs/LizardByte/packages?repo_name=sunshine).
 
-See [Docker](../DOCKER_README.md) for more information.
-
 ### Linux
 **CUDA Compatibility**
 
@@ -124,29 +122,24 @@ According to AppImageLint the supported distro matrix of the AppImage is below.
 > Use AUR packages at your own risk.
 
 ##### Install Prebuilt Packages
-Follow the instructions at LizardByte's [pacman-repo](https://github.com/LizardByte/pacman-repo) to add
-the repository. Then run the following command.
+Each [release](https://github.com/brpjerry/apollo-hyprland/releases) of the Hyprland port carries
+`apollo-hyprland-{version}-x86_64.pkg.tar.zst` and its `SHA256SUMS`. Download both, then run:
 ```bash
-pacman -S sunshine
+sha256sum -c SHA256SUMS
+sudo pacman -U ./apollo-hyprland-*-x86_64.pkg.tar.zst
 ```
+NVENC support is built in and needs only the NVIDIA driver (`nvidia-utils`), not the CUDA toolkit.
 
-##### Install PKGBUILD Archive
-Open terminal and run the following command.
+##### Build the Package
+`packaging/linux/Arch/PKGBUILD` builds the release tag `v{pkgver}` from GitHub (CUDA is a build dependency):
 ```bash
-wget https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.pkg.tar.gz
-tar -xvf sunshine.pkg.tar.gz
-cd sunshine
-
-# install optional dependencies
-pacman -S cuda  # Nvidia GPU encoding support
-pacman -S libva-mesa-driver  # AMD GPU encoding support
-
+cd packaging/linux/Arch
 makepkg -si
 ```
 
 ##### Uninstall
 ```bash
-pacman -R sunshine
+sudo pacman -R apollo-hyprland
 ```
 
 #### Debian/Ubuntu

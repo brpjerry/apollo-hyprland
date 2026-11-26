@@ -1,177 +1,136 @@
-# Edit on github: https://github.com/LizardByte/Sunshine/blob/master/packaging/linux/Arch/PKGBUILD
-# Reference: https://wiki.archlinux.org/title/PKGBUILD
+# Arch Linux package for the Hyprland port of Apollo.
+#
+# A plain `makepkg` builds the release tag v$pkgver from GitHub. CI builds the commit under test instead:
+#   _source="git+file://$PWD" _ref="commit=$(git rev-parse HEAD)" makepkg
+# _run_unit_tests=true also builds the unit tests and runs them in check().
+#
+# The release version is pkgver: bump it here before tagging, and tag the release v$pkgver
+# (.github/workflows/release.yml refuses a tag that does not match).
 
-## options
-: "${_run_unit_tests:=false}" # if set to true; unit tests will be executed post build; useful in CI
-: "${_support_headless_testing:=false}"
-: "${_use_cuda:=detect}" # nvenc
+: "${_run_unit_tests:=false}"
 
-: "${_commit:=@GITHUB_COMMIT@}"
-
-pkgname='sunshine'
-pkgver=@PROJECT_VERSION@@SUNSHINE_SUB_VERSION@
+pkgname='apollo-hyprland'
+pkgver=0.4.8.1
 pkgrel=1
-pkgdesc="@PROJECT_DESCRIPTION@"
-arch=('x86_64' 'aarch64')
-url=@PROJECT_HOMEPAGE_URL@
+pkgdesc='Self-hosted game stream host for Artemis, with virtual displays on Hyprland'
+arch=('x86_64')
+url='https://github.com/brpjerry/apollo-hyprland'
 license=('GPL-3.0-only')
 install=sunshine.install
-
-_gcc_version=14
+# No separate -debug package (release assets carry exactly one package), and no LTO, which the project is not
+# built or tested with.
+options=('!debug' '!lto')
 
 depends=(
   'avahi'
   'curl'
+  'glib2'
+  'gtk3'
+  'icu'
   'libayatana-appindicator'
   'libcap'
   'libdrm'
   'libevdev'
+  'libice'
   'libmfx'
   'libnotify'
   'libpulse'
+  'libsm'
   'libva'
   'libx11'
   'libxcb'
+  'libxext'
   'libxfixes'
+  'libxkbcommon'
   'libxrandr'
   'libxtst'
+  'mesa'
   'miniupnpc'
   'numactl'
   'openssl'
   'opus'
-  'udev'
+  'systemd-libs'
+  'wayland'
   'which'
 )
 
+# CUDA is only needed to build NVENC support: the CUDA runtime is linked statically, and at run time the encoder
+# uses the NVIDIA driver's libcuda.
 makedepends=(
-  'appstream'
-  'appstream-glib'
+  'boost'
   'cmake'
-  'desktop-file-utils'
-  "gcc${_gcc_version}"
+  'cuda'
   'git'
-  'make'
+  'ninja'
+  'nlohmann-json'
   'nodejs'
   'npm'
+  'systemd'
+  'wayland-protocols'
 )
 
 optdepends=(
+  'hyprland: virtual displays and per-stream workspaces'
   'libva-mesa-driver: AMD GPU encoding support'
+  'nvidia-utils: NVIDIA GPU encoding support (NVENC)'
   'polkit: run commands marked "Elevated" as root (pkexec)'
   'xdg-utils: open commands that are URLs (xdg-open)'
   'xdg-terminal-exec: elevation_method = terminal'
 )
 
-provides=()
-conflicts=()
+# Upstream Apollo and Sunshine install the same /usr/bin/sunshine.
+conflicts=('apollo' 'sunshine')
 
-source=("$pkgname::git+@GITHUB_CLONE_URL@#commit=${_commit}")
+: "${_source:=git+${url}.git}"
+: "${_ref:=tag=v${pkgver}}"
+source=("apollo::${_source}#${_ref}")
 sha256sums=('SKIP')
 
-# Options Handling
-if [[ "${_use_cuda::1}" == "d" ]] && pacman -Qi cuda &> /dev/null; then
-  _use_cuda=true
-fi
-
-if [[ "${_use_cuda::1}" == "t" ]]; then
-  optdepends+=(
-    'cuda: Nvidia GPU encoding support'
-  )
-fi
-
-if [[ "${_support_headless_testing::1}" == "t" ]]; then
-  optdepends+=(
-    'xorg-server-xvfb: Virtual X server for headless testing'
-  )
-fi
-
-# Ensure makedepends, checkdepends, optdepends are sorted
-if [ -n "${makedepends+x}" ]; then
-  mapfile -t tmp_array < <(printf '%s\n' "${makedepends[@]}" | sort)
-  makedepends=("${tmp_array[@]}")
-  unset tmp_array
-fi
-
-if [ -n "${optdepends+x}" ]; then
-  mapfile -t tmp_array < <(printf '%s\n' "${optdepends[@]}" | sort)
-  optdepends=("${tmp_array[@]}")
-  unset tmp_array
-fi
-
 prepare() {
-    cd "$pkgname"
-    git submodule update --recursive --init
+  cd apollo
+  git submodule update --init --recursive
 }
 
 build() {
-    export BRANCH="@GITHUB_BRANCH@"
-    export BUILD_VERSION="@BUILD_VERSION@"
-    export COMMIT="${_commit}"
+  # Read by cmake/prep/build_version.cmake: the binary reports pkgver as its version.
+  export BRANCH=main
+  export BUILD_VERSION="${pkgver}"
+  COMMIT="$(git -C apollo rev-parse HEAD)"
+  export COMMIT
 
-    export CC="gcc-${_gcc_version}"
-    export CXX="g++-${_gcc_version}"
+  export CFLAGS="${CFLAGS/-Werror=format-security/}"
+  export CXXFLAGS="${CXXFLAGS/-Werror=format-security/}"
+  export CUDA_PATH=/opt/cuda
 
-    export CFLAGS="${CFLAGS/-Werror=format-security/}"
-    export CXXFLAGS="${CXXFLAGS/-Werror=format-security/}"
+  local _tests=OFF
+  [[ "${_run_unit_tests::1}" == "t" ]] && _tests=ON
 
-    export MAKEFLAGS="${MAKEFLAGS:--j$(nproc)}"
+  cmake -S apollo -B build -G Ninja -Wno-dev \
+    -D CMAKE_BUILD_TYPE=Release \
+    -D CMAKE_INSTALL_PREFIX=/usr \
+    -D BUILD_DOCS=OFF \
+    -D BUILD_TESTS="${_tests}" \
+    -D BOOST_ALLOW_NEWER_SYSTEM=ON \
+    -D SUNSHINE_ENABLE_CUDA=ON \
+    -D CMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
+    -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine \
+    -D SUNSHINE_ASSETS_DIR=share/apollo \
+    -D SUNSHINE_PUBLISHER_ISSUE_URL="${url}/issues"
 
-    local _cmake_options=(
-      -S "$pkgname"
-      -B build
-      -Wno-dev
-      -D BUILD_DOCS=OFF
-      -D BUILD_WERROR=ON
-      -D CMAKE_INSTALL_PREFIX=/usr
-      -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine
-      -D SUNSHINE_ASSETS_DIR="share/sunshine"
-      -D SUNSHINE_PUBLISHER_NAME='LizardByte'
-      -D SUNSHINE_PUBLISHER_WEBSITE='https://app.lizardbyte.dev'
-      -D SUNSHINE_PUBLISHER_ISSUE_URL='https://app.lizardbyte.dev/support'
-    )
-
-    if [[ "${_use_cuda::1}" != "t" ]]; then
-      _cmake_options+=(-DSUNSHINE_ENABLE_CUDA=OFF -DCUDA_FAIL_ON_MISSING=OFF)
-    else
-      # If cuda has just been installed, its variables will not be available in the environment
-      # therefore, set them manually to the expected values on Arch Linux
-      if [ -z "${CUDA_PATH:-}" ] && pacman -Qi cuda &> /dev/null; then
-        local _cuda_gcc_version
-        _cuda_gcc_version="$(LC_ALL=C pacman -Si cuda | grep -Pom1 '^Depends On\s*:.*\bgcc\K[0-9]+\b')"
-
-        export CUDA_PATH=/opt/cuda
-        export NVCC_CCBIN="/usr/bin/g++-${_cuda_gcc_version}"
-      fi
-    fi
-
-    if [[ "${_run_unit_tests::1}" != "t" ]]; then
-      _cmake_options+=(-DBUILD_TESTS=OFF)
-    fi
-
-    cmake "${_cmake_options[@]}"
-
-    appstreamcli validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-    appstream-util validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-    desktop-file-validate "build/dev.lizardbyte.app.Sunshine.desktop"
-    desktop-file-validate "build/dev.lizardbyte.app.Sunshine.terminal.desktop"
-
-    make -C build
+  # Ninja ignores MAKEFLAGS; honour a -jN from makepkg.conf so a local build can be held back.
+  local _jobs=()
+  [[ "${MAKEFLAGS:-}" =~ -j[[:space:]]*([0-9]+) ]] && _jobs=(-j "${BASH_REMATCH[1]}")
+  cmake --build build "${_jobs[@]}"
 }
 
 check() {
-    cd "${srcdir}/build"
-    ./sunshine --version
+  build/sunshine --version
 
-    if [[ "${_run_unit_tests::1}" == "t" ]]; then
-      export CC="gcc-${_gcc_version}"
-      export CXX="g++-${_gcc_version}"
-
-      cd "${srcdir}/build/tests"
-      ./test_sunshine --gtest_color=yes
-    fi
+  if [[ "${_run_unit_tests::1}" == "t" ]]; then
+    apollo/scripts/hyprland/test.sh "${srcdir}/build" --gtest_color=yes
+  fi
 }
 
 package() {
-    export MAKEFLAGS="${MAKEFLAGS:--j$(nproc)}"
-    make -C build install DESTDIR="$pkgdir"
+  DESTDIR="${pkgdir}" cmake --install build
 }

@@ -32,7 +32,7 @@ scripts/hyprland/test.sh         # runs unit tests, skipping known baseline fail
 fail under CMake 4.
 
 Without an NVIDIA GPU, leave out `cuda` and pass extra CMake options through `CMAKE_EXTRA_ARGS` (this is what CI does,
-see `.github/workflows/linux-hyprland.yml`):
+see `.github/workflows/ci.yml`):
 ```bash
 CMAKE_EXTRA_ARGS="-DSUNSHINE_ENABLE_CUDA=OFF -DCUDA_FAIL_ON_MISSING=OFF" scripts/hyprland/build.sh
 ```
