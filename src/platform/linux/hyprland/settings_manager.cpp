@@ -752,6 +752,9 @@ namespace hyprland::dd {
         if (!rule.bitdepth && now->bitdepth) {
           rule.bitdepth = now->bitdepth;
         }
+        if (!rule.cm && !now->cm.empty()) {
+          rule.cm = now->cm;
+        }
       }
       (enabling ? enables : changes).push_back(std::move(rule));
     }
@@ -937,9 +940,13 @@ namespace hyprland::dd {
           failure_e ignored_kind;
           wait_for(issued, ignored, ignored_kind);
         }
+        // A hyprlang rule carries the current mode and preset too: classify by what it changes.
+        const auto *now = current.find(rule.output);
+        const bool changes_cm = rule.cm && (!now || *rule.cm != now->cm);
+        const bool changes_mode = rule.mode && (!now || *rule.mode != mode_string(now->mode));
         return rule.disabled ? failure_e::topology :
-               rule.cm       ? failure_e::hdr :
-               rule.mode     ? failure_e::mode :
+               changes_cm    ? failure_e::hdr :
+               changes_mode  ? failure_e::mode :
                                failure_e::position;
       }
       issued[rule.output] = plan.at(rule.output);

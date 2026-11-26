@@ -738,10 +738,37 @@ TEST(HyprlandSettingsManagerTest, HyprlangRulesCarryEveryField) {
   EXPECT_EQ(legacy[0].mode, "3840x2160@240.000");
   EXPECT_EQ(legacy[0].scale, 1.5);
   EXPECT_EQ(legacy[0].transform, 1);
+  EXPECT_EQ(legacy[0].bitdepth, 8);
+  // Without it Hyprland would reset the preset, and a position-only change would not restore it.
+  EXPECT_EQ(legacy[0].cm, "srgb");
+  current.outputs[0].cm = "hdredid";
+  EXPECT_EQ(rules_for(plan, current, false).at(0).cm, "hdredid");
+  EXPECT_FALSE(rules_for(plan, current, true).at(0).cm);
+  // A planned preset wins over the current one.
+  plan["DP-3"].cm = "hdr";
+  plan["DP-3"].bitdepth = 10;
+  EXPECT_EQ(rules_for(plan, current, false).at(0).cm, "hdr");
+  EXPECT_EQ(rules_for(plan, current, false).at(0).bitdepth, 10);
+  plan["DP-3"].cm.reset();
+  plan["DP-3"].bitdepth.reset();
 
   // Nothing to change: no rule.
   plan["DP-3"].position = std::pair {0, 0};
   EXPECT_TRUE(rules_for(plan, current, true).empty());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, RejectedHyprlangRuleIsReportedByWhatItChanges) {
+  // Hyprlang rules carry the output's mode and preset as well as the change.
+  auto c = desk();
+  c->merges = false;
+  c->refuse.insert("DP-3");
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  EXPECT_EQ(m.applySettings(cfg("DP-3", Prep::VerifyOnly, Resolution {1920, 1080})), ApplyResult::DisplayModePrepFailed);
+
+  c->refuse = {"HDMI-A-1"};
+  EXPECT_EQ(m.applySettings(cfg("HDMI-A-1", Prep::EnsurePrimary)), ApplyResult::PrimaryDevicePrepFailed);
 }
 
 // Bugs caught: 0, False positives: 0
