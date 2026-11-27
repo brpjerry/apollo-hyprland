@@ -126,7 +126,7 @@
         this.hostName = body.name
         this.otpStatus = 'success'
         this.otpMessage = this.i18n.t('pin.otp_success')
-        Object.assign(this, readSavedHost(globalThis.sessionStorage) ?? guessHost(body.ip, globalThis.location))
+        Object.assign(this, readSavedHost() ?? guessHost(body.ip, globalThis.location))
         // Without an address there is no link, and the editor is the only way to enter one.
         this.editingHost = !this.hostAddr
 
@@ -157,7 +157,7 @@
         if (!this.canSaveHost) {
           return
         }
-        saveHost(globalThis.sessionStorage, this)
+        saveHost(this)
         this.editingHost = false
         await this.renderQR()
       },

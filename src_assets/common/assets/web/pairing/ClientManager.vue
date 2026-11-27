@@ -3,7 +3,7 @@
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center mb-3 gap-2">
         <h2 id="unpair" class="mb-0">{{ $t('pin.device_management') }}</h2>
-        <button type="button" class="btn btn-danger" :disabled="unpairAllPressed || clients.length === 0" @click="unpairAll">
+        <button type="button" class="btn btn-danger" :disabled="unpairAllPressed || (clients.length === 0 && !unsavedRevocation)" @click="unpairAll">
           <trash-2 :size="18" class="icon"></trash-2>
           {{ $t('pin.unpair_all') }}
         </button>
@@ -94,6 +94,9 @@
         showUnpairMessage: false,
         unpairAllPressed: false,
         unpairAllStatus: null,
+        // A revocation is in effect but not saved: Unpair All stays available, even for an empty list, to retry the
+        // save (it saves the whole client state).
+        unsavedRevocation: false,
       }
     },
     created() {
@@ -149,6 +152,12 @@
           const response = await apiFetch('./api/clients/update', jsonRequest(buildClientUpdate(draft)))
           const body = await response.json()
           if (!body.status) {
+            if (body.applied) {
+              // A revocation took effect although it couldn't be saved: the list must show the permissions now in
+              // force, or the next edit would start from (and send back) the old ones. The open draft is kept.
+              this.unsavedRevocation = true
+              await this.refreshClients()
+            }
             throw new Error(body.error || body.message || `HTTP ${response.status}`)
           }
           if (this.draft === draft) {
@@ -163,13 +172,6 @@
         await this.refreshClients()
       },
       /**
-       * @brief Enable or disable a client (Sunshine's switch). Disabling ends its stream.
-       *
-       * @param {object} client Client to change.
-       * @param {boolean} enabled New state.
-       * @return {Promise<void>} Completion of the update and refresh.
-       */
-      /**
        * @brief Show the server's error for a client change that could not be saved.
        *
        * A revocation that could not be saved stays in effect until restart (`applied: true`); a grant is not made.
@@ -180,7 +182,17 @@
         if (body && body.status !== true && body.error) {
           this.actionError = body.error
         }
+        if (body && body.status !== true && body.applied === true) {
+          this.unsavedRevocation = true
+        }
       },
+      /**
+       * @brief Enable or disable a client (Sunshine's switch). Disabling ends its stream.
+       *
+       * @param {object} client Client to change.
+       * @param {boolean} enabled New state.
+       * @return {Promise<void>} Completion of the update and refresh.
+       */
       async toggleClient(client, enabled) {
         this.actionError = ''
         try {
@@ -221,6 +233,9 @@
           const response = await apiFetch('./api/clients/unpair-all', jsonRequest())
           const body = await response.json()
           this.unpairAllStatus = body.status === true
+          if (body.status === true) {
+            this.unsavedRevocation = false
+          }
           this.noteActionError(body)
         } catch (e) {
           this.unpairAllStatus = false

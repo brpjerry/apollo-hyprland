@@ -203,6 +203,54 @@ describe('client manager', () => {
   })
 
   // Bugs caught: 0, False positives: 0
+  it('starts the next edit from the permissions a revocation left in force when it could not be saved', async () => {
+    const wrapper = await mountManager()
+    const error = 'The change is in effect but could not be saved, and will be undone on restart'
+    const revoked = jsonResponse({
+      status: true,
+      platform: 'linux',
+      named_certs: [
+        { uuid: 'c1', name: 'Phone', perm: PERM.list, enabled: true, connected: true },
+        { uuid: 'c2', name: 'Tablet', perm: PERM._default, enabled: false, connected: false },
+      ],
+    })
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: false, applied: true, error }))
+    apiFetch.mockResolvedValue(revoked)
+
+    await wrapper.findAll('.client-row')[0].get('.btn-primary').trigger('click')
+    await wrapper.get('form.client-editor').trigger('submit')
+    await flushPromises()
+
+    expect(apiFetch.mock.calls[1][0]).toBe('./api/clients/list')
+    expect(wrapper.text()).toContain(error)
+    expect(wrapper.find('form.client-editor').exists()).toBe(true)
+    await wrapper.get('form.client-editor').find('.btn-secondary').trigger('click')
+    expect(wrapper.vm.clients[0].perm).toBe(PERM.list)
+    wrapper.unmount()
+  })
+
+  // After an unpair that couldn't be saved the list is empty, but the state file still holds the client: Unpair All
+  // is the way to retry the save.
+  // Bugs caught: 0, False positives: 0
+  it('keeps Unpair All available for an empty list while a revocation is unsaved', async () => {
+    const wrapper = await mountManager()
+    const empty = jsonResponse({ status: true, platform: 'linux', named_certs: [] })
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: false, applied: true, error: 'not saved' }))
+    apiFetch.mockResolvedValue(empty)
+
+    await wrapper.findAll('.btn-danger')[0].trigger('click')
+    await flushPromises()
+    const unpairAll = wrapper.findAll('.btn-danger')[0]
+    expect(unpairAll.element.disabled).toBe(false)
+
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: true }))
+    await unpairAll.trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.btn-danger')[0].element.disabled).toBe(true)
+    wrapper.unmount()
+  })
+
+  // Bugs caught: 0, False positives: 0
   it('saves the edited client through /api/clients/update', async () => {
     const wrapper = await mountManager()
     apiFetch.mockResolvedValueOnce(jsonResponse({ status: true }))
@@ -396,7 +444,7 @@ describe('OTP pairing', () => {
   // Bugs caught: 0, False positives: 0
   it('remembers a host entered by hand for the session', () => {
     expect(readSavedHost(sessionStorage)).toBeNull()
-    saveHost(sessionStorage, { hostAddr: '10.0.0.2', hostPort: '50000' })
+    saveHost({ hostAddr: '10.0.0.2', hostPort: '50000' }, sessionStorage)
     expect(readSavedHost(sessionStorage)).toEqual({ hostAddr: '10.0.0.2', hostPort: '50000' })
   })
 
@@ -487,6 +535,44 @@ describe('OTP pairing', () => {
     await flushPromises()
     expect(wrapper.find('#otp-host').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  // Pairing only needs the address on this page; a browser that denies storage must not stop it.
+  // Bugs caught: 0, False positives: 0
+  it('pairs without session storage', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('location', { hostname: 'localhost', port: '47990', hash: '' })
+    vi.stubGlobal('QRCode', vi.fn())
+    const storage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('denied', 'SecurityError')
+      },
+    })
+    try {
+      apiFetch.mockResolvedValueOnce(jsonResponse({ status: true, otp: '4321', ip: '', name: 'My PC' }))
+      const wrapper = mount(OtpPairing, { global: globalOptions })
+      await wrapper.get('#otp-passphrase').setValue('abcd')
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+      expect(wrapper.find('#otp-host').exists()).toBe(true)
+
+      await wrapper.get('#otp-host').setValue('10.0.0.9')
+      await wrapper.vm.saveHost()
+      await flushPromises()
+      expect(wrapper.find('#otp-host').exists()).toBe(false)
+      expect(QRCode).toHaveBeenLastCalledWith(expect.anything(), expect.stringContaining('art://10.0.0.9:47989'))
+
+      vi.runOnlyPendingTimers()
+      await flushPromises()
+      expect(wrapper.vm.expired).toBe(true)
+      wrapper.unmount()
+    } finally {
+      Object.defineProperty(globalThis, 'sessionStorage', storage)
+    }
+    expect(readSavedHost({ getItem: () => { throw new Error('denied') } })).toBeNull()
+    expect(saveHost({ hostAddr: 'h', hostPort: 1 }, { setItem: () => { throw new Error('quota') } })).toBe(false)
   })
 
   // Bugs caught: 0, False positives: 0
