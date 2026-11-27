@@ -45,6 +45,19 @@ namespace platf::kms {
     std::size_t card_index;  ///< Index into this enumeration's card descriptors.
     std::uint32_t plane_id;  ///< ID of the DRM plane that was scanning out this output.
     std::uint32_t crtc_id;  ///< CRTC the plane was attached to during enumeration.
+
+    /**
+     * @brief Whether a name given to this output is a guess rather than its DRM connector name.
+     *
+     * The KMS backend matches compositor output names to DRM connectors by connector type and index, which can give
+     * a connector the name of an unrelated output (an unrecognized type such as APOLLO-00000001 parses as Unknown-1).
+     *
+     * @param reported Name the capture reports for this output.
+     * @return `true` when the name differs from the DRM connector name.
+     */
+    bool name_inferred(std::string_view reported) const {
+      return reported != name;
+    }
   };
 
   /**

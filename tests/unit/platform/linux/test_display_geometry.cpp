@@ -85,6 +85,17 @@ TEST(KmsDisplayEnumerationTest, KeepsPlaneAndDesktopGeometryWithTheSelectedBacke
   EXPECT_EQ(software_display.env_offset_x, -1280);
 }
 
+/**
+ * @brief Only the DRM connector's own name identifies a KMS output; a compositor name matched to it is a guess.
+ */
+// Bugs caught: 0, False positives: 0
+TEST(KmsDisplayEnumerationTest, NamesOtherThanTheConnectorNameAreInferred) {
+  const platf::kms::output_t output {"Unknown-1", 0U, 31U, 51U};
+  EXPECT_FALSE(output.name_inferred("Unknown-1"));
+  EXPECT_TRUE(output.name_inferred("APOLLO-00000001"));
+  EXPECT_TRUE(output.name_inferred(""));
+}
+
 TEST(LinuxDisplayGeometryTest, EmptyAndInvalidMonitorsDoNotCreateAnInputDesktop) {
   platf::desktop_geometry_t desktop;
   EXPECT_EQ(desktop.bounds().width, 0);

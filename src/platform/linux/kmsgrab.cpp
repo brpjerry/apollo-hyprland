@@ -1177,6 +1177,8 @@ namespace platf {
         offset_x = viewport.offset_x;
         offset_y = viewport.offset_y;
         output_name = viewport.output_name;
+        // A compositor name matched to the connector by type and index is a guess; a pinned capture can't rely on it.
+        output_name_inferred = output.name_inferred(output_name);
 
         plane_id = plane->plane_id;
         crtc_id = plane->crtc_id;
@@ -2101,6 +2103,10 @@ namespace platf {
       }
 
       auto type = kms::from_view(name.substr(0, index_begin));
+      if (type == DRM_MODE_CONNECTOR_Unknown && !name.starts_with("Unknown"sv)) {
+        // Not a connector name (a virtual or headless output): don't give its name to an Unknown connector.
+        continue;
+      }
 
       for (auto &card_descriptor : cds) {
         for (auto &[_, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
