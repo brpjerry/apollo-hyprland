@@ -97,7 +97,8 @@ namespace {
      * @return Its exit code, or -1 if it did not start.
      */
     int run(bool elevated, const std::string &cmd, boost::filesystem::path working_dir, const std::map<std::string, std::string> &extra_env = {}) {
-      auto env = boost::this_process::environment();
+      // A copy: assigning to this_process::environment() itself would change this process's environment.
+      boost::process::v1::environment env = boost::this_process::environment();
       for (const auto &[name, value] : extra_env) {
         env[name] = value;
       }
@@ -139,16 +140,46 @@ TEST(LinuxCommandTest, Urls) {
 }
 
 // Bugs caught: 0, False positives: 1
-TEST(LinuxCommandTest, PlainCommandsRunUnchanged) {
+TEST(LinuxCommandTest, PlainCommandsRunAsTheirWords) {
   auto p = plan("steam -gamepadui", {});
   ASSERT_TRUE(p);
   EXPECT_FALSE(p->url);
-  EXPECT_TRUE(p->argv.empty());
+  EXPECT_EQ(p->argv, (strings {"steam", "-gamepadui"}));
+  EXPECT_EQ(plan(R"(sh -c 'date > "$XDG_RUNTIME_DIR/x"')", {})->argv, (strings {"sh", "-c", R"(date > "$XDG_RUNTIME_DIR/x")"}));
 
   EXPECT_FALSE(plan("", {}));
   EXPECT_FALSE(plan("   ", {}));
-  // split_unix() tolerates an unbalanced quote (the rest becomes one word).
-  EXPECT_EQ(plan("echo 'two words", {.elevated = true})->argv.back(), "two words");
+  // As in sh, an unbalanced quote is an error, elevated or not.
+  EXPECT_FALSE(plan("echo 'two words", {}));
+  EXPECT_FALSE(plan("echo 'two words", {.elevated = true}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(LinuxCommandTest, SplitFollowsShellQuoting) {
+  using platf::command::split;
+  EXPECT_EQ(split(" a\tb\n c  "), (strings {"a", "b", "c"}));
+  // Single quotes keep everything, including double quotes, backslashes and $.
+  EXPECT_EQ(split(R"(sh -c 'date > "$HOME/x" \n')"), (strings {"sh", "-c", R"(date > "$HOME/x" \n)"}));
+  EXPECT_EQ(split(R"(echo "it's" 'say "hi"')"), (strings {"echo", "it's", R"(say "hi")"}));
+  // In double quotes a backslash only escapes $, `, ", \ and a newline.
+  EXPECT_EQ(split(R"("a \$b \` \" \\ \n")"), (strings {R"(a $b ` " \ \n)"}));
+  EXPECT_EQ(split("\"a\\\nb\""), (strings {"ab"}));
+  // Outside quotes a backslash keeps the next character, and joins lines before a newline.
+  EXPECT_EQ(split(R"(a\ b \'c \"d \\e)"), (strings {"a b", "'c", "\"d", "\\e"}));
+  EXPECT_EQ(split("a\\\nb c"), (strings {"ab", "c"}));
+  EXPECT_EQ(split("a \\\n b"), (strings {"a", "b"}));
+  EXPECT_EQ(split("a\\"), (strings {"a\\"}));
+  // Adjacent parts form one word; empty quotes give an empty word.
+  EXPECT_EQ(split(R"(--name='A B'"C"D '' "")"), (strings {"--name=A BCD", "", ""}));
+  // Nothing is expanded.
+  EXPECT_EQ(split("echo $HOME $(id) `id` ~ * a|b >c"), (strings {"echo", "$HOME", "$(id)", "`id`", "~", "*", "a|b", ">c"}));
+
+  EXPECT_FALSE(split(""));
+  EXPECT_FALSE(split(" \t\n"));
+  EXPECT_FALSE(split("\\\n"));
+  EXPECT_FALSE(split("echo 'a"));
+  EXPECT_FALSE(split(R"(echo "a)"));
+  EXPECT_FALSE(split(R"(echo "a\")"));
 }
 
 // Bugs caught: 0, False positives: 0
@@ -231,10 +262,26 @@ TEST(LinuxCommandTest, RunCommandElevatesInTheWorkingDirectory) {
   EXPECT_EQ(read_file(out), work.string() + "\n");
   EXPECT_TRUE(read_file(tools.log).starts_with((tools.bin / "pkexec").string() + "\n"));
 
-  // Not elevated: no pkexec, and the string goes to Boost.Process unchanged as before (it splits on double quotes
-  // only, so single quotes would not group words there).
+  // Not elevated: no pkexec.
   fs::remove(tools.log);
   EXPECT_EQ(tools.run(false, "/bin/sh -c \"exit 3\"", work.string()), 3);
+  EXPECT_FALSE(fs::exists(tools.log));
+}
+
+// Bugs caught: 0, False positives: 1
+TEST(LinuxCommandTest, RunCommandSplitsPlainCommandsLikeTheShell) {
+  fake_tools_t tools {"pkexec"};
+  auto out = tools.tmp.path / "out";
+
+  // Boost.Process only knew double quotes, so this ran sh -c "'exit" and failed.
+  EXPECT_EQ(tools.run(false, "/bin/sh -c 'exit 4'", "/"), 4);
+  EXPECT_EQ(tools.run(false, R"(/bin/sh -c 'printf "%s|" "$0" "$1" > "$OUT"' 'a b' "c'd")", "/", {{"OUT", out.string()}}), 0);
+  EXPECT_EQ(read_file(out), "a b|c'd|");
+
+  // A program without a directory is found in the child's PATH, not Apollo's (which holds only the fake tools).
+  EXPECT_EQ(tools.run(false, "sh -c 'exit 5'", "/", {{"PATH", "/usr/bin:/bin"}}), 5);
+  EXPECT_EQ(tools.run(false, "sh -c 'exit 5'", "/"), -1);
+  EXPECT_EQ(tools.run(false, "echo 'unbalanced", "/"), -1);
   EXPECT_FALSE(fs::exists(tools.log));
 }
 

@@ -53,6 +53,9 @@
 
   // _SH constants for _wfsopen()
   #include <share.h>
+#elif !defined(__APPLE__)
+  // How run_command() splits commands into words
+  #include "platform/linux/command.h"
 #endif
 
 namespace proc {
@@ -153,16 +156,23 @@ namespace proc {
   boost::filesystem::path find_working_directory(const std::string &cmd, const boost::process::v1::environment &env) {
     // Parse the raw command string into parts to get the actual command portion
     std::vector<std::string> parts;
+#if defined(_WIN32) || defined(__APPLE__)
     try {
-#ifdef _WIN32
+  #ifdef _WIN32
       parts = boost::program_options::split_winmain(cmd);
-#else
+  #else
       parts = boost::program_options::split_unix(cmd);
-#endif
+  #endif
     } catch (boost::escaped_list_error &err) {
       BOOST_LOG(error) << "Boost failed to parse command ["sv << cmd << "] because " << err.what();
       return boost::filesystem::path();
     }
+#else
+    // The same words platf::run_command() runs.
+    if (auto words = platf::command::split(cmd)) {
+      parts = std::move(*words);
+    }
+#endif
     if (parts.empty()) {
       BOOST_LOG(error) << "Unable to parse command: "sv << cmd;
       return boost::filesystem::path();

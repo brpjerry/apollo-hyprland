@@ -613,6 +613,23 @@ namespace platf {
       return {};
     }
 
+    /**
+     * @brief Find a program in the PATH of the environment it will run with, as find_working_directory() does.
+     *
+     * Boost's default search list reads this process's environment through a std::locale("") on POSIX, which
+     * throws when an LC_* variable names a locale that is not installed.
+     * @param name The program name, without a directory.
+     * @param env The child's environment.
+     * @return The full path, or empty if it was not found.
+     */
+    boost::filesystem::path find_in_path(const std::string &name, const bp::environment &env) {
+      if (auto path_var = env.find("PATH"); path_var != env.end()) {
+        auto entries = path_var->to_vector();
+        return bp::search_path(name, std::vector<boost::filesystem::path> {entries.begin(), entries.end()});
+      }
+      return bp::search_path(name);
+    }
+
     template<class... Command>
     bp::child spawn(boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group, Command &&...command) {
       // clang-format off
@@ -640,7 +657,7 @@ namespace platf {
    * @details On Linux, `interactive` is not used: every caller passes true (on Windows it gives console programs a
    *          console window and does nothing for GUI programs), and wrapping every app in a terminal would be wrong.
    *          A terminal is opened for elevated commands when `elevation_method = terminal`, so sudo can ask for the
-   *          password on the streamed display. See command.h for URLs and elevation.
+   *          password on the streamed display. See command.h for how commands are split into words, URLs and elevation.
    */
   bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {
     command::options_t options {
@@ -671,14 +688,14 @@ namespace platf {
       ec = std::make_error_code(std::errc::invalid_argument);
       return bp::child();
     }
-    if (plan->argv.empty()) {
-      return spawn(working_dir, env, file, ec, group, cmd);
+    if (plan->url || elevated) {
+      BOOST_LOG(info) << (plan->url ? "Opening URL: "sv : "Running elevated: "sv) << command::to_string(plan->argv);
+    } else {
+      BOOST_LOG(debug) << "Running: "sv << command::to_string(plan->argv);
     }
-
-    BOOST_LOG(info) << (plan->url ? "Opening URL: "sv : "Running elevated: "sv) << command::to_string(plan->argv);
     boost::filesystem::path exe = plan->argv.front();
     if (!exe.has_parent_path()) {
-      exe = bp::search_path(plan->argv.front());
+      exe = find_in_path(plan->argv.front(), env);
       if (exe.empty()) {
         BOOST_LOG(error) << "Couldn't find ["sv << plan->argv.front() << "] in PATH to run ["sv << cmd << ']';
         ec = std::make_error_code(std::errc::no_such_file_or_directory);
