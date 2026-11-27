@@ -264,17 +264,17 @@ namespace nvhttp {
   }
 
   /**
-   * @brief Whether the last save of the client state failed, so the state file may lack changes still in effect.
+   * @brief UUIDs of the clients unpaired since the last successful save, which the state file still holds.
    *
    * Guarded by `client_auth_mutex()`.
    */
-  bool client_state_unsaved = false;
+  std::unordered_set<std::string> pending_unpairs;
 
   /**
    * @brief Write the current state to its backing store.
    *
    * @return `true` when the state file now holds the in-memory state.
-   * @note The caller must hold `client_auth_mutex()`. Doesn't throw.
+   * @note The caller must hold `client_auth_mutex()`. A file system error is a failed save, not an exception.
    */
   bool write_state() {
     nlohmann::json root = nlohmann::json::object();
@@ -380,12 +380,11 @@ namespace nvhttp {
    * @note The caller must hold `client_auth_mutex()`.
    */
   bool save_state() {
-    if (config::sunshine.flags[config::flag::FRESH_STATE]) {
-      return true;
+    if (!config::sunshine.flags[config::flag::FRESH_STATE] && !write_state()) {
+      return false;
     }
-    const bool saved = write_state();
-    client_state_unsaved = !saved;
-    return saved;
+    pending_unpairs.clear();
+    return true;
   }
 
   /**
@@ -1679,11 +1678,14 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
-  nlohmann::json get_all_clients() {
+  nlohmann::json get_all_clients(bool *unpair_pending) {
     nlohmann::json named_cert_nodes = nlohmann::json::array();
     std::list<std::string> connected_uuids = rtsp_stream::get_all_session_uuids();
 
     std::lock_guard lock {client_auth_mutex()};
+    if (unpair_pending) {
+      *unpair_pending = !pending_unpairs.empty();
+    }
     for (const auto &named_cert : client_root.named_devices) {
       nlohmann::json named_cert_node;
       named_cert_node["name"] = named_cert->name;
@@ -2440,6 +2442,9 @@ namespace nvhttp {
 
   client_change_t erase_all_clients() {
     std::lock_guard lock {client_auth_mutex()};
+    for (const auto &client : client_root.named_devices) {
+      pending_unpairs.insert(client->uuid);
+    }
     client_root = {};
     rebuild_client_cert_chain();
     // A revocation stays in effect even when it can't be saved: an admin must be able to cut clients off.
@@ -2552,7 +2557,22 @@ namespace nvhttp {
 
   client_change_t combine_client_changes(const client_change_t &settings, const bool enabled, const client_change_t &enable) {
     const bool settings_saved = settings.saved || (settings.applied && enable.applied && enable.saved);
-    return {.applied = (settings.applied || !enabled) && enable.applied, .saved = settings_saved && enable.saved};
+    if (settings.applied == enable.applied) {
+      return {.applied = settings.applied, .saved = settings_saved && enable.saved};
+    }
+    // One step took effect and the other didn't (a grant undone beside a disable, or an enable undone beside a
+    // removal): neither "made" nor "not made" describes the request, so say what happened to each.
+    const auto outcome = [](const bool applied, const bool saved) {
+      if (!applied) {
+        return saved ? "was not made" : "could not be saved, so it was not made";
+      }
+      return saved ? "was made and saved" : "is in effect but could not be saved, and will be undone on restart";
+    };
+    return {
+      .applied = true,
+      .saved = settings.applied ? settings_saved : enable.saved,
+      .partly = std::format("The settings change {}. {} the client {}.", outcome(settings.applied, settings_saved), enabled ? "Enabling" : "Disabling", outcome(enable.applied, enable.saved)),
+    };
   }
 
   client_change_t unpair_client(const std::string_view uuid) {
@@ -2575,7 +2595,10 @@ namespace nvhttp {
       // A revocation stays in effect even when it can't be saved (the caller reports that it will be undone on
       // restart): an admin must be able to cut a client off. Retrying the unpair of a client that is already gone
       // retries that save.
-      retried = removed_certs.empty() && client_state_unsaved;
+      if (!removed_certs.empty()) {
+        pending_unpairs.emplace(uuid);
+      }
+      retried = removed_certs.empty() && pending_unpairs.contains(std::string {uuid});
       if (!removed_certs.empty() || retried) {
         saved = save_state();
       }
@@ -2676,7 +2699,7 @@ namespace nvhttp {
       std::lock_guard lock {client_auth_mutex()};
       client_root = {};
       cert_chain.clear();
-      client_state_unsaved = false;
+      pending_unpairs.clear();
     }
 
     std::string add_client(const std::string &name, std::string cert, bool enabled) {

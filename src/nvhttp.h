@@ -114,12 +114,13 @@ namespace nvhttp {
   struct client_change_t {
     bool applied = false;  ///< The change is in effect (false also when the client wasn't found).
     bool saved = true;  ///< The state file holds the change (true when nothing needed saving).
+    std::string partly;  ///< For a request of several steps of which only some took effect: what happened to each.
 
     /**
-     * @brief Whether the change is in effect and saved.
+     * @brief Whether the whole change is in effect and saved.
      */
     explicit operator bool() const {
-      return applied && saved;
+      return applied && saved && partly.empty();
     }
   };
 
@@ -132,8 +133,8 @@ namespace nvhttp {
    * @param settings Outcome of the settings edit.
    * @param enabled Whether the request enabled the client (false: disabled it).
    * @param enable Outcome of enabling or disabling.
-   * @return The request's outcome: in effect when the enable step is (a disable is in effect even when a grant beside
-   * it was undone), saved when the state file holds both steps.
+   * @return The request's outcome: in effect and saved when both steps are. When only one step took effect, `applied`
+   * is true, `saved` says whether that step is saved, and `partly` describes both steps.
    */
   client_change_t combine_client_changes(const client_change_t &settings, bool enabled, const client_change_t &enable);
 
@@ -471,8 +472,8 @@ namespace nvhttp {
    * @examples_end
    *
    * @return Whether the client was found and removed (`applied`; its streams are stopped) and the change saved.
-   * A revocation stays in effect when it can't be saved. When an earlier save failed, unpairing a client that is no
-   * longer paired retries the save and reports it (`applied` true).
+   * A revocation stays in effect when it can't be saved. Unpairing a client again while its removal is still unsaved
+   * retries the save and reports it (`applied` true).
    */
   client_change_t unpair_client(std::string_view uuid);
 
@@ -495,12 +496,14 @@ namespace nvhttp {
 
   /**
    * @brief Get all paired clients.
+   * @param unpair_pending When given, receives whether a client was unpaired since the last successful save of the
+   * client state (it would be paired again after a restart).
    * @return The list of all paired clients.
    * @examples
    * nlohmann::json clients = nvhttp::get_all_clients();
    * @examples_end
    */
-  nlohmann::json get_all_clients();
+  nlohmann::json get_all_clients(bool *unpair_pending = nullptr);
 
   /**
    * @brief Remove all paired clients.

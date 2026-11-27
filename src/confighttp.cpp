@@ -644,6 +644,11 @@ namespace confighttp {
    */
   void report_client_change(nlohmann::json &output_tree, const nvhttp::client_change_t &change) {
     output_tree["status"] = static_cast<bool>(change);
+    if (!change.partly.empty()) {
+      output_tree["applied"] = change.applied;
+      output_tree["error"] = change.partly;
+      return;
+    }
     if (change.saved) {
       return;
     }
@@ -1780,10 +1785,13 @@ namespace confighttp {
 
     print_req(request);
 
-    const nlohmann::json named_certs = nvhttp::get_all_clients();
+    bool unpair_pending = false;
+    const nlohmann::json named_certs = nvhttp::get_all_clients(&unpair_pending);
 
     nlohmann::json output_tree;
     output_tree["named_certs"] = named_certs;
+    // A client unpaired while the state file couldn't be saved comes back on restart: the Web UI offers a retry.
+    output_tree["unpair_pending"] = unpair_pending;
     output_tree["platform"] = SUNSHINE_PLATFORM;
     output_tree["status"] = true;
     send_response(response, output_tree);

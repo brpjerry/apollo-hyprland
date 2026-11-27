@@ -596,12 +596,19 @@ TEST_F(UnsavableClientStateTest, RemovingClientCommandsStaysInEffect) {
 
 // Bugs caught: 0, False positives: 0
 TEST_F(UnsavableClientStateTest, RetryingAnUnpairRetriesItsSave) {
+  bool pending = true;
+  nvhttp::get_all_clients(&pending);
+  EXPECT_FALSE(pending);
   ASSERT_TRUE(nvhttp::unpair_client(uuid).applied);  // in effect, not saved
+  // The client list says so, for a Web UI page loaded after the unpair.
+  nvhttp::get_all_clients(&pending);
+  EXPECT_TRUE(pending);
 
-  // Still unsavable: the retry reports it.
+  // Still unsavable: the retry reports it. A client that was never paired is not a retry.
   const auto still_unsaved = nvhttp::unpair_client(uuid);
   EXPECT_TRUE(still_unsaved.applied);
   EXPECT_FALSE(still_unsaved.saved);
+  EXPECT_FALSE(nvhttp::unpair_client("00000000-0000-4000-8000-000000000000").applied);
   expect_state_file_untouched();
 
   {
@@ -616,6 +623,27 @@ TEST_F(UnsavableClientStateTest, RetryingAnUnpairRetriesItsSave) {
 
   // With everything saved, an unknown client is just not found.
   EXPECT_FALSE(nvhttp::unpair_client(uuid).applied);
+  nvhttp::get_all_clients(&pending);
+  EXPECT_FALSE(pending);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(UnsavableClientStateTest, OnlyUnsavedRemovalsArePendingUnpairs) {
+  // A grant that couldn't be saved was undone: nothing is pending, and an unknown client is just not found.
+  EXPECT_FALSE(nvhttp::update_device_info(uuid, "kept", "", {}, {}, crypto::PERM::_all, true, true, false).applied);
+  bool pending = true;
+  nvhttp::get_all_clients(&pending);
+  EXPECT_FALSE(pending);
+  EXPECT_FALSE(nvhttp::unpair_client("00000000-0000-4000-8000-000000000000").applied);
+
+  // Unpairing everyone leaves each of them pending.
+  EXPECT_FALSE(nvhttp::erase_all_clients().saved);
+  nvhttp::get_all_clients(&pending);
+  EXPECT_TRUE(pending);
+  const auto retried = nvhttp::unpair_client(first_uuid);
+  EXPECT_TRUE(retried.applied);
+  EXPECT_FALSE(retried.saved);
+  expect_state_file_untouched();
 }
 
 // Bugs caught: 0, False positives: 0
@@ -683,12 +711,22 @@ TEST(ClientChangeTest, ASuccessfulSecondSaveHoldsARevocationThatStayedInEffect) 
   // The revocation's first save failed, the disable's save wrote the whole state: both are saved.
   EXPECT_TRUE(nvhttp::combine_client_changes(kept_unsaved, false, saved));
   EXPECT_TRUE(nvhttp::combine_client_changes(kept_unsaved, true, saved));
-  // A grant that was undone stays reported as not made, even beside a disable that took effect and was saved.
+  // A grant that was undone beside a disable that took effect and was saved: the response says what happened to each.
   const auto disable_beside_undone = nvhttp::combine_client_changes(undone, false, saved);
+  EXPECT_FALSE(disable_beside_undone);
   EXPECT_TRUE(disable_beside_undone.applied);
-  EXPECT_FALSE(disable_beside_undone.saved);
-  // Enabling after an undone grant isn't attempted by the API; if it were, nothing is in effect.
-  EXPECT_FALSE(nvhttp::combine_client_changes(undone, true, saved).applied);
+  EXPECT_TRUE(disable_beside_undone.saved);
+  EXPECT_EQ(disable_beside_undone.partly, "The settings change could not be saved, so it was not made. Disabling the client was made and saved.");
+  // A command removal that stayed in effect beside an enable that was undone.
+  const auto removal_beside_undone_enable = nvhttp::combine_client_changes(kept_unsaved, true, undone);
+  EXPECT_FALSE(removal_beside_undone_enable);
+  EXPECT_TRUE(removal_beside_undone_enable.applied);
+  EXPECT_FALSE(removal_beside_undone_enable.saved);
+  EXPECT_EQ(
+    removal_beside_undone_enable.partly,
+    "The settings change is in effect but could not be saved, and will be undone on restart. Enabling the client could not be saved, so it was not made."
+  );
+  EXPECT_TRUE(nvhttp::combine_client_changes(saved, true, saved).partly.empty());
   // Both saves failing is a failure to save.
   const auto both_unsaved = nvhttp::combine_client_changes(kept_unsaved, false, kept_unsaved);
   EXPECT_TRUE(both_unsaved.applied);
