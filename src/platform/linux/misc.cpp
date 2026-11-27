@@ -1411,6 +1411,10 @@ namespace platf {
 
   std::unique_ptr<nvenc_encode_device_t> display_t::make_nvenc_encode_device(pix_fmt_e pix_fmt) {
 #ifdef SUNSHINE_BUILD_CUDA
+    // Forced video header replacement (-2) rewrites the packets of FFmpeg's encoders only; leave NVENC to them.
+    if (config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE]) {
+      return nullptr;
+    }
     // The native encoder reads the frames the display's CUDA converter writes, so every capture backend that
     // feeds FFmpeg's nvenc encoders feeds it as well.
     auto converter = make_avcodec_encode_device(pix_fmt);

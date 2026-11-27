@@ -24,6 +24,7 @@
   // local includes
   #include "src/config.h"
   #include "src/logging.h"
+  #include "src/platform/common.h"
   #include "src/platform/linux/misc.h"
   #include "src/utility.h"
 
@@ -237,5 +238,51 @@ TEST(GatewayRouteTest, OnlyTheDefaultRouteCounts) {
   EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), datagram.size(), local_ip), platf::route_scan_e::found);
   EXPECT_EQ(local_ip, "192.168.1.50");
 }
+
+  #ifdef SUNSHINE_BUILD_CUDA
+namespace {
+  /**
+   * @brief Display that counts the converters native NVENC asks it for.
+   */
+  struct converter_counting_display_t: platf::display_t {
+    platf::capture_e capture(const push_captured_image_cb_t &, const pull_free_image_cb_t &, bool *) override {
+      return platf::capture_e::capture_error;
+    }
+
+    std::shared_ptr<platf::img_t> alloc_img() override {
+      return nullptr;
+    }
+
+    int dummy_img(platf::img_t *) override {
+      return 0;
+    }
+
+    std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(platf::pix_fmt_e) override {
+      ++converters;
+      return nullptr;
+    }
+
+    int converters = 0;  ///< Converters requested.
+  };
+}  // namespace
+
+// Bugs caught: 0, False positives: 0
+TEST(LinuxNativeNvencTest, ForcedHeaderReplacementLeavesNvencToFfmpeg) {
+  auto &flags = config::sunshine.flags;
+  const auto saved = flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
+  converter_counting_display_t display;
+
+  flags[config::flag::FORCE_VIDEO_HEADER_REPLACE] = false;
+  EXPECT_FALSE(display.make_nvenc_encode_device(platf::pix_fmt_e::nv12));
+  EXPECT_EQ(display.converters, 1) << "native NVENC asks the display for its CUDA converter";
+
+  // Only FFmpeg's sessions rewrite packet headers, so the native device must not be offered.
+  flags[config::flag::FORCE_VIDEO_HEADER_REPLACE] = true;
+  EXPECT_FALSE(display.make_nvenc_encode_device(platf::pix_fmt_e::nv12));
+  EXPECT_EQ(display.converters, 1);
+
+  flags[config::flag::FORCE_VIDEO_HEADER_REPLACE] = saved;
+}
+  #endif
 
 #endif  // __linux__
