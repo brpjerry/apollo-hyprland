@@ -688,7 +688,8 @@ TEST_F(PairingHttpHandlerTest, ConsolePinPromptsShareOneMutexAcrossServers) {
   auto response = request_task.get_future();
   std::jthread request_thread {std::move(request_task)};
 
-  ASSERT_FALSE(wait_for_pending_pairing().empty());
+  // Not fatal: returning early would join the request thread while it waits for the lock held here.
+  EXPECT_FALSE(wait_for_pending_pairing().empty());
   EXPECT_EQ(response.wait_for(std::chrono::milliseconds {200}), std::future_status::timeout);
   console.unlock();
   EXPECT_NE(response.get().find("status_code=\"200\""), std::string::npos);
