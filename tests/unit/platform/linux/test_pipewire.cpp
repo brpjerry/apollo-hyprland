@@ -10,6 +10,7 @@
   #include <array>
   #include <cerrno>
   #include <chrono>
+  #include <cstdio>
   #include <cstdlib>
   #include <filesystem>
   #include <fstream>
@@ -22,6 +23,7 @@
 
   // lib includes
   #include <fcntl.h>
+  #include <sys/prctl.h>
   #include <sys/socket.h>
   #include <sys/stat.h>
   #include <unistd.h>
@@ -144,13 +146,34 @@ namespace {
   };
 
   /**
+   * @brief Capture the stacks of all threads of this process, to diagnose a hung teardown (HYP-42).
+   *
+   * @return eu-stack's output, or a note that it could not run.
+   */
+  std::string thread_stacks() {
+    // Yama's ptrace_scope 1 only lets a process trace its descendants; allow eu-stack, our child, to trace us.
+    prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+    const auto command = "eu-stack -s -p " + std::to_string(getpid()) + " 2>&1";
+    std::string output;
+    if (auto *pipe = popen(command.c_str(), "r")) {  // NOSONAR(cpp:S4721): fixed command, diagnostics only
+      std::array<char, 4096> chunk {};
+      while (const auto n = fread(chunk.data(), 1, chunk.size(), pipe)) {
+        output.append(chunk.data(), n);
+      }
+      pclose(pipe);
+    }
+    prctl(PR_SET_PTRACER, 0, 0, 0, 0);
+    return output.empty() ? std::string {"(eu-stack produced no output)"} : output;
+  }
+
+  /**
    * @brief Destroy a display on another thread and wait for the teardown a limited time.
    *
    * A teardown that deadlocks then fails the test instead of hanging the test run.
    *
    * @param display Display to destroy. It is empty afterwards.
    * @param limit How long to wait.
-   * @return True when the teardown finished in time.
+   * @return True when the teardown finished in time. On a timeout, the stacks of all threads are added to the test failure.
    */
   bool reset_within(std::shared_ptr<test_display_t> &display, std::chrono::milliseconds limit) {
     auto finished = std::make_shared<std::promise<void>>();
@@ -160,7 +183,11 @@ namespace {
       finished->set_value();
     }};
     teardown.detach();  // NOSONAR(cpp:S5962): a hung teardown must fail the test, not hang the test run
-    return done.wait_for(limit) == std::future_status::ready;
+    if (done.wait_for(limit) == std::future_status::ready) {
+      return true;
+    }
+    ADD_FAILURE() << "display teardown hung; thread stacks:\n" << thread_stacks();
+    return false;
   }
 
   /**
