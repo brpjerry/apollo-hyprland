@@ -93,7 +93,12 @@ optdepends=(
   'polkit: run commands marked "Elevated" as root (pkexec)'
   'xdg-utils: open commands that are URLs (xdg-open)'
   'xdg-terminal-exec: elevation_method = terminal'
+  'firewalld: the apollo service opens the streaming ports'
+  'ufw: the Apollo application profile opens the streaming ports'
 )
+
+# The ufw profile lives in /etc; keep a user's port edits across upgrades.
+backup=('etc/ufw/applications.d/apollo')
 
 # Upstream Apollo and Sunshine install the same /usr/bin/sunshine.
 conflicts=('apollo' 'sunshine')

@@ -45,6 +45,14 @@ else()
         install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunshine.conf"
                 DESTINATION "${SYSTEMD_MODULES_LOAD_DIR}")
     endif()
+
+    # Apollo: firewall definitions for the default ports, inert until the user enables them
+    # (firewall-cmd --add-service=apollo, ufw allow Apollo).
+    install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/firewall/apollo.xml"
+            DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/firewalld/services")
+    install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/firewall/apollo.ufw"
+            DESTINATION "${CMAKE_INSTALL_FULL_SYSCONFDIR}/ufw/applications.d"
+            RENAME "apollo")
 endif()
 
 # Elevated commands (HYP-23): the helper Apollo runs through pkexec or sudo, and the polkit action naming it.

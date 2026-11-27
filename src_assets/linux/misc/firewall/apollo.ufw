@@ -1,0 +1,7 @@
+# Apollo (Sunshine fork) game streaming host, at the default base port 47989.
+# With a different `port` in sunshine.conf, shift every port by the same amount.
+# Enable with: ufw allow Apollo   (and `ufw allow mDNS` or 5353/udp for discovery)
+[Apollo]
+title=Apollo game streaming host
+description=GameStream pairing, web UI, RTSP and the video, control and audio streams for Moonlight and Artemis clients.
+ports=47984,47989,47990,48010/tcp|47998:48000,48002,48010/udp
