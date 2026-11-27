@@ -26,6 +26,7 @@ extern "C" {
 #include "src/platform/common.h"
 #include "src/utility.h"
 #include "src/video.h"
+#include "vaapi.h"
 
 using namespace std::literals;
 
@@ -739,15 +740,28 @@ namespace va {
       return false;
     }
 
-    if (!query(display.get(), VAProfileH264Main)) {
+    const auto can_encode = [&display](int profile) {
+      return query(display.get(), static_cast<VAProfile>(profile));
+    };
+    return can_encode_configured_codecs(can_encode, video::active_hevc_mode, video::active_av1_mode);
+  }
+
+  bool can_encode_configured_codecs(const std::function<bool(int va_profile)> &can_encode, int hevc_mode, int av1_mode) {
+    if (!can_encode(VAProfileH264Main)) {
       return false;
     }
 
-    if (video::active_hevc_mode > 1 && !query(display.get(), VAProfileHEVCMain)) {
+    if (hevc_mode > 1 && !can_encode(VAProfileHEVCMain)) {
       return false;
     }
 
-    if (video::active_hevc_mode > 2 && !query(display.get(), VAProfileHEVCMain10)) {
+    if (hevc_mode > 2 && !can_encode(VAProfileHEVCMain10)) {
+      return false;
+    }
+
+    // Without this a device without AV1 encoding would be picked when the user requires AV1.
+    if (av1_mode > 1 && !can_encode(VAProfileAV1Profile0)) {
+      BOOST_LOG(debug) << "VAAPI device can't encode AV1"sv;
       return false;
     }
 
