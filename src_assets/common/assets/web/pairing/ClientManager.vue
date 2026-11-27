@@ -27,6 +27,10 @@
       <div class="alert alert-danger mt-3" v-if="saveError">
         {{ $t('pin.save_client_error') }} {{ saveError }}
       </div>
+      <!-- The server's reason when a change could not be saved, e.g. a revocation that is in effect but not persisted. -->
+      <div class="alert alert-danger mt-3" v-if="actionError">
+        {{ actionError }}
+      </div>
     </div>
     <ul class="list-group list-group-flush" v-if="clients.length > 0">
       <li v-for="client in clients" :key="client.uuid" class="list-group-item">
@@ -85,6 +89,7 @@
         permissionWiki: apolloWikiPage('Permission-System'),
         platform: '',
         saveError: '',
+        actionError: '',
         saving: false,
         showUnpairMessage: false,
         unpairAllPressed: false,
@@ -164,9 +169,23 @@
        * @param {boolean} enabled New state.
        * @return {Promise<void>} Completion of the update and refresh.
        */
+      /**
+       * @brief Show the server's error for a client change that could not be saved.
+       *
+       * A revocation that could not be saved stays in effect until restart (`applied: true`); a grant is not made.
+       *
+       * @param {object} body Response body of a client change.
+       */
+      noteActionError(body) {
+        if (body && body.status !== true && body.error) {
+          this.actionError = body.error
+        }
+      },
       async toggleClient(client, enabled) {
+        this.actionError = ''
         try {
-          await apiFetch('./api/clients/update', jsonRequest({ uuid: client.uuid, enabled }))
+          const response = await apiFetch('./api/clients/update', jsonRequest({ uuid: client.uuid, enabled }))
+          this.noteActionError(await response.json())
         } catch (e) {
           console.error('Failed to change the client state', e)
         }
@@ -184,10 +203,12 @@
         this.disconnectTimer = setTimeout(() => this.refreshClients(), 1000)
       },
       async unpairSingle(client) {
+        this.actionError = ''
         try {
           const response = await apiFetch('./api/clients/unpair', jsonRequest({ uuid: client.uuid }))
           const body = await response.json()
           this.showUnpairMessage = body.status === true
+          this.noteActionError(body)
         } catch (e) {
           console.error('Failed to unpair the client', e)
         }
@@ -196,8 +217,11 @@
       async unpairAll() {
         this.unpairAllPressed = true
         try {
+          this.actionError = ''
           const response = await apiFetch('./api/clients/unpair-all', jsonRequest())
-          this.unpairAllStatus = (await response.json()).status === true
+          const body = await response.json()
+          this.unpairAllStatus = body.status === true
+          this.noteActionError(body)
         } catch (e) {
           this.unpairAllStatus = false
         } finally {

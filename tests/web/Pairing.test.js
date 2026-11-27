@@ -189,6 +189,20 @@ describe('client manager', () => {
   })
 
   // Bugs caught: 0, False positives: 0
+  it('shows the server error when a revocation is in effect but could not be saved', async () => {
+    const wrapper = await mountManager()
+    const error = 'The change is in effect but could not be saved, and will be undone on restart'
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: false, applied: true, error }))
+
+    await wrapper.findAll('.btn-danger')[0].trigger('click')
+    await flushPromises()
+
+    expect(apiFetch.mock.calls[0][0]).toBe('./api/clients/unpair-all')
+    expect(wrapper.text()).toContain(error)
+    wrapper.unmount()
+  })
+
+  // Bugs caught: 0, False positives: 0
   it('saves the edited client through /api/clients/update', async () => {
     const wrapper = await mountManager()
     apiFetch.mockResolvedValueOnce(jsonResponse({ status: true }))
