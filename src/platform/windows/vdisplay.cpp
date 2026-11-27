@@ -63,7 +63,7 @@ namespace platf::vdisplay {
     return driver_status;
   }
 
-  void cleanup_stale() {
+  void cleanup_stale(bool) {
     // SudoVDA removes displays whose watchdog expires, so nothing survives a crash.
   }
 

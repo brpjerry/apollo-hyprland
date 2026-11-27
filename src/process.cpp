@@ -1952,6 +1952,8 @@ namespace proc {
 
     // Only skip parsing when we have a known-good timestamp and the file hasn't changed
     if (!needs_terminate && last_apps_file_update && !ec && current_time == *last_apps_file_update) {
+      // A session's virtual display that could not be removed at its end still goes once the backend answers.
+      platf::vdisplay::cleanup_stale(true);
       return;
     }
 

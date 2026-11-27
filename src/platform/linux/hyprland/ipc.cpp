@@ -220,13 +220,14 @@ namespace hyprland {
      * @brief Whether an instance directory belongs to a running compositor, answering or not.
      *
      * Hyprland removes `.socket.sock` and `hyprland.lock` when it exits; a crash leaves the socket file but the
-     * PID on line 1 of the lock file is then dead, or reused by another program (`/proc/PID/comm` tells which).
-     * If the name cannot be read the instance counts as running, so an ambiguous case refuses to fall back to
-     * capturing the desktop; the warning names the lock file and PID to check.
+     * PID on line 1 of the lock file is then dead, or reused by another program. Nothing listens on a crashed
+     * instance's socket, so a connection that is refused tells a reused PID apart; a socket that still accepts
+     * connections counts, even if its compositor does not answer requests (or runs under another name).
      */
     bool instance_dir_running(const std::filesystem::path &instance_dir) {
       std::error_code ec;
-      if (!std::filesystem::is_socket(instance_dir / ".socket.sock", ec)) {
+      const auto socket_path = instance_dir / ".socket.sock";
+      if (!std::filesystem::is_socket(socket_path, ec)) {
         return false;
       }
       std::ifstream in {instance_dir / "hyprland.lock"};
@@ -243,22 +244,15 @@ namespace hyprland {
         return false;
       }
       const auto lock = (instance_dir / "hyprland.lock").string();
-      std::string comm;
-      if (std::ifstream comm_in {"/proc/"s + std::to_string(pid) + "/comm"}; comm_in && std::getline(comm_in, comm)) {
-        // `Hyprland`, or `hyprland` when started through that name.
-        auto name = comm;
-        std::ranges::transform(name, name.begin(), [](unsigned char c) {
-          return static_cast<char>(std::tolower(c));
-        });
-        if (name != "hyprland"sv) {
-          BOOST_LOG(debug) << "Hyprland: "sv << lock << " names PID "sv << pid << ", now "sv << comm << "; a stale instance"sv;
-          return false;
-        }
-        BOOST_LOG(warning) << "Hyprland: "sv << lock << " names running Hyprland PID "sv << pid;
-      } else {
-        BOOST_LOG(warning) << "Hyprland: "sv << lock << " names live PID "sv << pid << ", which may be Hyprland. After a compositor crash, "sv
-                           << "check which program has that PID before removing a stale instance directory."sv;
+      errno = 0;
+      if (fd_t probe {connect_unix(socket_path, probe_timeout)}; probe.get() < 0 && (errno == ECONNREFUSED || errno == ENOENT)) {
+        BOOST_LOG(debug) << "Hyprland: "sv << lock << " names live PID "sv << pid << ", but nothing listens on "sv << socket_path.string()
+                         << "; a crashed instance"sv;
+        return false;
       }
+      BOOST_LOG(warning) << "Hyprland: "sv << lock << " names live PID "sv << pid << " and "sv << socket_path.string()
+                         << " accepts connections: counting it as a running Hyprland. If it crashed, check which program has "sv
+                         << "that PID before removing the instance directory."sv;
       return true;
     }
 

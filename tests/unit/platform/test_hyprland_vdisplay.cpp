@@ -380,9 +380,29 @@ namespace {
     pid_t pid_ = -1;
   };
 
-  void write_owner(const fs::path &dir, const std::string &name, int pid) {
+  /// Write an owner file: the PID, and the owner's start time if given (older files have the PID alone).
+  void write_owner(const fs::path &dir, const std::string &name, int pid, std::optional<std::uint64_t> start_time = std::nullopt) {
     fs::create_directories(dir);
-    std::ofstream {dir / name} << pid << '\n';
+    std::ofstream out {dir / name};
+    out << pid;
+    if (start_time) {
+      out << ' ' << *start_time;
+    }
+    out << '\n';
+  }
+
+  /// The start time a process's owner file records.
+  std::uint64_t start_time_of(int pid) {
+    auto stat = hyprland::read_proc_stat(pid);
+    return stat ? stat->start_time : 0;
+  }
+
+  /// The PID in an owner file, or 0.
+  int owner_pid(const fs::path &file) {
+    std::ifstream in {file};
+    int pid = 0;
+    in >> pid;
+    return pid;
   }
 
   template<class F>
@@ -580,10 +600,10 @@ TEST(HyprlandVdisplayTest, SilentSocketOfANamedInstanceIsAFailureNotAbsence) {
 
 // Bugs caught: 0, False positives: 0
 TEST(HyprlandVdisplayTest, SilentSocketFoundByDiscoveryIsAFailureNotAbsence) {
+  // The lock file's process is not called Hyprland (it may run under another name): the socket still accepting
+  // connections is what counts.
   hyprland_fakes::temp_dir_t runtime;
-  child_process_t hyprland {"Hyprland"};
-  ASSERT_GT(hyprland.pid(), 0);
-  const int fd = make_silent_instance(runtime.path(), hyprland.pid());
+  const int fd = make_silent_instance(runtime.path(), getpid());
   const auto status = init_with_silent_connect(runtime.path(), nullptr);
   ::close(fd);
   EXPECT_EQ(status, status_e::failed);
@@ -614,12 +634,12 @@ TEST(HyprlandVdisplayTest, CrashedInstanceIsAbsence) {
 
 // Bugs caught: 0, False positives: 0
 TEST(HyprlandVdisplayTest, CrashedInstanceWhosePidWasReusedIsAbsence) {
-  // After a crash the kernel can give the lock file's PID to another program (here, this test).
+  // After a crash the kernel can give the lock file's PID to another program (here, this test), and nothing listens
+  // on the socket file left behind.
   hyprland_fakes::temp_dir_t runtime;
-  const int fd = make_silent_instance(runtime.path(), getpid());
+  ::close(make_silent_instance(runtime.path(), getpid()));
   const auto named = init_with_silent_connect(runtime.path(), silent_signature);
   const auto discovered = init_with_silent_connect(runtime.path(), nullptr);
-  ::close(fd);
   EXPECT_EQ(named, status_e::unavailable);
   EXPECT_EQ(discovered, status_e::unavailable);
 }
@@ -862,6 +882,90 @@ TEST(HyprlandVdisplayTest, OutputOfAnEndedSessionGoesAtTheNextCleanup) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, PendingOnlyCleanupRetriesEndedSessionsAndNothingElse) {
+  // An app list served from cache runs only this: nothing is sent to Hyprland unless a removal is pending.
+  fake_hyprland_t hypr {{{"DP-1", 2560, 1440, 60.0}, {"APOLLO-deadbeef", 1920, 1080, 60.0, 2560}}};
+  hyprland::vdisplay_t vd {hypr.options()};
+  hypr.monitors_fail = true;  // init() cannot clean up the orphan yet
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.monitors_fail = false;
+  hypr.wait_for_listener();
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+
+  const auto monitor_queries = hypr.count_requests("j/monitors");
+  vd.cleanup_stale(true);
+  EXPECT_EQ(hypr.count_requests("j/monitors"), monitor_queries);
+  EXPECT_TRUE(hypr.monitor("APOLLO-deadbeef"));
+
+  hypr.fail_removes = 1;
+  EXPECT_FALSE(vd.remove(client_identity()));
+  vd.cleanup_stale(true);
+  EXPECT_FALSE(hypr.monitor(client_output));
+  EXPECT_TRUE(vd.owned_outputs().empty());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, CleanupFinishesAnEndedSessionLikeRemove) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {2560, 1600, 120000}), client_output);
+  // The user changed the scale during the stream; at its end Hyprland could not list the monitors.
+  hypr.update_monitor(client_output, [](fake_monitor_t &m) {
+    m.scale = 2.0;
+  });
+  hypr.monitors_fail = true;
+  EXPECT_FALSE(vd.remove(client_identity()));
+  hypr.monitors_fail = false;
+
+  vd.cleanup_stale();
+  EXPECT_FALSE(hypr.monitor(client_output));
+  // Removed once (not again as an orphan of the same monitor list), and what the user changed is remembered.
+  EXPECT_EQ(hypr.count_requests("/output remove"), 1u);
+  ASSERT_TRUE(fs::exists(hypr.settings_file()));
+  std::ifstream in {hypr.settings_file()};
+  EXPECT_EQ(nlohmann::json::parse(in)["displays"][client_output]["scale"], 2.0);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, ReplacingALeftoverClaimsItFirst) {
+  // Another instance must see the name claimed while this one removes the leftover, or it could replace the
+  // leftover too and have its new output removed here.
+  fake_hyprland_t hypr {{{"DP-1", 2560, 1440, 60.0}, {client_output, 1920, 1080, 60.0, 2560, 0}}};
+  hyprland::vdisplay_t vd {hypr.options()};
+  hypr.monitors_fail = true;  // init() leaves the leftover for create()
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.monitors_fail = false;
+  hypr.wait_for_listener();
+  write_owner(hypr.state_dir(), client_output, dead_pid());
+  std::atomic<int> owner_at_remove {0};
+  hypr.on_request = [&](const std::string &req) {
+    if (req.starts_with("/output remove")) {
+      owner_at_remove = owner_pid(hypr.state_dir() / client_output);
+    }
+  };
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  EXPECT_EQ(owner_at_remove.load(), ::getpid());
+  EXPECT_TRUE(vd.remove(client_identity()));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, CreateRefusesWhenTheClaimCannotBeWritten) {
+  // Without a claim on disk another instance would take the new output for a leftover and remove it.
+  fake_hyprland_t hypr;
+  auto options = hypr.options();
+  const auto blocker = options.state_dir.parent_path() / "not-a-directory";
+  std::ofstream {blocker} << "x";
+  options.state_dir = blocker / "state";
+  hyprland::vdisplay_t vd {options};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  EXPECT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), "");
+  EXPECT_EQ(hypr.count_requests("/output create"), 0u);
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(HyprlandVdisplayTest, NewSessionKeepsAnOutputItReuses) {
   fake_hyprland_t hypr;
   hyprland::vdisplay_t vd {hypr.options()};
@@ -940,19 +1044,16 @@ TEST(HyprlandVdisplayTest, CreateLeavesAnOutputAnotherInstanceIsCreating) {
   hypr.wait_for_listener();
   child_process_t other_apollo;
   ASSERT_GT(other_apollo.pid(), 0);
-  write_owner(hypr.state_dir(), client_output, other_apollo.pid());
+  for (const auto start : {std::optional<std::uint64_t> {start_time_of(other_apollo.pid())}, std::optional<std::uint64_t> {}}) {
+    // With the start time the owner recorded, or an owner file from before start times were recorded.
+    write_owner(hypr.state_dir(), client_output, other_apollo.pid(), start);
+    EXPECT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), "");
+    EXPECT_EQ(hypr.count_requests("/output create"), 0u);
+    EXPECT_EQ(owner_pid(hypr.state_dir() / client_output), other_apollo.pid());
+  }
 
-  EXPECT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), "");
-  EXPECT_EQ(hypr.count_requests("/output create"), 0u);
-  std::ifstream owner {hypr.state_dir() / client_output};
-  int pid = 0;
-  owner >> pid;
-  EXPECT_EQ(pid, other_apollo.pid());
-
-  // A claim whose PID now belongs to another program is a crashed instance's: taken over.
-  child_process_t other_program {"not-apollo"};
-  ASSERT_GT(other_program.pid(), 0);
-  write_owner(hypr.state_dir(), client_output, other_program.pid());
+  // A claim whose PID was started after the owner recorded it is a crashed instance's, reused: taken over.
+  write_owner(hypr.state_dir(), client_output, other_apollo.pid(), start_time_of(other_apollo.pid()) + 1);
   ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
   EXPECT_TRUE(vd.remove(client_identity()));
   EXPECT_FALSE(fs::exists(hypr.state_dir() / client_output));
@@ -992,14 +1093,15 @@ TEST(HyprlandVdisplayTest, CleanupStaleRemovesOnlyOrphanedApolloOutputs) {
     {"APOLLO-0badf00d", 1920, 1080, 60.0, 8320},  // owner exited: stale
     {"APOLLO-cafebabe", 1920, 1080, 60.0, 10240},  // owner still running: kept
     {"APOLLO-feedf00d", 1920, 1080, 60.0, 12160},  // owner crashed, its PID now another program's: stale
+    {"APOLLO-c0ffee00", 1920, 1080, 60.0, 14080},  // an older owner file, PID alone, still running: kept
   }};
   child_process_t other_apollo;
-  child_process_t other_program {"not-apollo"};
   ASSERT_GT(other_apollo.pid(), 0);
-  ASSERT_GT(other_program.pid(), 0);
+  const auto started = start_time_of(other_apollo.pid());
   write_owner(hypr.state_dir(), "APOLLO-0badf00d", dead_pid());
-  write_owner(hypr.state_dir(), "APOLLO-cafebabe", other_apollo.pid());
-  write_owner(hypr.state_dir(), "APOLLO-feedf00d", other_program.pid());
+  write_owner(hypr.state_dir(), "APOLLO-cafebabe", other_apollo.pid(), started);
+  write_owner(hypr.state_dir(), "APOLLO-feedf00d", other_apollo.pid(), started + 1);
+  write_owner(hypr.state_dir(), "APOLLO-c0ffee00", other_apollo.pid());
 
   hyprland::vdisplay_t vd {hypr.options()};
   ASSERT_EQ(vd.init(), status_e::ok);  // the first successful init() cleans up
@@ -1009,6 +1111,7 @@ TEST(HyprlandVdisplayTest, CleanupStaleRemovesOnlyOrphanedApolloOutputs) {
   EXPECT_FALSE(fs::exists(hypr.state_dir() / "APOLLO-0badf00d"));
   EXPECT_TRUE(hypr.monitor("APOLLO-cafebabe"));
   EXPECT_FALSE(hypr.monitor("APOLLO-feedf00d"));
+  EXPECT_TRUE(hypr.monitor("APOLLO-c0ffee00"));
   EXPECT_TRUE(hypr.monitor("APOLLO-TEST-12345678"));
   EXPECT_TRUE(hypr.monitor("HEADLESS-2"));
   EXPECT_TRUE(hypr.monitor("DP-1"));

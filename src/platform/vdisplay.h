@@ -58,10 +58,12 @@ namespace platf::vdisplay {
   status_e status();
 
   /**
-   * @brief Remove displays left behind by a previous run that crashed. No-op on Windows.
-   * @note Safe to call while sessions run: displays this process created are never removed.
+   * @brief Remove displays left behind by a previous run that crashed, and retry removing the displays of ended
+   *        sessions that could not be removed then. No-op on Windows.
+   * @note Safe to call while sessions run: displays of running sessions are never removed.
+   * @param only_if_pending Only retry pending removals, and do nothing when there are none (no compositor request).
    */
-  void cleanup_stale();
+  void cleanup_stale(bool only_if_pending = false);
 
   /**
    * @brief Create the virtual display for an identity.
