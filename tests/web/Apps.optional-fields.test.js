@@ -198,12 +198,13 @@ describe('UUID-based applications', () => {
     expect(apiFetch.mock.calls[0][1].method).toBe('DELETE')
   })
 
-  // Bugs caught: 0, False positives: 0
+  // Bugs caught: 0, False positives: 1
   it('reorders by UUID in the order shown', async () => {
     apiFetch.mockResolvedValueOnce({ status: 200 })
     const apps = [{ name: 'B', uuid: 'b' }, { name: 'A', uuid: 'a' }, { name: 'C', uuid: 'c' }]
     const ctx = {
       ...editContext(apps[0]),
+      loadApps: vi.fn(async () => true),
       apps,
       displayedApps: [{ app: apps[1], index: 1 }, { app: apps[0], index: 0 }, { app: apps[2], index: 2 }],
       sortMode: 'asc',
@@ -396,6 +397,64 @@ describe('applications page', () => {
     await wrapper.vm.loadApps()
     expect(wrapper.vm.apps.map(app => app.name)).toEqual(['B', 'A'])
     expect(wrapper.vm.actionError).toContain('offline')
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('keeps the name-sorted view when the reload after saving that order fails', async () => {
+    const wrapper = await mountApps([{ name: 'B', uuid: 'b' }, { name: 'A', uuid: 'a' }])
+    wrapper.vm.sortMode = 'asc'
+    apiFetch.mockImplementation(async url => (url === './api/apps'
+      ? { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }
+      : { status: 200, json: async () => ({}) }))
+
+    await wrapper.vm.saveOrder()
+
+    expect(wrapper.vm.sortMode).toBe('asc')
+    expect(wrapper.vm.displayedApps.map(({ app }) => app.name)).toEqual(['A', 'B'])
+    expect(wrapper.vm.actionError).toContain('apps.json unreadable')
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // A delete moves every later app down one position on the server, and apps without a UUID are acted on by
+  // position, so the old list must not stay usable when it cannot be reloaded.
+  // Bugs caught: 0, False positives: 0
+  it('drops a list of positional apps when it cannot be reloaded after a delete', async () => {
+    const { flushPromises } = await import('@vue/test-utils')
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }, { name: 'Legacy 1' }, { name: 'Legacy 2' }])
+    let answerDelete
+    apiFetch.mockImplementation(url => (url === './api/apps/delete'
+      ? new Promise(resolve => { answerDelete = resolve })
+      : Promise.resolve({ status: 500, json: async () => ({ error: 'apps.json unreadable' }) })))
+
+    wrapper.vm.deleteTarget = { index: 0, uuid: 'a', name: 'A' }
+    const deleting = wrapper.vm.confirmDelete()
+    await flushPromises()
+    expect(wrapper.vm.actionDisabled).toBe(true)
+
+    answerDelete({ status: 200 })
+    await deleting
+    expect(wrapper.vm.apps).toEqual([])
+    expect(wrapper.vm.actionError).toContain('apps.json unreadable')
+    expect(wrapper.vm.actionDisabled).toBe(false)
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('keeps a list of UUID apps when it cannot be reloaded after a delete', async () => {
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }, { name: 'B', uuid: 'b' }])
+    apiFetch.mockImplementation(async url => (url === './api/apps/delete'
+      ? { status: 200 }
+      : { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }))
+
+    wrapper.vm.deleteTarget = { index: 0, uuid: 'a', name: 'A' }
+    await wrapper.vm.confirmDelete()
+
+    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['A', 'B'])
+    expect(wrapper.vm.actionError).toContain('apps.json unreadable')
     wrapper.unmount()
     apiFetch.mockReset()
   })

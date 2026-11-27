@@ -553,7 +553,7 @@
               <x :size="18" class="icon"></x>
               {{ $t('_common.cancel') }}
             </button>
-            <button type="button" class="btn btn-danger" @click="confirmDelete">
+            <button type="button" class="btn btn-danger" :disabled="actionDisabled" @click="confirmDelete">
               <trash-2 :size="18" class="icon"></trash-2>
               {{ $t('apps.delete') }}
             </button>
@@ -1020,30 +1020,48 @@
        * @brief Delete the application chosen in the delete dialog: by UUID, or by position for an application
        * saved before UUIDs existed.
        *
+       * Actions stay disabled until the list is reloaded. A delete moves every later app down one position on the
+       * server, so when the reload fails, a list with apps identified by position is dropped rather than left usable
+       * with stale positions.
+       *
        * @return {Promise<void>} Completion of the request.
        */
       async confirmDelete() {
+        if (this.actionDisabled) {
+          return;
+        }
+        this.actionDisabled = true;
         const target = this.deleteTarget;
-        const request = target.uuid
-          ? apiFetch("./api/apps/delete", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ uuid: target.uuid }),
-          })
-          : apiFetch("./api/apps/" + target.index, {
-            method: "DELETE",
-            headers: {
-              "Content-Type": "application/json"
-            },
-          });
-        const r = await request;
-        this.closeDeleteModal();
-        if (r.status === 200) {
-          await this.loadApps();
-        } else {
-          this.actionError = this.$t('apps.delete_failed') + (await this.errorText(r));
+        try {
+          try {
+            const r = await (target.uuid
+              ? apiFetch("./api/apps/delete", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ uuid: target.uuid }),
+              })
+              : apiFetch("./api/apps/" + target.index, {
+                method: "DELETE",
+                headers: {
+                  "Content-Type": "application/json"
+                },
+              }));
+            if (r.status !== 200) {
+              this.actionError = this.$t('apps.delete_failed') + (await this.errorText(r));
+              return;
+            }
+          } catch (e) {
+            // The delete may still have happened, so the list is reloaded as after a success.
+            this.actionError = this.$t('apps.delete_failed') + e.message;
+          }
+          if (!(await this.loadApps()) && this.apps.some(app => !app.uuid)) {
+            this.apps = [];
+          }
+        } finally {
+          this.closeDeleteModal();
+          this.actionDisabled = false;
         }
       },
       /**
@@ -1258,8 +1276,10 @@
             this.actionError = this.$t('apps.reorder_failed') + (await this.errorText(r));
             return;
           }
-          await this.loadApps();
-          this.sortMode = "default";
+          // On a failed reload the shown (sorted) list is still the saved order, so keep showing it.
+          if (await this.loadApps()) {
+            this.sortMode = "default";
+          }
         } catch (e) {
           this.actionError = this.$t('apps.reorder_failed') + e.message;
         } finally {
