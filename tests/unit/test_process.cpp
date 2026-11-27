@@ -243,11 +243,16 @@ TEST(ProcessTest, ResolvesRelativeCommandsFromTheChildPath) {
   EXPECT_TRUE(proc::find_working_directory("sunshine-missing-probe", env).empty());
 }
 
+#endif
+
+#ifdef __linux__
 // Bugs caught: 0, False positives: 0
 TEST(ProcessTest, WorkingDirectoryUsesTheWordsTheCommandRuns) {
   // HYP-40: the program is the first word as a POSIX shell splits it, the same word run_command() runs.
-  const auto bin_dir = fs::temp_directory_path() / "sunshine find working directory's test";  // NOSONAR(cpp:S5443): safe for tests
-  fs::create_directories(bin_dir);
+  // A unique directory whose name needs quoting: a space and an apostrophe.
+  auto dir_template = (fs::temp_directory_path() / "sunshine find working directory's test XXXXXX").string();  // NOSONAR(cpp:S5443): mkdtemp creates a private unique directory.
+  ASSERT_NE(mkdtemp(dir_template.data()), nullptr);
+  const fs::path bin_dir {dir_template};
   const auto cleanup = util::fail_guard([&bin_dir]() {
     std::error_code ec;
     fs::remove_all(bin_dir, ec);

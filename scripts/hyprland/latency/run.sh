@@ -11,8 +11,8 @@
 #   RES [2880x1800]  FPS [120]  DURATION [60]  CLIENT_OUTPUT [eDP-1]  PROBE_REGION [712,442,16,16] (logical px)
 #   CLIENT_BIN [artemis]  PROBE [~/.cache/apollo-latency/bin/probe on the client]  REACTOR [host path, required]
 #   PHASES ["blink react"]
-#   STREAM_OUTPUT [] the stream's output, e.g. APOLLO-1a2b3c4d (fixed per client: the first 8 hex digits of its
-#     UUID). Unset: the one Apollo output that appears, and the run stops if another one shows up meanwhile.
+#   STREAM_OUTPUT [] the stream's output, e.g. APOLLO-1a2b3c4d (stable per client, or per app with Use App Identity).
+#     Unset: the one Apollo output that appears; the run stops if a second one is there once the stream has settled.
 #   CLIENT_FOCUS [hl.dsp.focus({ window = "address:%s" })] hyprctl dispatch argument focusing the client window
 #     whose address replaces %s (hyprlang: focuswindow address:%s)
 #   REACTOR_EXTRA [] extra reactor arguments, e.g. --animate for a stream that never goes idle
@@ -28,6 +28,12 @@ CLIENT="${CLIENT:-x9.internal}"
 CLIENT_SSH_PORT="${CLIENT_SSH_PORT:-538}"
 HOST_IP="${HOST_IP:-192.168.0.115}"
 APP="${APP:-Virtual Display}"
+# The reactor covers the stream output and takes input there, so it must be one of Apollo's virtual displays, never a
+# physical monitor (e.g. CLIENT_OUTPUT given here by mistake).
+if [[ -n "${STREAM_OUTPUT:-}" && ! "$STREAM_OUTPUT" =~ ^APOLLO-[0-9a-f]{8}$ ]]; then
+  echo "run.sh: STREAM_OUTPUT must name an Apollo virtual display (APOLLO-xxxxxxxx), not '$STREAM_OUTPUT'" >&2
+  exit 2
+fi
 RES="${RES:-2880x1800}"
 FPS="${FPS:-120}"
 DURATION="${DURATION:-60}"
@@ -102,9 +108,13 @@ done
 # From here on the stream window is named by its address: focus can move to another window at any time.
 stream_window() { ssh_client 'hyprctl -j clients' | jq -e --arg a "$window" '.[] | select(.address == $a)'; }
 if ! stream_window | jq -e '.fullscreen > 0' >/dev/null 2>&1; then
-  # One batch: Hyprland runs both before handling anything else, so the fullscreen goes to the window just focused.
+  # The fullscreen dispatcher acts on the focused window, so only send it once the stream window has focus: a window
+  # that closed, or a focus dispatch that failed, must not fullscreen whatever else is focused.
   # shellcheck disable=SC2059 # CLIENT_FOCUS is the format
-  ssh_client "hyprctl --batch $(printf '%q' "dispatch $(printf "$CLIENT_FOCUS" "$window") ; dispatch $CLIENT_FULLSCREEN")" >/dev/null
+  ssh_client "hyprctl dispatch $(printf '%q' "$(printf "$CLIENT_FOCUS" "$window")")" >/dev/null || true
+  ssh_client 'hyprctl -j activewindow' | jq -e --arg a "$window" '.address == $a' >/dev/null ||
+    { log "could not focus the client stream window $window; not fullscreening anything"; exit 1; }
+  ssh_client "hyprctl dispatch $(printf '%q' "$CLIENT_FULLSCREEN")" >/dev/null
   timeout 1 tail -f /dev/null || true
 fi
 stream_window | jq -r '"client window: \(.class) fullscreen=\(.fullscreen) at \(.at) size \(.size)"' | tee -a "$out/run.log"
