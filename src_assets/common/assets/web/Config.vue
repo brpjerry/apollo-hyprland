@@ -171,13 +171,29 @@
   const JSON_OPTIONS = ["dd_mode_remapping", "global_prep_cmd", "global_state_cmd", "server_cmd"];
 
   /**
-   * Command lists edited as tables, with the entries kept when saving. A server command without a name still runs
-   * (clients pick server commands by position), so only its command decides.
+   * Drop the blank rows at the end of a list, which can't shift the position of any other row.
+   *
+   * @param {Array<object>} rows Rows to filter.
+   * @param {function(object): boolean} blank Whether a row is blank.
+   * @returns {Array<object>} The rows up to the last one that isn't blank.
+   */
+  function dropTrailingBlankRows(rows, blank) {
+    let end = rows.length;
+    while (end > 0 && blank(rows[end - 1])) {
+      end--;
+    }
+    return rows.slice(0, end);
+  }
+
+  /**
+   * Command lists edited as tables, and the rows kept when saving. The server keeps every server command, a named
+   * one without a command too, and clients pick them by position: dropping a row in the middle would make a client's
+   * button run the next command. So only blank rows at the end go.
    */
   const COMMAND_LISTS = {
-    global_prep_cmd: cmd => !!(cmd.do?.trim() || cmd.undo?.trim()),
-    global_state_cmd: cmd => !!(cmd.do?.trim() || cmd.undo?.trim()),
-    server_cmd: cmd => !!cmd.cmd?.trim(),
+    global_prep_cmd: rows => rows.filter(cmd => !!(cmd.do?.trim() || cmd.undo?.trim())),
+    global_state_cmd: rows => rows.filter(cmd => !!(cmd.do?.trim() || cmd.undo?.trim())),
+    server_cmd: rows => dropTrailingBlankRows(rows, cmd => !cmd.cmd?.trim() && !cmd.name?.trim()),
   };
 
   /** `elevated` values the server's Boost bool parser reads as true. */
@@ -218,9 +234,9 @@
    * @returns {object} The same configuration.
    */
   export function cleanConfigForSave(config) {
-    for (const [optionKey, keep] of Object.entries(COMMAND_LISTS)) {
+    for (const [optionKey, keptRows] of Object.entries(COMMAND_LISTS)) {
       if (Array.isArray(config[optionKey])) {
-        config[optionKey] = config[optionKey].filter(keep);
+        config[optionKey] = keptRows(config[optionKey]);
       }
     }
     if (config.fallback_mode && !FALLBACK_MODE_PATTERN.test(config.fallback_mode.trim())) {
