@@ -60,6 +60,7 @@
 
 // local includes
 #include "command.h"
+#include "cuda.h"
 #include "graphics.h"
 #include "misc.h"
 #include "src/compat/boost_process.h"
@@ -1406,6 +1407,20 @@ namespace platf {
       BOOST_LOG(error) << "Failed to get hostname: "sv << err.what();
       return "Sunshine"s;
     }
+  }
+
+  std::unique_ptr<nvenc_encode_device_t> display_t::make_nvenc_encode_device(pix_fmt_e pix_fmt) {
+#ifdef SUNSHINE_BUILD_CUDA
+    // The native encoder reads the frames the display's CUDA converter writes, so every capture backend that
+    // feeds FFmpeg's nvenc encoders feeds it as well.
+    auto converter = make_avcodec_encode_device(pix_fmt);
+    if (!converter) {
+      return nullptr;
+    }
+    return cuda::make_nvenc_encode_device(std::move(converter), pix_fmt);
+#else
+    return nullptr;
+#endif
   }
 
   namespace source {

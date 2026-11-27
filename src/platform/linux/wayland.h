@@ -1182,6 +1182,9 @@ namespace wl {
   struct ext_options_t {
     /// Use shared memory buffers for system memory capture even when dma-bufs are possible.
     bool prefer_shm {false};
+    /// Capture into system memory even when the encoder could take video memory frames, as it must when the capture
+    /// GPU is not the CUDA device (the GPU -> RAM -> GPU bridge).
+    bool system_memory {false};
   };
 
   /**

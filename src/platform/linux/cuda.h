@@ -51,9 +51,17 @@ namespace cuda::nvfbc {
 }  // namespace cuda::nvfbc
 
 #if defined(SUNSHINE_BUILD_CUDA)
+extern "C" {
+  #include <libavutil/pixfmt.h>
+}
+
+struct AVFrame;
+
 namespace platf {
   struct avcodec_encode_device_t;
+  struct nvenc_encode_device_t;
   struct img_t;
+  enum class pix_fmt_e;
 }  // namespace platf
 
 namespace cuda {
@@ -73,6 +81,34 @@ namespace cuda {
    * @return FFmpeg encoding device context.
    */
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_gl_encode_device(int width, int height, int offset_x, int offset_y);
+
+  /**
+   * @brief Map a Sunshine pixel format to the FFmpeg format of the CUDA frames NVENC reads.
+   *
+   * @param pix_fmt Sunshine pixel format.
+   * @return FFmpeg software format, or no value when NVENC can't read that format from CUDA memory.
+   */
+  std::optional<AVPixelFormat> nvenc_sw_format(platf::pix_fmt_e pix_fmt);
+
+  /**
+   * @brief Check that a CUDA frame's planes are laid out the way NVENC reads a `CUDADEVICEPTR` surface.
+   *
+   * NVENC takes one pointer and one pitch, and finds each further plane `pitch * height` bytes after the previous one.
+   *
+   * @param frame Frame whose plane pointers and line sizes are checked.
+   * @param plane_count Number of planes of the frame's format.
+   * @return True when every plane has the first plane's pitch and directly follows the previous plane.
+   */
+  bool is_nvenc_surface(const AVFrame &frame, int plane_count);
+
+  /**
+   * @brief Create a native NVENC encode device around a CUDA converter.
+   *
+   * @param converter Converter a display created for CUDA memory (`make_avcodec_encode_device()` with `mem_type_e::cuda`).
+   * @param pix_fmt Format to encode.
+   * @return Encode device, or null when the converter isn't a CUDA converter or NVENC can't read the format.
+   */
+  std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(std::unique_ptr<platf::avcodec_encode_device_t> converter, platf::pix_fmt_e pix_fmt);
 
   /**
    * @brief Functions used to query the PCI bus id of a CUDA device.

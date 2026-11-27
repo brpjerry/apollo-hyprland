@@ -894,7 +894,61 @@ namespace video {
     PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | YUV444_SUPPORT | ASYNC_TEARDOWN  // flags
   };
 #elif !defined(__APPLE__)
+  /**
+   * @brief Native NVENC on Linux: the capture backend's CUDA converter writes frames that NVENC reads directly.
+   *
+   * Unlike FFmpeg's nvenc encoders it supports reference frame invalidation, so lost frames are recovered
+   * without an IDR frame. Teardown stays synchronous: the converter's GL and CUDA state belongs to the encoding thread.
+   */
   encoder_t nvenc {
+    "nvenc"sv,
+    std::make_unique<encoder_platform_formats_nvenc>(
+      platf::mem_type_e::cuda,
+      platf::pix_fmt_e::nv12,
+      platf::pix_fmt_e::p010,
+      platf::pix_fmt_e::yuv444p,
+      platf::pix_fmt_e::yuv444p16
+    ),
+    {
+      {},  // Common options
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "av1_nvenc"s,
+      {},  // capabilities
+    },
+    {
+      {},  // Common options
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "hevc_nvenc"s,
+      {},  // capabilities
+    },
+    {
+      {},  // Common options
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "h264_nvenc"s,
+      {},  // capabilities
+    },
+    {},  // MPEG-2
+    {},  // H.263+
+    PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | YUV444_SUPPORT  // flags
+  };
+
+  /**
+   * @brief NVENC through FFmpeg, also named "nvenc": used when the native encoder can't be created (e.g. the driver
+   *        library can't be loaded).
+   */
+  encoder_t nvenc_ffmpeg {
     "nvenc"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
   #ifdef _WIN32
@@ -1645,6 +1699,9 @@ namespace video {
   static const std::vector encoders {
 #ifndef __APPLE__
     &nvenc,
+#endif
+#if !defined(_WIN32) && !defined(__APPLE__)
+    &nvenc_ffmpeg,
 #endif
 #ifdef _WIN32
     &quicksync,
@@ -3930,10 +3987,11 @@ namespace video {
         auto encoder = *pos;
 
         if (encoder->name == config::video.encoder) {
-          // Remove the encoder from the list entirely if it fails validation
+          // Remove the encoder from the list entirely if it fails validation. Keep looking: on Linux the FFmpeg
+          // NVENC encoder shares the native one's name and takes over when the native one doesn't work.
           if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
             pos = encoder_list.erase(pos);
-            break;
+            continue;
           }
 
           // We will return an encoder here even if it fails one of the codec requirements specified by the user

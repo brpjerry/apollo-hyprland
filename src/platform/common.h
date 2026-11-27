@@ -800,6 +800,18 @@ namespace platf {
       return nullptr;
     }
 
+#ifdef __linux__
+    /**
+     * @brief Create NVENC encode device.
+     *
+     * On Linux this wraps the display's CUDA converter (`make_avcodec_encode_device()`) in a native NVENC device, so
+     * every capture backend that feeds FFmpeg's nvenc encoders feeds the native encoder too.
+     *
+     * @param pix_fmt Sunshine pixel format to convert or allocate for.
+     * @return Constructed NVENC encode device object, or null without a CUDA converter.
+     */
+    virtual std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(pix_fmt_e pix_fmt);
+#else
     /**
      * @brief Create NVENC encode device.
      *
@@ -809,6 +821,7 @@ namespace platf {
     virtual std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(pix_fmt_e pix_fmt) {
       return nullptr;
     }
+#endif
 
     /**
      * @brief Create a native VideoToolbox encode device.

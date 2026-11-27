@@ -564,6 +564,10 @@ namespace video {
   extern encoder_t nvenc;  // available for windows and linux
 #endif
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+  extern encoder_t nvenc_ffmpeg;  ///< FFmpeg's NVENC encoders, the fallback for the native Linux `nvenc`.
+#endif
+
 #ifdef _WIN32
   extern encoder_t amdvce;
   extern encoder_t quicksync;

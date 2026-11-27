@@ -159,6 +159,9 @@ const auto encoder_variants = std::to_array<video::encoder_t *>({
 #if !defined(__APPLE__)
   &video::nvenc,
 #endif
+#if !defined(_WIN32) && !defined(__APPLE__)
+  &video::nvenc_ffmpeg,
+#endif
 #ifdef _WIN32
   &video::amdvce,
   &video::quicksync,
@@ -177,6 +180,12 @@ INSTANTIATE_TEST_SUITE_P(
   EncoderTest,
   testing::ValuesIn(encoder_variants),
   [](const auto &info) {
+#if !defined(_WIN32) && !defined(__APPLE__)
+    // FFmpeg's NVENC encoder shares the native encoder's name.
+    if (info.param == &video::nvenc_ffmpeg) {
+      return std::string {"nvenc_ffmpeg"};
+    }
+#endif
     return std::string(info.param->name);
   }
 );
@@ -184,9 +193,9 @@ INSTANTIATE_TEST_SUITE_P(
 #if !defined(_WIN32) && !defined(__APPLE__)
 TEST(NvencAvcodecOptionsTest, UsesVersionStablePresetAndSpatialAqNames) {
   const std::array codecs {
-    &video::nvenc.av1,
-    &video::nvenc.hevc,
-    &video::nvenc.h264,
+    &video::nvenc_ffmpeg.av1,
+    &video::nvenc_ffmpeg.hevc,
+    &video::nvenc_ffmpeg.h264,
   };
 
   for (const auto *codec : codecs) {

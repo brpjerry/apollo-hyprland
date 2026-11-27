@@ -754,7 +754,8 @@ namespace wl {
 
     // Like wlr-screencopy: NVENC takes the dma-bufs directly only when the capture node is the CUDA device;
     // otherwise frames go GPU -> RAM -> GPU.
-    if (hwdevice_type == platf::mem_type_e::vaapi || (hwdevice_type == platf::mem_type_e::cuda && use_vram_capture(hwdevice_type))) {
+    const bool vram = hwdevice_type == platf::mem_type_e::vaapi || (hwdevice_type == platf::mem_type_e::cuda && use_vram_capture(hwdevice_type));
+    if (vram && !options.system_memory) {
       auto disp = std::make_shared<ext_vram_t>();
       if (disp->init(hwdevice_type, display_name, config, options)) {
         return nullptr;
