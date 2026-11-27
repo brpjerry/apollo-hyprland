@@ -190,7 +190,7 @@ namespace wl {
 
   /**
    * @brief Waits up to the specified timeout to dispatch new events on the wl_display.
-   * @param timeout The timeout in milliseconds.
+   * @param timeout Maximum wait, to the nanosecond. Zero or negative reads only what has arrived.
    * @return `true` if new events were dispatched, `false` if the timeout expired or the connection is broken
    *         (see broken()).
    */
@@ -267,6 +267,7 @@ namespace wl {
   }
 
   void monitor_t::xdg_name(zxdg_output_v1 *, const char *name) {
+    property_changed();
     // wl_output.name (v4) is the authoritative connector name; xdg_output.name is the fallback.
     if (!has_wl_name) {
       this->name = name;
@@ -284,6 +285,7 @@ namespace wl {
   }
 
   void monitor_t::xdg_position(zxdg_output_v1 *, std::int32_t x, std::int32_t y) {
+    property_changed();
     viewport.offset_x = x;
     viewport.offset_y = y;
     geometry.logical_x = x;
@@ -293,6 +295,7 @@ namespace wl {
   }
 
   void monitor_t::xdg_size(zxdg_output_v1 *, std::int32_t width, std::int32_t height) {
+    property_changed();
     viewport.logical_width = width;
     viewport.logical_height = height;
     geometry.logical_width = width;
@@ -302,6 +305,7 @@ namespace wl {
   }
 
   void monitor_t::wl_geometry(wl_output *, std::int32_t, std::int32_t, std::int32_t, std::int32_t, std::int32_t, const char *, const char *, std::int32_t transform) {  // NOSONAR(cpp:S107): libwayland's wl_output geometry callback signature.
+    property_changed();
     viewport.transform = transform;
     geometry.transform = transform;
 
@@ -321,6 +325,7 @@ namespace wl {
       return;
     }
 
+    property_changed();
     viewport.width = width;
     viewport.height = height;
     refresh_mhz = refresh;
@@ -329,6 +334,7 @@ namespace wl {
   }
 
   void monitor_t::wl_scale(wl_output *, std::int32_t factor) {
+    property_changed();
     geometry.integer_scale = factor;
   }
 
@@ -343,8 +349,25 @@ namespace wl {
     this->description = description;
   }
 
-  void monitor_t::listen(zxdg_output_manager_v1 *output_manager) {
+  void monitor_t::property_changed() {
+    // wl_output.done arrived in version 2; xdg-output 1 and 2 have a done event of their own, and version 3 is
+    // completed by wl_output.done.
+    if (output && wl_proxy_get_version(reinterpret_cast<wl_proxy *>(output)) >= 2) {
+      updating = true;
+    }
+  }
+
+  void monitor_t::mark_removed() {
+    removed = true;
+    updating = false;
     if (xdg_output) {
+      zxdg_output_v1_destroy(xdg_output);
+      xdg_output = nullptr;
+    }
+  }
+
+  void monitor_t::listen(zxdg_output_manager_v1 *output_manager) {
+    if (removed || xdg_output) {
       return;
     }
     xdg_output = zxdg_output_manager_v1_get_xdg_output(output_manager, output);
@@ -475,10 +498,23 @@ namespace wl {
 
     for (auto &monitor : monitors) {
       if (monitor->global_name == id && !monitor->removed) {
-        monitor->removed = true;
+        monitor->mark_removed();
         BOOST_LOG(info) << "[wayland] Output removed: "sv << monitor->name;
       }
     }
+  }
+
+  std::vector<output_geometry_t> layout_geometries(const interface_t &interface) {
+    std::vector<output_geometry_t> geometries;
+    geometries.reserve(interface.monitors.size());
+    for (const auto &m : interface.monitors) {
+      // An output added a moment ago has its mode before its logical size: until then its place is unknown.
+      const bool described = m->geometry.logical_width > 0 || !m->listening();
+      if (!m->removed && described) {
+        geometries.emplace_back(m->geometry);
+      }
+    }
+    return geometries;
   }
 
   namespace {
@@ -486,14 +522,7 @@ namespace wl {
      * @brief Bounds of the layout of the outputs that are still there.
      */
     layout_bounds_t current_layout(const interface_t &interface) {
-      std::vector<output_geometry_t> geometries;
-      geometries.reserve(interface.monitors.size());
-      for (const auto &m : interface.monitors) {
-        if (!m->removed) {
-          geometries.emplace_back(m->geometry);
-        }
-      }
-      return layout_bounds(geometries);
+      return layout_bounds(layout_geometries(interface));
     }
   }  // namespace
 
@@ -515,6 +544,12 @@ namespace wl {
     const auto &now = monitor.geometry;
     if (monitor.removed) {
       return "the output was removed"sv;
+    }
+    // Half of an update says nothing yet: a new mode may come with a new logical size, a resize with a move.
+    if (std::ranges::any_of(interface.monitors, [](const auto &m) {
+          return !m->removed && m->updating;
+        })) {
+      return std::nullopt;
     }
     if (now.mode_width != before.mode_width || now.mode_height != before.mode_height || monitor.refresh_mhz != watch.refresh_mhz) {
       return "the output's mode changed"sv;
@@ -1729,13 +1764,8 @@ namespace wl {
     display.logical_width = logical.width;
     display.logical_height = logical.height;
 
-    std::vector<output_geometry_t> geometries;
-    geometries.reserve(interface.monitors.size());
-    for (const auto &m : interface.monitors) {
-      geometries.emplace_back(m->geometry);
-    }
-    // The whole layout is in logical pixels, like the offsets above.
-    const auto bounds = layout_bounds(geometries);
+    // The whole layout is in logical pixels, like the offsets above. The same outputs as output_change() watches.
+    const auto bounds = layout_bounds(layout_geometries(interface));
     display.env_offset_x = bounds.min_x;
     display.env_offset_y = bounds.min_y;
     display.env_width = bounds.width;

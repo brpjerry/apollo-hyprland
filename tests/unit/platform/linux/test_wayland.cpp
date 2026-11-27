@@ -620,6 +620,23 @@ namespace {
       return wl::output_change(watch, interface);
     }
   };
+
+  /**
+   * @brief A display that only carries geometry.
+   */
+  struct fake_display_t: platf::display_t {
+    platf::capture_e capture(const push_captured_image_cb_t &, const pull_free_image_cb_t &, bool *) override {
+      return platf::capture_e::capture_error;
+    }
+
+    std::shared_ptr<platf::img_t> alloc_img() override {
+      return nullptr;
+    }
+
+    int dummy_img(platf::img_t *) override {
+      return 0;
+    }
+  };
 }  // namespace
 
 // Bugs caught: 0, False positives: 0
@@ -705,6 +722,21 @@ TEST(WaylandOutputWatchTest, OutputInsideTheLayoutIsNoChange) {
   outputs.interface.monitors.emplace_back(std::make_unique<wl::monitor_t>(nullptr));
   EXPECT_FALSE(outputs.change());
   describe(*outputs.interface.monitors.back(), {.x = 1920, .y = 0, .width = 640, .height = 480, .logical_width = 640, .logical_height = 480});
+  EXPECT_FALSE(outputs.change());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, CaptureSetupAndWatchUseTheSameOutputs) {
+  // The second output went away during the roundtrips that set capture up.
+  two_outputs_t outputs;
+  outputs.other().removed = true;
+  outputs.watch = wl::watch_output(outputs.interface, outputs.captured());
+
+  fake_display_t display;
+  wl::apply_output_geometry(display, outputs.interface, 0, {1920, 1080});
+  EXPECT_EQ(display.env_width, 1920);
+  EXPECT_EQ(display.env_width, outputs.watch.layout.width);
+  EXPECT_EQ(display.env_height, outputs.watch.layout.height);
   EXPECT_FALSE(outputs.change());
 }
 

@@ -806,6 +806,12 @@ namespace wl {
     }
 
     /**
+     * @brief Mark the output removed (wl_registry.global_remove) and release its xdg-output object.
+     * @details The monitor and its wl_output stay, so that pointers to them stay valid until capture is reinitialized.
+     */
+    void mark_removed();
+
+    /**
      * @brief Store the xdg-output logical monitor name.
      *
      * @param name Human-readable name to assign.
@@ -833,10 +839,10 @@ namespace wl {
     void xdg_size(zxdg_output_v1 *, std::int32_t width, std::int32_t height);
 
     /**
-     * @brief Receive completion of an xdg-output metadata update.
+     * @brief Complete an xdg-output metadata update (versions 1 and 2).
      */
     void xdg_done(zxdg_output_v1 *) {
-      // Size and position callbacks already store the metadata; completion needs no action.
+      updating = false;
     }
 
     /**
@@ -859,11 +865,10 @@ namespace wl {
     void wl_mode(wl_output *wl_output, std::uint32_t flags, std::int32_t width, std::int32_t height, std::int32_t refresh);
 
     /**
-     * @brief Acknowledge completion of a wl-output metadata update.
-     * @details Retain the wl-output listener signature while ignoring the output argument.
+     * @brief Complete a wl-output metadata update (also of xdg-output version 3, which has no done event of its own).
      */
     void wl_done(wl_output *) {
-      // Metadata is stored as each event arrives; completion requires no additional work.
+      updating = false;
     }
 
     /**
@@ -897,10 +902,17 @@ namespace wl {
     std::int32_t refresh_mhz {0};  ///< Refresh rate of the current mode in mHz, 0 when the compositor did not say.
     std::uint32_t global_name {0};  ///< Registry name of the wl_output global, matched against global_remove.
     bool removed {false};  ///< The compositor removed the output (wl_registry.global_remove).
+    /// Properties arrived and the done event that completes them has not: the state is half old, half new.
+    bool updating {false};
     wl_output_listener wl_listener;  ///< Callback table for wl-output events.
     zxdg_output_v1_listener xdg_listener;  ///< Callback table for xdg-output events.
 
   private:
+    /**
+     * @brief Note that a property arrived; a done event will complete it when the output version has one.
+     */
+    void property_changed();
+
     zxdg_output_v1 *xdg_output {nullptr};  ///< xdg-output object, once listen() created it.
     bool has_wl_name {false};  ///< `name` came from wl_output.name and is kept over the xdg-output name.
   };
@@ -1043,6 +1055,16 @@ namespace wl {
    * @return State to compare with output_change().
    */
   output_watch_t watch_output(const interface_t &interface, const monitor_t &monitor);
+
+  /**
+   * @brief Geometries of the outputs that make up the layout: not removed, and described (once listened to).
+   * @details Capture setup (apply_output_geometry()) and output_change() use the same set, so that the touch port and
+   *          the watch start from the same bounds.
+   *
+   * @param interface Registry state with all outputs.
+   * @return Their geometries.
+   */
+  std::vector<output_geometry_t> layout_geometries(const interface_t &interface);
 
   /**
    * @brief Tell whether the compositor changed the captured output (or the layout) in a way that needs a new capture.

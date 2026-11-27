@@ -442,7 +442,11 @@ namespace wl {
 
       platf::desktop_geometry_t desktop;
       for (const auto &monitor_entry : interface.monitors) {
-        desktop.add(monitor_entry->viewport);
+        // The same outputs as output_change() watches (layout_geometries()).
+        const bool described = monitor_entry->geometry.logical_width > 0 || !monitor_entry->listening();
+        if (!monitor_entry->removed && described) {
+          desktop.add(monitor_entry->viewport);
+        }
       }
       desktop.apply(*this);
 
