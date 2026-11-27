@@ -679,6 +679,71 @@ TEST_P(WlrCaptureLiveTest, ReinitializesWhenTheOutputScaleChanges) {
   EXPECT_EQ(disp->logical_width, 640);
 }
 
+// Bugs caught: 0, False positives: 0
+TEST_P(WlrCaptureLiveTest, FractionalRefreshOutputIsCapturedAtItsRate) {
+  if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
+    GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";
+  }
+  if (is_vram(GetParam()) && test_wl::drm_render_node().empty()) {
+    GTEST_SKIP() << "No DRM render node (no GPU) to allocate dma-bufs on";
+  }
+  auto output = test_wl::headless_output_t::create("1280x720@59.94");
+  ASSERT_TRUE(output) << "Couldn't create a headless output (is this Hyprland?)";
+  test_wl::damage_source_t damage {output->name};
+  ASSERT_TRUE(damage.ok());
+  for (const auto &monitor : output->ipc->monitors()) {
+    if (monitor.name == output->name) {
+      std::cout << output->name << " refreshes at " << monitor.refresh_hz << " Hz" << std::endl;
+      ASSERT_NEAR(monitor.refresh_hz, 59.94, 0.005);
+    }
+  }
+
+  // A 60 fps stream: below 1.5 times the refresh rate, so frames are paced, at the output's 59.94 (Hyprland reports
+  // 59.939). Hyprland answers each paced request with its next frame, so a clock at exactly 60 fps measured the same
+  // here: this checks the rate and steadiness of the stream, refresh_matched_rate() is tested on its own.
+  auto disp = platf::wl_display(GetParam(), output->name, config_at(60));
+  ASSERT_TRUE(disp);
+
+  constexpr int warmup = 10;
+  constexpr int frames = 490;
+  std::vector<std::chrono::steady_clock::time_point> pushed;
+  pushed.reserve(frames);
+  auto run = run_capture(*disp, GetParam(), frames, 15s, true, false, [&](int) {
+    pushed.push_back(std::chrono::steady_clock::now());
+  });
+  ASSERT_EQ(run.status, platf::capture_e::ok);
+  ASSERT_EQ(pushed.size(), static_cast<std::size_t>(frames));
+
+  const double nominal_ms = 1000.0 / 59.94;
+  std::vector<double> intervals_ms;
+  double steady_sum_ms = 0;
+  int steady = 0;
+  for (std::size_t i = warmup + 1; i < pushed.size(); ++i) {
+    const double interval = std::chrono::duration<double, std::milli>(pushed[i] - pushed[i - 1]).count();
+    intervals_ms.push_back(interval);
+    // A frame the compositor skipped (a scheduling hiccup) would dominate the rate measured over a few seconds.
+    if (interval > nominal_ms * 0.5 && interval < nominal_ms * 1.5) {
+      steady_sum_ms += interval;
+      ++steady;
+    }
+  }
+  const auto outliers = intervals_ms.size() - static_cast<std::size_t>(steady);
+  // 60 fps is 16.667 ms, 59.94 fps 16.683 ms: the mean of ~480 intervals tells them apart.
+  const double fps = 1000.0 * steady / steady_sum_ms;
+  std::ranges::sort(intervals_ms);
+  const double p01 = intervals_ms[intervals_ms.size() / 100];
+  const double p50 = intervals_ms[intervals_ms.size() / 2];
+  const double p99 = intervals_ms[intervals_ms.size() * 99 / 100];
+  std::cout << "wlr " << (is_vram(GetParam()) ? "vram" : "ram") << " on 59.94 Hz: " << fps << " fps, frame interval p1 " << p01 << " ms, p50 " << p50
+            << " ms, p99 " << p99 << " ms, max " << intervals_ms.back() << " ms, " << outliers << " outside half to one and a half intervals" << std::endl;
+
+  EXPECT_NEAR(fps, 59.94, 0.025);
+  EXPECT_EQ(run.non_monotonic, 0);
+  // Steady: frames are neither skipped nor bunched up, but for the odd hiccup.
+  EXPECT_LE(outliers, 2u);
+  EXPECT_LT(p99, nominal_ms * 1.5);
+}
+
 INSTANTIATE_TEST_SUITE_P(Wayland, WlrCaptureLiveTest, testing::Values(platf::mem_type_e::system, platf::mem_type_e::cuda), [](const auto &info) {
   return std::string {info.param == platf::mem_type_e::system ? "ram" : "vram"};
 });

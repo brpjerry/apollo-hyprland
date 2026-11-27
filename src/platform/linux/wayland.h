@@ -1058,6 +1058,17 @@ namespace wl {
   std::optional<std::string_view> output_change(const output_watch_t &watch, const interface_t &interface);
 
   /**
+   * @brief Frame interval a capture of an output paces to.
+   * @details The exact rate when the client sent one (framerateX100). Otherwise the stream rate, lowered to the
+   *          output's fractional refresh rate when that is close below it (refresh_matched_rate()), which is logged.
+   *
+   * @param config Stream configuration.
+   * @param refresh_mhz Refresh rate of the captured output in mHz, 0 when unknown.
+   * @return Frame interval.
+   */
+  std::chrono::nanoseconds capture_interval(const ::video::config_t &config, std::int32_t refresh_mhz);
+
+  /**
    * @brief Wayland display connection used to dispatch capture events.
    */
   class display_t {
@@ -1076,8 +1087,8 @@ namespace wl {
      */
     void roundtrip();
 
-    // Wait up to the timeout to read and dispatch new events
-    bool dispatch(std::chrono::milliseconds timeout);
+    // Wait up to the timeout (to the nanosecond; a negative one is zero) to read and dispatch new events
+    bool dispatch(std::chrono::nanoseconds timeout);
 
     /// True once the connection failed (compositor gone, protocol error): nothing will be dispatched any more.
     bool broken();

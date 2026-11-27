@@ -31,6 +31,7 @@
 
   // local includes
   #include <src/platform/linux/wayland.h>
+  #include <src/video.h>
   #ifdef SUNSHINE_BUILD_CUDA
     #include <src/platform/linux/cuda.h>
   #endif
@@ -705,6 +706,18 @@ TEST(WaylandOutputWatchTest, OutputInsideTheLayoutIsNoChange) {
   EXPECT_FALSE(outputs.change());
   describe(*outputs.interface.monitors.back(), {.x = 1920, .y = 0, .width = 640, .height = 480, .logical_width = 640, .logical_height = 480});
   EXPECT_FALSE(outputs.change());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, CaptureIntervalMatchesAFractionalRefreshRate) {
+  video::config_t config {};
+  config.framerate = 60;
+  EXPECT_EQ(wl::capture_interval(config, 59940), std::chrono::nanoseconds {16'683'350});
+  EXPECT_EQ(wl::capture_interval(config, 60000), std::chrono::nanoseconds {16'666'666});
+
+  // An exact rate from the client is kept.
+  config.framerateX100 = 6000;
+  EXPECT_EQ(wl::capture_interval(config, 59940), std::chrono::nanoseconds {16'666'666});
 }
 
 TEST(WaylandCaptureTest, ExportsEveryGbmBufferPlane) {

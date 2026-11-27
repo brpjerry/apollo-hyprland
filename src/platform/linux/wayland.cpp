@@ -33,6 +33,7 @@
 #include "src/platform/display_selection.h"
 #include "src/round_robin.h"
 #include "src/utility.h"
+#include "src/video.h"
 #include "wayland.h"
 
 extern const wl_interface wl_output_interface;  ///< Wayland output interface.
@@ -193,7 +194,7 @@ namespace wl {
    * @return `true` if new events were dispatched, `false` if the timeout expired or the connection is broken
    *         (see broken()).
    */
-  bool display_t::dispatch(std::chrono::milliseconds timeout) {
+  bool display_t::dispatch(std::chrono::nanoseconds timeout) {
     if (broken()) {
       return false;
     }
@@ -207,8 +208,11 @@ namespace wl {
       struct pollfd pfd = {};
       pfd.fd = wl_display_get_fd(display_internal.get());
       pfd.events = POLLIN;
+      // ppoll() rather than poll(): a deadline of the capture pacer is kept to the microsecond, not the next millisecond.
+      const auto ns = std::max(timeout, std::chrono::nanoseconds::zero()).count();
+      const timespec ts {.tv_sec = static_cast<time_t>(ns / 1'000'000'000), .tv_nsec = static_cast<long>(ns % 1'000'000'000)};
       // A hangup or socket error is read too: libwayland then records the broken connection.
-      if (poll(&pfd, 1, timeout.count()) == 1 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+      if (ppoll(&pfd, 1, &ts, nullptr) == 1 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
         // Read the new event(s)
         wl_display_read_events(display_internal.get());
       } else {
@@ -528,6 +532,17 @@ namespace wl {
       return "the output layout changed"sv;
     }
     return std::nullopt;
+  }
+
+  std::chrono::nanoseconds capture_interval(const ::video::config_t &config, std::int32_t refresh_mhz) {
+    if (config.framerateX100 <= 0) {
+      if (auto matched = refresh_matched_rate(config.framerate, refresh_mhz)) {
+        BOOST_LOG(info) << "Capturing at "sv << static_cast<double>(matched->num) / static_cast<double>(matched->den) << " fps instead of "sv
+                        << config.framerate << " to match the output's refresh rate of "sv << refresh_mhz / 1000.0 << " Hz"sv;
+        return frame_interval(*matched);
+      }
+    }
+    return ::video::capture_frame_interval(config);
   }
 
   // Initialize GBM

@@ -250,8 +250,6 @@ namespace wl {
     }
 
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config, const ext_options_t &options) {
-      // Exact intervals for fractional (NTSC) rates too.
-      delay = ::video::capture_frame_interval(config);
       mem_type = hwdevice_type;
       this->options = options;
 
@@ -274,6 +272,8 @@ namespace wl {
       }
       output = interface.monitors[*index]->output;
       watch = watch_output(interface, *interface.monitors[*index]);
+      // Matched to a fractional refresh rate of the output.
+      delay = capture_interval(config, interface.monitors[*index]->refresh_mhz);
 
       // HDR state and metadata of the output. Without wp-color-management the output is treated as SDR.
       color.open(output_names(interface)[*index]);
@@ -321,6 +321,8 @@ namespace wl {
     }
 
     platf::capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
+      // The pacer's deadlines are kept by the poll timeout of dispatch().
+      platf::use_precise_timers();
       frame_pacer_t pacer {delay};
       auto idle_until = std::chrono::steady_clock::now() + idle_repeat_interval;
       int failures = 0;
@@ -393,8 +395,7 @@ namespace wl {
           // No buffer was free: retry soon.
           wake = std::min(wake, now + 1ms);
         }
-        auto timeout = std::chrono::ceil<std::chrono::milliseconds>(wake - now);
-        display.dispatch(std::max(timeout, 0ms));
+        display.dispatch(wake - now);
         if (display.broken()) {
           // The frame in flight will never complete.
           BOOST_LOG(error) << "Lost the Wayland connection; reinitializing capture"sv;

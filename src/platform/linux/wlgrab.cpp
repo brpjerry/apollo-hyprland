@@ -363,8 +363,6 @@ namespace wl {
      * @return 0 on success; nonzero or negative platform status on failure.
      */
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
-      // calculate frame interval we should capture at
-      delay = ::video::capture_frame_interval(config);
       const AVRational fps = ::video::framerate_to_rational(config);
       if (fps.den != 1) {
         BOOST_LOG(info) << "[wlgrab] Requested frame rate [" << fps.num << "/" << fps.den << ", approx. " << av_q2d(fps) << " fps]";
@@ -414,6 +412,9 @@ namespace wl {
       auto monitor = interface.monitors[*index].get();
 
       output = monitor->output;
+
+      // The frame interval to capture at, matched to a fractional refresh rate of the output.
+      delay = capture_interval(config, monitor->refresh_mhz);
 
       // copy_with_damage arrived in version 2 of the protocol. With it the
       // compositor answers when the output has a new picture, so capture
@@ -575,7 +576,7 @@ namespace wl {
       }
 
       if (should_wait_for_damage_request(next_request, std::chrono::steady_clock::now(), delay)) {
-        std::this_thread::sleep_until(next_request);
+        platf::precise_sleep_until(next_request);
       }
     }
 

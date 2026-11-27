@@ -467,6 +467,61 @@ namespace wl {
   };
 
   /**
+   * @brief A frame rate as a fraction, in frames per second.
+   */
+  struct frame_rate_t {
+    std::int64_t num;  ///< Numerator.
+    std::int64_t den;  ///< Denominator.
+
+    friend bool operator==(const frame_rate_t &, const frame_rate_t &) = default;
+  };
+
+  /**
+   * @brief Lower an integer stream rate to the fractional refresh rate of the output it is close to.
+   *
+   * Port of the Windows capture rate adjustment (display_base.cpp): a 60 fps stream of a 59.94 Hz output is captured
+   * at 59.94 fps, a 120 fps stream of it at 119.88 and a 30 fps stream at 29.97, so that no picture is captured twice
+   * every few seconds. Only a lower rate, within 1%, is used: a higher one would let frames pile up at the client.
+   *
+   * @param stream_fps Integer frame rate the client asked for.
+   * @param refresh_mhz Refresh rate of the output in mHz, 0 when unknown.
+   * @return The matched rate, or nothing when the stream rate is kept.
+   */
+  inline std::optional<frame_rate_t> refresh_matched_rate(std::int64_t stream_fps, std::int32_t refresh_mhz) {
+    // An integral refresh rate (or none) needs no adjustment.
+    if (stream_fps <= 0 || refresh_mhz <= 0 || refresh_mhz % 1000 == 0) {
+      return std::nullopt;
+    }
+    const std::int64_t rounded = (static_cast<std::int64_t>(refresh_mhz) + 500) / 1000;
+    if (rounded == 0) {
+      return std::nullopt;
+    }
+
+    frame_rate_t candidate {refresh_mhz, 1000};
+    if (stream_fps % rounded == 0) {
+      candidate.num *= stream_fps / rounded;
+    } else if (rounded % stream_fps == 0) {
+      candidate.den *= rounded / stream_fps;
+    }
+
+    const double candidate_fps = static_cast<double>(candidate.num) / static_cast<double>(candidate.den);
+    if (static_cast<double>(stream_fps) > candidate_fps && candidate_fps / static_cast<double>(stream_fps) > 0.99) {
+      return candidate;
+    }
+    return std::nullopt;
+  }
+
+  /**
+   * @brief Length of one frame at a frame rate.
+   *
+   * @param rate Frame rate; its numerator must not be 0.
+   * @return Frame interval, rounded down to the nanosecond.
+   */
+  inline std::chrono::nanoseconds frame_interval(frame_rate_t rate) {
+    return std::chrono::nanoseconds {rate.den * 1'000'000'000LL / rate.num};
+  }
+
+  /**
    * @brief Copies an image row by row, optionally flipping it vertically.
    */
   inline void copy_rows(const std::uint8_t *src, std::size_t src_pitch, std::uint8_t *dst, std::size_t dst_pitch, std::size_t row_bytes, std::size_t rows, bool flip) {

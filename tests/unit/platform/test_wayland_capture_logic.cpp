@@ -357,6 +357,43 @@ TEST(WaylandCaptureLogic, PacerDeliversAtMostAtTheStreamRate) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(WaylandCaptureLogic, StreamRateIsLoweredToAFractionalRefreshRate) {
+  using rate = wl::frame_rate_t;
+  // 59.94 Hz: the stream rate itself, twice it and half of it.
+  EXPECT_EQ(wl::refresh_matched_rate(60, 59940), (rate {59940, 1000}));
+  EXPECT_EQ(wl::refresh_matched_rate(120, 59940), (rate {119880, 1000}));
+  EXPECT_EQ(wl::refresh_matched_rate(30, 59940), (rate {59940, 2000}));
+  // A 119.88 Hz output streamed at 60, and a 143.856 Hz one at 144.
+  EXPECT_EQ(wl::refresh_matched_rate(60, 119880), (rate {119880, 2000}));
+  EXPECT_EQ(wl::refresh_matched_rate(144, 143856), (rate {143856, 1000}));
+  // Monitors that report 59.951 Hz for "60 Hz" are matched too, as on Windows.
+  EXPECT_EQ(wl::refresh_matched_rate(60, 59951), (rate {59951, 1000}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandCaptureLogic, StreamRateIsKeptAwayFromACloseFractionalRefreshRate) {
+  // Integral or unknown refresh rates.
+  EXPECT_FALSE(wl::refresh_matched_rate(60, 60000));
+  EXPECT_FALSE(wl::refresh_matched_rate(60, 0));
+  EXPECT_FALSE(wl::refresh_matched_rate(60, -1));
+  EXPECT_FALSE(wl::refresh_matched_rate(0, 59940));
+  EXPECT_FALSE(wl::refresh_matched_rate(60, 400));
+  // Never a higher rate: frames would pile up at the client.
+  EXPECT_FALSE(wl::refresh_matched_rate(60, 60001));
+  // Not a multiple or divisor, or more than 1% below.
+  EXPECT_FALSE(wl::refresh_matched_rate(50, 59940));
+  EXPECT_FALSE(wl::refresh_matched_rate(60, 58500));
+  EXPECT_FALSE(wl::refresh_matched_rate(90, 59940));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandCaptureLogic, FrameIntervalOfAFractionalRate) {
+  EXPECT_EQ(wl::frame_interval({59940, 1000}), std::chrono::nanoseconds {16'683'350});
+  EXPECT_EQ(wl::frame_interval({60, 1}), std::chrono::nanoseconds {16'666'666});
+  EXPECT_EQ(wl::frame_interval({59940, 2000}), std::chrono::nanoseconds {33'366'700});
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(WaylandCaptureLogic, CopyRowsFlipsVertically) {
   // 2x3 image, 1 byte per pixel, source pitch 4.
   const std::uint8_t src[] = {1, 2, 0, 0, 3, 4, 0, 0, 5, 6, 0, 0};
