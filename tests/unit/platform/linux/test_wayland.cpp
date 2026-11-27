@@ -1121,4 +1121,46 @@ TEST(CudaPciReaderTest, ReturnsNoBusIdWhenBusIdQueryFails) {
 }
   #endif
 
+namespace {
+  /**
+   * @brief A system memory frame that owns its pixels.
+   */
+  struct owned_ram_img_t: egl::ram_img_t {
+    /**
+     * @brief Allocate a BGRA frame filled with one byte value.
+     *
+     * @param w Width.
+     * @param h Height.
+     * @param fill Byte every pixel byte gets.
+     */
+    owned_ram_img_t(int w, int h, std::uint8_t fill):
+        pixels(static_cast<std::size_t>(w) * h * 4, fill) {
+      width = w;
+      height = h;
+      pixel_pitch = 4;
+      row_pitch = w * 4;
+      data = pixels.data();
+    }
+
+    std::vector<std::uint8_t> pixels;  ///< Frame storage.
+  };
+}  // namespace
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandRepeatTest, RepeatedSystemMemoryFrameKeepsItsHdrWhiteLevel) {
+  owned_ram_img_t newest {8, 4, 0x7f};
+  newest.sdr_white_nits = 203;
+  owned_ram_img_t fresh {8, 4, 0};
+
+  wl::repeat_ram_frame(newest, fresh, 8, 4);
+  EXPECT_EQ(fresh.pixels, newest.pixels);
+  // Without it the converter would hand the idle desktop of an HDR output to the client unconverted.
+  EXPECT_FLOAT_EQ(fresh.sdr_white_nits, 203.0f);
+
+  // A frame without a white level (an SDR output) stays unconverted, even in a buffer that held an HDR frame.
+  newest.sdr_white_nits = 0;
+  wl::repeat_ram_frame(newest, fresh, 8, 4);
+  EXPECT_FLOAT_EQ(fresh.sdr_white_nits, 0.0f);
+}
+
 #endif

@@ -1731,6 +1731,14 @@ namespace wl {
     return true;
   }
 
+  void repeat_ram_frame(const platf::img_t &from, platf::img_t &to, std::size_t width, std::size_t height) {
+    copy_rows(from.data, from.row_pitch, to.data, to.row_pitch, width * 4, height, false);
+    if (auto *ram = dynamic_cast<egl::ram_img_t *>(&to)) {
+      const auto *source = dynamic_cast<const egl::ram_img_t *>(&from);
+      ram->sdr_white_nits = source ? source->sdr_white_nits : 0;
+    }
+  }
+
   bool hand_over_buffer(buffer_pool_t &pool, std::size_t slot, const std::shared_ptr<platf::img_t> &img_out, std::uint64_t sequence, bool y_invert) {
     auto img = static_cast<egl::img_descriptor_t *>(img_out.get());
     img->reset();

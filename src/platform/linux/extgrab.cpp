@@ -560,7 +560,7 @@ namespace wl {
         }
         static_cast<egl::img_descriptor_t *>(img_out.get())->sdr_white_nits = color.sdr_white_nits();
       } else {
-        copy_rows(last_img->data, last_img->row_pitch, img_out->data, img_out->row_pitch, (std::size_t) width * 4, (std::size_t) height, false);
+        repeat_ram_frame(*last_img, *img_out, (std::size_t) width, (std::size_t) height);
       }
       img_out->frame_timestamp = next_timestamp(std::chrono::steady_clock::now());
       img_out->repeat = true;
@@ -663,10 +663,12 @@ namespace wl {
       if (ext_t::init(hwdevice_type, display_name, config, options)) {
         return -1;
       }
+#ifdef SUNSHINE_BUILD_CUDA
       // NVENC's 10-bit system memory frames go through the GL converter (make_avcodec_encode_device()), which converts
       // them to PQ like video memory frames. VAAPI's system memory path could too, but is unverified; software
-      // encoders can't.
+      // encoders can't, and neither can FFmpeg's NVENC in builds without CUDA (no GL converter).
       hdr_frames = hwdevice_type == platf::mem_type_e::cuda;
+#endif
 
       if (!pool.spec.shm) {
         egl_display = egl::make_display(display.get());

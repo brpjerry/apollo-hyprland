@@ -756,10 +756,12 @@ namespace wl {
       if (wlr_t::init(hwdevice_type, display_name, config)) {
         return -1;
       }
+#ifdef SUNSHINE_BUILD_CUDA
       // NVENC's 10-bit system memory frames go through the GL converter (make_avcodec_encode_device()), which converts
       // the SDR frames of an HDR output to PQ. VAAPI's system memory path could too, but is unverified; software
-      // encoders can't.
+      // encoders can't, and neither can FFmpeg's NVENC in builds without CUDA (no GL converter).
       hdr_frames = hwdevice_type == platf::mem_type_e::cuda;
+#endif
 
       egl_display = egl::make_display(display.get());
       if (!egl_display) {
