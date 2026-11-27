@@ -17,8 +17,11 @@
         </button>
       </li>
     </ul>
-    <OtpPairing v-if="currentTab === 'OTP'"></OtpPairing>
-    <form v-else class="form d-flex flex-column align-items-center" id="form" @submit.prevent="registerDevice">
+    <!-- Kept alive so an issued PIN, which the server still accepts, survives a tab switch until it expires. -->
+    <KeepAlive>
+      <OtpPairing v-if="currentTab === 'OTP'"></OtpPairing>
+    </KeepAlive>
+    <form v-if="currentTab === 'PIN'" class="form d-flex flex-column align-items-center" id="form" @submit.prevent="registerDevice">
       <div class="card flex-column d-flex p-4 mb-4">
         <div class="input-group mt-2">
           <label for="pairing-input" class="visually-hidden">{{ $t('pin.select_pairing') }}</label>

@@ -14,7 +14,7 @@ import Pin from '../../src_assets/common/assets/web/Pin.vue'
 import ClientManager from '../../src_assets/common/assets/web/pairing/ClientManager.vue'
 import OtpPairing from '../../src_assets/common/assets/web/pairing/OtpPairing.vue'
 import { buildClientUpdate, createClientDraft, isValidDisplayMode, normalizeClient, sortClients } from '../../src_assets/common/assets/web/pairing/clients'
-import { buildDeepLink, guessHost, readSavedHost, saveHost } from '../../src_assets/common/assets/web/pairing/otp'
+import { OTP_LIFETIME_MS, buildDeepLink, guessHost, readSavedHost, saveHost } from '../../src_assets/common/assets/web/pairing/otp'
 import { PERM, hasPermission, isSuppressed, permToStr, sanitizePermissions, togglePermission } from '../../src_assets/common/assets/web/pairing/permissions'
 
 /**
@@ -477,6 +477,34 @@ describe('pairing page', () => {
     expect(wrapper.get('#pairing-input').element.value).toBe('0123456789abcdef0123456789abcdef')
     expect(wrapper.get('#name-input').attributes('placeholder')).toBe('pin.device_name (Moonlight PC)')
     expect(wrapper.get('#name-input').attributes('required')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  // The server keeps accepting an issued PIN, so the page must keep showing it across tab switches.
+  // Bugs caught: 0, False positives: 0
+  it('keeps an issued OTP across a tab switch until it expires', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('location', { hash: '', hostname: 'localhost', port: '47990' })
+    vi.stubGlobal('QRCode', vi.fn())
+    apiFetch.mockImplementation(async url => jsonResponse(url === './api/otp'
+      ? { status: true, otp: '4321', ip: '192.168.1.5', name: 'My PC' }
+      : { status: true, platform: 'linux', pairings: [], named_certs: [] }))
+    const wrapper = mount(Pin, { global: globalOptions })
+    await flushPromises()
+
+    await wrapper.get('#otp-passphrase').setValue('abcd')
+    await wrapper.get('#otp-passphrase').element.form.dispatchEvent(new Event('submit'))
+    await flushPromises()
+    expect(wrapper.get('.otp-display').text()).toBe('4321')
+
+    await wrapper.findAll('.nav-link')[1].trigger('click')
+    vi.advanceTimersByTime(60 * 1000)
+    await wrapper.findAll('.nav-link')[0].trigger('click')
+    expect(wrapper.get('.otp-display').text()).toBe('4321')
+
+    vi.advanceTimersByTime(OTP_LIFETIME_MS - 60 * 1000)
+    await flushPromises()
+    expect(wrapper.get('.otp-display').text()).toBe('pin.otp_expired')
     wrapper.unmount()
   })
 })
