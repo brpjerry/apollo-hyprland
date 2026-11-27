@@ -124,6 +124,20 @@ namespace nvhttp {
   };
 
   /**
+   * @brief Outcome of one request that edits a client's settings and then enables or disables it.
+   *
+   * Each step saves the whole client state, so when the settings edit stayed in effect, a successful second save
+   * holds it too.
+   *
+   * @param settings Outcome of the settings edit.
+   * @param enabled Whether the request enabled the client (false: disabled it).
+   * @param enable Outcome of enabling or disabling.
+   * @return The request's outcome: in effect when the enable step is (a disable is in effect even when a grant beside
+   * it was undone), saved when the state file holds both steps.
+   */
+  client_change_t combine_client_changes(const client_change_t &settings, bool enabled, const client_change_t &enable);
+
+  /**
    * @brief Whether a paired client may (still) stream: its certificate belongs to one enabled paired client.
    *
    * @param cert PEM certificate of the client.
@@ -457,7 +471,8 @@ namespace nvhttp {
    * @examples_end
    *
    * @return Whether the client was found and removed (`applied`; its streams are stopped) and the change saved.
-   * A revocation stays in effect when it can't be saved.
+   * A revocation stays in effect when it can't be saved. When an earlier save failed, unpairing a client that is no
+   * longer paired retries the save and reports it (`applied` true).
    */
   client_change_t unpair_client(std::string_view uuid);
 

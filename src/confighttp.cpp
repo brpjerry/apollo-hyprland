@@ -1858,7 +1858,7 @@ namespace confighttp {
         const bool enabled = input_tree.value("enabled", true);
         const auto enable_change = nvhttp::set_client_enabled(uuid, enabled);
         // A disable that took effect is what the response reports as applied, even when a grant beside it was undone.
-        change = {.applied = (change.applied || !enabled) && enable_change.applied, .saved = change.saved && enable_change.saved};
+        change = nvhttp::combine_client_changes(change, enabled, enable_change);
 
         // set_client_enabled() stops a disabled client's streams, also when the change couldn't be saved.
       }
