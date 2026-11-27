@@ -149,6 +149,7 @@ namespace {
     std::atomic<bool> apply_rules {true};  ///< Apply hl.monitor() rules to the monitor list.
     std::atomic<int> fail_removes {0};  ///< Refuse this many `output remove` requests.
     std::atomic<bool> monitors_fail {false};  ///< Answer `j/monitors all` with an error.
+    std::atomic<bool> refuse_creates {false};  ///< Answer `output create` with `Name already taken`.
     std::function<void(const std::string &)> on_request;  ///< Sees every request before it is handled.
 
   private:
@@ -203,6 +204,9 @@ namespace {
         return arr.dump();
       }
       if (std::regex_match(req, match, create_re)) {
+        if (refuse_creates) {
+          return "Name already taken";
+        }
         const std::string name = match[1];
         {
           std::lock_guard lock {mutex_};
@@ -731,11 +735,13 @@ TEST(HyprlandVdisplayTest, CreateFailsWithoutMonitorAddedEvent) {
 TEST(HyprlandVdisplayTest, ReusesItsOwnOutputButReplacesLeftovers) {
   fake_hyprland_t hypr {{{"DP-1", 2560, 1440, 60.0}, {client_output, 1920, 1080, 60.0, 2560, 0}}};
   hyprland::vdisplay_t vd {hypr.options()};
-  // The leftover has an owner file naming a running process (pid 1), so init()'s stale cleanup leaves it for create().
-  write_owner(hypr.state_dir(), client_output, ::getpid() == 1 ? 2 : 1);
+  // The leftover has an owner file naming another running Apollo, so init()'s stale cleanup leaves it for create().
+  child_process_t other_apollo;
+  ASSERT_GT(other_apollo.pid(), 0);
+  write_owner(hypr.state_dir(), client_output, other_apollo.pid());
   ASSERT_EQ(vd.init(), status_e::ok);
   hypr.wait_for_listener();
-  ASSERT_TRUE(hypr.monitor(client_output)) << "pid 1 is alive, so the output must not count as stale";
+  ASSERT_TRUE(hypr.monitor(client_output)) << "its owner is alive, so the output must not count as stale";
 
   // Another running instance's output: neither taken over nor removed.
   EXPECT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), "");
@@ -859,6 +865,58 @@ TEST(HyprlandVdisplayTest, ConfigReloadReappliesTheMode) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, CreateLeavesAnOutputAnotherInstanceIsCreating) {
+  // Another Apollo has claimed the name and not created the output yet. Taking the claim over would let the one
+  // whose create fails delete the other's claim, and stale cleanup then remove the other's output.
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  child_process_t other_apollo;
+  ASSERT_GT(other_apollo.pid(), 0);
+  write_owner(hypr.state_dir(), client_output, other_apollo.pid());
+
+  EXPECT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), "");
+  EXPECT_EQ(hypr.count_requests("/output create"), 0u);
+  std::ifstream owner {hypr.state_dir() / client_output};
+  int pid = 0;
+  owner >> pid;
+  EXPECT_EQ(pid, other_apollo.pid());
+
+  // A claim whose PID now belongs to another program is a crashed instance's: taken over.
+  child_process_t other_program {"not-apollo"};
+  ASSERT_GT(other_program.pid(), 0);
+  write_owner(hypr.state_dir(), client_output, other_program.pid());
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  EXPECT_TRUE(vd.remove(client_identity()));
+  EXPECT_FALSE(fs::exists(hypr.state_dir() / client_output));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, FailedCreateKeepsAnotherInstancesClaim) {
+  // Another instance's claim replaces this one's while the create request is in flight (an Apollo from before the
+  // claim lock), and its output wins the name: the failed create must not delete that claim.
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  child_process_t other_apollo;
+  ASSERT_GT(other_apollo.pid(), 0);
+  hypr.on_request = [&](const std::string &req) {
+    if (req.starts_with("/output create")) {
+      write_owner(hypr.state_dir(), client_output, other_apollo.pid());
+    }
+  };
+  // "Name already taken": the other instance's output got there first.
+  hypr.refuse_creates = true;
+  EXPECT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), "");
+  std::ifstream owner {hypr.state_dir() / client_output};
+  int pid = 0;
+  owner >> pid;
+  EXPECT_EQ(pid, other_apollo.pid());
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(HyprlandVdisplayTest, CleanupStaleRemovesOnlyOrphanedApolloOutputs) {
   fake_hyprland_t hypr {{
     {"DP-1", 2560, 1440, 60.0},
@@ -867,9 +925,15 @@ TEST(HyprlandVdisplayTest, CleanupStaleRemovesOnlyOrphanedApolloOutputs) {
     {"APOLLO-deadbeef", 1920, 1080, 60.0, 6400},  // no owner file: stale
     {"APOLLO-0badf00d", 1920, 1080, 60.0, 8320},  // owner exited: stale
     {"APOLLO-cafebabe", 1920, 1080, 60.0, 10240},  // owner still running: kept
+    {"APOLLO-feedf00d", 1920, 1080, 60.0, 12160},  // owner crashed, its PID now another program's: stale
   }};
+  child_process_t other_apollo;
+  child_process_t other_program {"not-apollo"};
+  ASSERT_GT(other_apollo.pid(), 0);
+  ASSERT_GT(other_program.pid(), 0);
   write_owner(hypr.state_dir(), "APOLLO-0badf00d", dead_pid());
-  write_owner(hypr.state_dir(), "APOLLO-cafebabe", ::getppid());
+  write_owner(hypr.state_dir(), "APOLLO-cafebabe", other_apollo.pid());
+  write_owner(hypr.state_dir(), "APOLLO-feedf00d", other_program.pid());
 
   hyprland::vdisplay_t vd {hypr.options()};
   ASSERT_EQ(vd.init(), status_e::ok);  // the first successful init() cleans up
@@ -878,10 +942,11 @@ TEST(HyprlandVdisplayTest, CleanupStaleRemovesOnlyOrphanedApolloOutputs) {
   EXPECT_FALSE(hypr.monitor("APOLLO-0badf00d"));
   EXPECT_FALSE(fs::exists(hypr.state_dir() / "APOLLO-0badf00d"));
   EXPECT_TRUE(hypr.monitor("APOLLO-cafebabe"));
+  EXPECT_FALSE(hypr.monitor("APOLLO-feedf00d"));
   EXPECT_TRUE(hypr.monitor("APOLLO-TEST-12345678"));
   EXPECT_TRUE(hypr.monitor("HEADLESS-2"));
   EXPECT_TRUE(hypr.monitor("DP-1"));
-  EXPECT_EQ(hypr.count_requests("/output remove"), 2u);
+  EXPECT_EQ(hypr.count_requests("/output remove"), 3u);
 
   // Outputs of the running session survive later cleanups (proc::refresh() calls it on every app list reload).
   hypr.wait_for_listener();

@@ -279,7 +279,14 @@ namespace hyprland {
     std::uint64_t added_count(const std::string &name);
     std::uint64_t removed_count(const std::string &name);
 
-    // Owner files.
+    // Owner files: `state_dir/NAME` holds the PID of the Apollo that created output NAME. Claims and stale cleanup
+    // take an flock() on `state_dir/.lock`, so two instances cannot both claim a name.
+    /// The lock file (creating state_dir), or empty without a state_dir.
+    std::filesystem::path owner_lock_path() const;
+    /// Write this process's PID for `name`, unless another running Apollo has claimed it.
+    bool claim_owner_file(const std::string &name);
+    /// Remove the owner file of `name` if it names this process.
+    void release_owner_file(const std::string &name);
     void write_owner_file(const std::string &name);
     void remove_owner_file(const std::string &name);
     std::optional<int> read_owner_pid(const std::string &name);

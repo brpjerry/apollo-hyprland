@@ -36,7 +36,9 @@
 #include <fstream>
 
 // platform includes
+#include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 // local includes
@@ -90,12 +92,57 @@ namespace hyprland {
       return std::format("{}x{}@{:.3f} at {},{} scale {}", m.width, m.height, m.refresh_hz, m.x, m.y, m.scale);
     }
 
-    bool process_alive(int pid) {
-      if (pid <= 0) {
+    /**
+     * @brief The name of a process as /proc/PID/comm gives it, or nullopt if it cannot be read.
+     */
+    std::optional<std::string> process_name(const std::string &pid) {
+      std::ifstream in {"/proc/" + pid + "/comm"};
+      std::string name;
+      if (!in || !std::getline(in, name)) {
+        return std::nullopt;
+      }
+      return name;
+    }
+
+    /**
+     * @brief Whether an owner file's PID is another running Apollo: alive, not this process, and running the same
+     * program. A PID that a crashed owner left and the kernel gave to another program does not count; if a name
+     * cannot be read, the PID counts.
+     */
+    bool other_owner_alive(int pid) {
+      if (pid <= 0 || pid == ::getpid() || (::kill(pid, 0) != 0 && errno != EPERM)) {
         return false;
       }
-      return ::kill(pid, 0) == 0 || errno == EPERM;
+      const auto own = process_name("self");
+      const auto theirs = process_name(std::to_string(pid));
+      return !own || !theirs || *own == *theirs;
     }
+
+    /**
+     * @brief An exclusive flock() on a file, released on destruction. Without the file it holds nothing.
+     */
+    class file_lock_t {
+    public:
+      explicit file_lock_t(const std::filesystem::path &path):
+          fd_ {::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600)} {
+        if (fd_ >= 0) {
+          while (::flock(fd_, LOCK_EX) != 0 && errno == EINTR) {
+          }
+        }
+      }
+
+      ~file_lock_t() {
+        if (fd_ >= 0) {
+          ::close(fd_);
+        }
+      }
+
+      file_lock_t(const file_lock_t &) = delete;
+      file_lock_t &operator=(const file_lock_t &) = delete;
+
+    private:
+      int fd_;
+    };
   }  // namespace
 
   std::string vdisplay_output_name(const uuid_util::uuid_t &identity) {
@@ -298,7 +345,7 @@ namespace hyprland {
       }
 
       // Another running Apollo owns it (cleanup_stale_locked() leaves those alone too): not ours to take over.
-      if (auto pid = read_owner_pid(name); pid && *pid != ::getpid() && process_alive(*pid)) {
+      if (auto pid = read_owner_pid(name); pid && other_owner_alive(*pid)) {
         BOOST_LOG(error) << "Hyprland virtual display: "sv << name << " belongs to running process "sv << *pid;
         return {};
       }
@@ -313,11 +360,13 @@ namespace hyprland {
 
     const auto seen = added_count(name);
     // Claim the name first: another instance's stale cleanup takes an Apollo output without a live owner for a
-    // leftover and would remove it.
-    write_owner_file(name);
+    // leftover and would remove it. Another instance creating the same output at the same time has claimed it.
+    if (!claim_owner_file(name)) {
+      return {};
+    }
     if (!ipc_->create_headless(name)) {
       BOOST_LOG(error) << "Hyprland virtual display: cannot create headless output "sv << name;
-      remove_owner_file(name);
+      release_owner_file(name);
       return {};
     }
     auto &entry = owned_[name];
@@ -330,7 +379,7 @@ namespace hyprland {
       // If that fails too, keep it owned: the caller's remove() (terminate() after a failed launch) tries again.
       if (remove_output_locked(name)) {
         owned_.erase(name);
-        remove_owner_file(name);
+        release_owner_file(name);
       }
       return {};
     };
@@ -490,7 +539,7 @@ namespace hyprland {
     }
     if (!current || removed) {
       owned_.erase(name);
-      remove_owner_file(name);
+      release_owner_file(name);
     }
     // Hyprland moves focus to some remaining monitor; put it back where it was before the stream.
     if (removed && restore_focus) {
@@ -920,7 +969,9 @@ namespace hyprland {
       if (!is_vdisplay_output_name(m.name) || owned_.contains(m.name)) {
         continue;
       }
-      if (auto pid = read_owner_pid(m.name); pid && *pid != ::getpid() && process_alive(*pid)) {
+      // Under the lock, so an instance claiming the name meanwhile is seen as its owner.
+      file_lock_t lock {owner_lock_path()};
+      if (auto pid = read_owner_pid(m.name); pid && other_owner_alive(*pid)) {
         BOOST_LOG(info) << "Hyprland virtual display: leaving "sv << m.name << " alone, it belongs to running process "sv << *pid;
         continue;
       }
@@ -980,6 +1031,38 @@ namespace hyprland {
     out.close();
     if (!out) {
       BOOST_LOG(debug) << "Hyprland virtual display: cannot write "sv << (options_.state_dir / name).string();
+    }
+  }
+
+  std::filesystem::path vdisplay_t::owner_lock_path() const {
+    if (options_.state_dir.empty()) {
+      return {};
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(options_.state_dir, ec);
+    return options_.state_dir / ".lock";
+  }
+
+  bool vdisplay_t::claim_owner_file(const std::string &name) {
+    if (options_.state_dir.empty()) {
+      return true;
+    }
+    file_lock_t lock {owner_lock_path()};
+    if (auto pid = read_owner_pid(name); pid && other_owner_alive(*pid)) {
+      BOOST_LOG(error) << "Hyprland virtual display: running process "sv << *pid << " is creating "sv << name << " too"sv;
+      return false;
+    }
+    write_owner_file(name);
+    return true;
+  }
+
+  void vdisplay_t::release_owner_file(const std::string &name) {
+    if (options_.state_dir.empty()) {
+      return;
+    }
+    file_lock_t lock {owner_lock_path()};
+    if (read_owner_pid(name) == ::getpid()) {
+      remove_owner_file(name);
     }
   }
 
