@@ -472,6 +472,11 @@ namespace wl {
     }
 
     int dummy_img(platf::img_t *img) override {
+      // The encoder sends a dummy frame before the first capture: it must not show old heap contents.
+      // Video memory images are recognized as dummies by their zero sequence number instead.
+      if (auto *ram = dynamic_cast<egl::ram_img_t *>(img); ram && ram->data) {
+        std::memset(ram->data, 0, static_cast<std::size_t>(ram->row_pitch) * ram->height);
+      }
       return 0;
     }
 

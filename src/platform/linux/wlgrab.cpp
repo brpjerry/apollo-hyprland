@@ -461,6 +461,10 @@ namespace wl {
      * @return Final capture status when callbacks stop capture or the display needs reinitialization.
      */
     int dummy_img(platf::img_t *img) override {
+      // The encoder sends a dummy frame before the first capture: it must not show old heap contents.
+      if (img && img->data) {
+        std::memset(img->data, 0, static_cast<std::size_t>(img->row_pitch) * img->height);
+      }
       return 0;
     }
 
