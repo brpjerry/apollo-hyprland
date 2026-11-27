@@ -170,12 +170,18 @@
   /** Options the server sends as JSON strings. */
   const JSON_OPTIONS = ["dd_mode_remapping", "global_prep_cmd", "global_state_cmd", "server_cmd"];
 
-  /** Command lists edited as tables, with the entries kept when saving. */
+  /**
+   * Command lists edited as tables, with the entries kept when saving. A server command without a name still runs
+   * (clients pick server commands by position), so only its command decides.
+   */
   const COMMAND_LISTS = {
     global_prep_cmd: cmd => !!(cmd.do?.trim() || cmd.undo?.trim()),
     global_state_cmd: cmd => !!(cmd.do?.trim() || cmd.undo?.trim()),
-    server_cmd: cmd => !!(cmd.name?.trim() && cmd.cmd?.trim()),
+    server_cmd: cmd => !!cmd.cmd?.trim(),
   };
+
+  /** `elevated` values the server's Boost bool parser reads as true. */
+  const TRUE_FLAGS = new Set([true, "true", 1, "1"]);
 
   /** Fallback display mode format: `[Width]x[Height]x[FPS]`. */
   const FALLBACK_MODE_PATTERN = /^\d+x\d+x\d+(\.\d+)?$/;
@@ -200,7 +206,7 @@
     }
     for (const optionKey of Object.keys(COMMAND_LISTS)) {
       if (Array.isArray(config[optionKey])) {
-        config[optionKey] = config[optionKey].map(cmd => ({ ...cmd, elevated: cmd.elevated === true || cmd.elevated === "true" }));
+        config[optionKey] = config[optionKey].map(cmd => ({ ...cmd, elevated: TRUE_FLAGS.has(cmd.elevated) }));
       }
     }
   }

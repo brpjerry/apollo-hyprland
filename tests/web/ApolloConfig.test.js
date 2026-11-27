@@ -100,6 +100,22 @@ describe('Apollo configuration options', () => {
     expect(config).not.toHaveProperty('dd_mode_remapping')
   })
 
+  // The server reads elevated with Boost's bool parser (1 and "1" are true) and runs server commands by position,
+  // so saving an unrelated setting must not change either.
+  // Bugs caught: 0, False positives: 0
+  it('keeps the commands and elevation flags the server accepts', () => {
+    const config = {
+      global_prep_cmd: JSON.stringify([{ do: 'a', undo: '', elevated: 1 }, { do: 'b', undo: '', elevated: '1' }, { do: 'c', undo: '', elevated: 0 }]),
+      server_cmd: JSON.stringify([{ name: '', cmd: 'loginctl lock-session' }, { name: 'Suspend', cmd: 'systemctl suspend' }]),
+    }
+
+    parseJsonOptions(config)
+    cleanConfigForSave(config)
+
+    expect(config.global_prep_cmd.map(cmd => cmd.elevated)).toEqual([true, true, false])
+    expect(config.server_cmd.map(cmd => cmd.cmd)).toEqual(['loginctl lock-session', 'systemctl suspend'])
+  })
+
   // Bugs caught: 0, False positives: 0
   it('drops empty command rows and an invalid fallback mode before saving', () => {
     const config = cleanConfigForSave({
