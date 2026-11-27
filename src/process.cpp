@@ -1488,14 +1488,13 @@ namespace proc {
           }
         }
 
-        // For each entry in the "prep-cmd" and "state-cmd" arrays, convert "elevated" if necessary. Older Web UIs saved
-        // it as a string in both, and the reader only takes a boolean.
+        // Store the "elevated" flag of each "prep-cmd" and "state-cmd" entry as a boolean (older Web UIs saved strings),
+        // read the way the app list reader reads it.
         for (const auto *commands : {"prep-cmd", "state-cmd"}) {
           if (app.contains(commands) && app[commands].is_array()) {
             for (auto &prep : app[commands]) {
-              if (prep.is_object() && prep.contains("elevated") && prep["elevated"].is_string()) {
-                std::string s = prep["elevated"].get<std::string>();
-                prep["elevated"] = (s == "true");
+              if (prep.is_object() && prep.contains("elevated")) {
+                prep["elevated"] = command_elevated(prep);
               }
             }
           }
@@ -1526,16 +1525,9 @@ namespace proc {
     }
   }
 
-  /**
-   * @brief The "elevated" flag of a prep-cmd or state-cmd entry.
-   *
-   * The migration turns old string values into booleans, but a hand-edited file at version 2 can still hold one; like
-   * the config parser, accept "true"/"false" and "1"/"0" rather than fail the whole app list. Anything else is not
-   * elevated.
-   *
-   * @param command Command entry.
-   */
-  static bool command_elevated(const nlohmann::json &command) {
+  // The migration turns old string values into booleans, but a hand-edited file at version 2 can still hold one; like
+  // the config parser, accept "true"/"false" and "1"/"0" rather than fail the whole app list.
+  bool command_elevated(const nlohmann::json &command) {
     if (!command.is_object() || !command.contains("elevated")) {
       return false;
     }
@@ -1544,7 +1536,7 @@ namespace proc {
       return value.get<bool>();
     }
     if (value.is_number()) {
-      return value.get<double>() != 0;
+      return value.get<double>() == 1;
     }
     if (value.is_string()) {
       const auto text = value.get<std::string>();

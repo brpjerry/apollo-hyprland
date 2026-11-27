@@ -346,6 +346,7 @@ protected:
     server->resource["^/pairing-test$"]["GET"] = confighttp::getPendingPairings;
     server->resource["^/pairing-test$"]["POST"] = confighttp::savePin;
     server->resource["^/portal-token-reset-test$"]["POST"] = confighttp::resetPortalToken;
+    server->resource["^/api/apps$"]["GET"] = confighttp::getApps;
     server->resource["^/api/apps$"]["POST"] = confighttp::saveApp;
     server->resource["^/login-test$"]["POST"] = confighttp::login;
     server->resource["^/logout-test$"]["POST"] = confighttp::logout;
@@ -2386,6 +2387,33 @@ TEST_F(ConfigHttpTest, LoginRedirectKeepsTheQuery) {
   const auto location = response->header.find("Location");
   ASSERT_NE(location, response->header.end());
   EXPECT_EQ(location->second, "/login?redir=%2Fpage-test%3Ftab%3Dotp");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, GetAppsSendsCommandElevationAsTheAppListReadsIt) {
+  // The editor saves what it was sent: a 1 or "1" it saw as false would drop the elevation on an unrelated save.
+  using json = nlohmann::json;
+  ScopedSaveAppAppsFile apps_file("get_apps_elevation");
+  const auto commands = json::array({json {{"do", "a"}, {"elevated", 1}}, json {{"do", "b"}, {"elevated", "1"}}, json {{"do", "c"}, {"elevated", 2}}, json {{"do", "d"}, {"elevated", "true"}}, json {{"do", "e"}}});
+  {
+    std::ofstream file(config::stream.file_apps);
+    file << json {{"version", 2}, {"env", json::object()}, {"apps", json::array({json {{"name", "A"}, {"prep-cmd", commands}, {"state-cmd", commands}}})}}.dump();
+  }
+  SimpleWeb::CaseInsensitiveMultimap headers;
+  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
+  const auto response = client->request("GET", "/api/apps", "", headers);
+  ASSERT_EQ(response->status_code, "200 OK");
+  const auto app = json::parse(response->content.string()).at("apps").at(0);
+  for (const auto *key : {"prep-cmd", "state-cmd"}) {
+    SCOPED_TRACE(key);
+    const auto &sent = app.at(key);
+    ASSERT_EQ(sent.size(), 5U);
+    EXPECT_EQ(sent.at(0).at("elevated"), true);
+    EXPECT_EQ(sent.at(1).at("elevated"), true);
+    EXPECT_EQ(sent.at(2).at("elevated"), false);
+    EXPECT_EQ(sent.at(3).at("elevated"), true);
+    EXPECT_FALSE(sent.at(4).contains("elevated"));
+  }
 }
 
 // Bugs caught: 0, False positives: 0

@@ -356,6 +356,17 @@ namespace proc {
   std::optional<proc::proc_t> parse(const std::string &file_name);
 
   /**
+   * @brief The "elevated" flag of a prep-cmd or state-cmd entry of the app list.
+   *
+   * Accepts a boolean, 1 or 0, and "true"/"false" or "1"/"0" (older Web UIs saved strings; a hand-edited file may
+   * hold any of them). Anything else is not elevated.
+   *
+   * @param command Command entry.
+   * @return Whether the command runs elevated.
+   */
+  bool command_elevated(const nlohmann::json &command);
+
+  /**
    * @brief Migrate a v1 app list to v2 (Apollo): legacy string values become booleans and integers, apps get UUIDs.
    *
    * @param fileTree The apps.json document, changed in place.

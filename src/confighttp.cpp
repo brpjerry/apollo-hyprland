@@ -1256,10 +1256,14 @@ namespace confighttp {
             app[key] = std::stoi(app[key].get<std::string>());
           }
         }
-        if (app.contains("prep-cmd")) {
-          for (auto &prep : app["prep-cmd"]) {
-            if (prep.contains("elevated") && prep["elevated"].is_string()) {
-              prep["elevated"] = prep["elevated"] == "true";
+        // The editor gets each command's elevation as the app list reader sees it, so saving an unrelated change
+        // keeps it.
+        for (const auto *key : {"prep-cmd", "state-cmd"}) {
+          if (const auto commands = app.find(key); commands != app.end() && commands->is_array()) {
+            for (auto &command : *commands) {
+              if (command.is_object() && command.contains("elevated")) {
+                command["elevated"] = proc::command_elevated(command);
+              }
             }
           }
         }
