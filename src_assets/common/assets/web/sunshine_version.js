@@ -128,29 +128,44 @@ export function isVersionedRelease(release) {
   return typeof release?.tag_name === 'string' && release.tag_name.startsWith('v');
 }
 
+/** @brief Releases asked for per page (GitHub's maximum). */
+const RELEASES_PER_PAGE = 100;
+
+/** @brief Most pages read, to bound the unauthenticated API calls a single page view makes. */
+const MAX_RELEASE_PAGES = 10;
+
 /**
  * @brief Fetch the fork's highest stable release and highest pre-release from GitHub.
  *
  * The highest version wins, not the most recently published one: a maintenance release of an older branch can be
- * published after a newer version. Only the first page of releases (GitHub's 30 most recent) is read.
+ * published after a newer version. Pages are read while GitHub returns full ones, so a higher version further down
+ * the list is not missed. A failed page makes the whole result unknown.
  *
  * @param {Function} [fetchJson] Loader returning parsed JSON for a URL.
  * @return {Promise<{stable: ?SunshineVersion, preRelease: ?SunshineVersion}>} Release versions, null when absent.
  */
 export async function fetchReleaseVersions(fetchJson = async url => (await fetch(url)).json()) {
-  const releases = await fetchJson(FORK_RELEASES_API);
   const newest = { stable: null, preRelease: null };
-  for (const release of Array.isArray(releases) ? releases : []) {
-    if (!isVersionedRelease(release) || release.draft) {
-      continue;
+  for (let page = 1; page <= MAX_RELEASE_PAGES; page++) {
+    const releases = await fetchJson(`${FORK_RELEASES_API}?per_page=${RELEASES_PER_PAGE}&page=${page}`);
+    if (!Array.isArray(releases)) {
+      return { stable: null, preRelease: null };
     }
-    const version = new SunshineVersion(release);
-    if (version.versionParts.some(Number.isNaN)) {
-      continue;
+    for (const release of releases) {
+      if (!isVersionedRelease(release) || release.draft) {
+        continue;
+      }
+      const version = new SunshineVersion(release);
+      if (version.versionParts.some(Number.isNaN)) {
+        continue;
+      }
+      const channel = release.prerelease ? 'preRelease' : 'stable';
+      if (!newest[channel] || version.isGreater(newest[channel])) {
+        newest[channel] = version;
+      }
     }
-    const channel = release.prerelease ? 'preRelease' : 'stable';
-    if (!newest[channel] || version.isGreater(newest[channel])) {
-      newest[channel] = version;
+    if (releases.length < RELEASES_PER_PAGE) {
+      break;
     }
   }
   return newest;

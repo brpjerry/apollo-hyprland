@@ -76,7 +76,7 @@ describe('Apollo Hyprland release versions', () => {
     expect(new SunshineVersion(null, '0.4.9').isGreater(beta)).toBe(true)
   })
 
-  // Bugs caught: 0, False positives: 0
+  // Bugs caught: 0, False positives: 1
   it('finds the newest stable release and pre-release among v* tags', async () => {
     const fetchJson = vi.fn(async () => [
       { tag_name: 'nightly', prerelease: true },
@@ -88,7 +88,7 @@ describe('Apollo Hyprland release versions', () => {
 
     const { stable, preRelease } = await fetchReleaseVersions(fetchJson)
 
-    expect(fetchJson).toHaveBeenCalledExactlyOnceWith('https://api.github.com/repos/brpjerry/apollo-hyprland/releases')
+    expect(fetchJson).toHaveBeenCalledExactlyOnceWith('https://api.github.com/repos/brpjerry/apollo-hyprland/releases?per_page=100&page=1')
     expect(stable.version).toBe('v0.4.8.1')
     expect(preRelease.version).toBe('v0.5.0-beta.1')
   })
@@ -107,6 +107,28 @@ describe('Apollo Hyprland release versions', () => {
 
     expect(stable.version).toBe('v0.4.8.1')
     expect(preRelease.version).toBe('v0.4.9-beta.1')
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('reads further pages while GitHub returns full ones', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ tag_name: `v0.3.${i}`, prerelease: false }))
+    const fetchJson = vi.fn(async url => (url.endsWith('page=2') ? [{ tag_name: 'v0.4.8.2', prerelease: false }] : full))
+
+    const { stable } = await fetchReleaseVersions(fetchJson)
+
+    expect(fetchJson.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.github.com/repos/brpjerry/apollo-hyprland/releases?per_page=100&page=1',
+      'https://api.github.com/repos/brpjerry/apollo-hyprland/releases?per_page=100&page=2',
+    ])
+    expect(stable.version).toBe('v0.4.8.2')
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('returns no versions when a later page fails', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ tag_name: `v0.3.${i}`, prerelease: false }))
+    const fetchJson = vi.fn(async url => (url.endsWith('page=2') ? { message: 'API rate limit exceeded' } : full))
+
+    expect(await fetchReleaseVersions(fetchJson)).toEqual({ stable: null, preRelease: null })
   })
 
   // Bugs caught: 0, False positives: 0

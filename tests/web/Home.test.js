@@ -44,7 +44,7 @@ async function mountHome(platform, {
     if (url === './api/logs') {
       return { text: async () => '' }
     }
-    if (url === 'https://api.github.com/repos/brpjerry/apollo-hyprland/releases') {
+    if (url.startsWith('https://api.github.com/repos/brpjerry/apollo-hyprland/releases?')) {
       return { json: async () => releases }
     }
     throw new Error(`Unexpected fetch: ${url}`)
@@ -125,7 +125,7 @@ describe('development broker home notice', () => {
 })
 
 describe('Apollo Hyprland release check', () => {
-  // Bugs caught: 0, False positives: 0
+  // Bugs caught: 0, False positives: 1
   it('offers a newer stable fork release by its four-part tag', async () => {
     const wrapper = await mountHome('linux', {
       version: '0.4.8.1',
@@ -136,14 +136,14 @@ describe('Apollo Hyprland release check', () => {
       ],
     })
 
-    expect(fetch).toHaveBeenCalledWith('https://api.github.com/repos/brpjerry/apollo-hyprland/releases')
+    expect(fetch).toHaveBeenCalledWith('https://api.github.com/repos/brpjerry/apollo-hyprland/releases?per_page=100&page=1')
     expect(wrapper.text()).toContain('index.new_stable')
     expect(wrapper.text()).toContain('v0.4.8.2')
     expect(wrapper.text()).not.toContain('index.new_pre_release')
     wrapper.unmount()
   })
 
-  // Bugs caught: 0, False positives: 0
+  // Bugs caught: 0, False positives: 1
   it('reports the latest version when the installed build matches the newest release', async () => {
     const wrapper = await mountHome('linux', {
       version: '0.4.8.1',
@@ -155,7 +155,7 @@ describe('Apollo Hyprland release check', () => {
     wrapper.unmount()
   })
 
-  // Bugs caught: 0, False positives: 0
+  // Bugs caught: 0, False positives: 1
   it('offers a newer pre-release when pre-release notifications are on', async () => {
     const wrapper = await mountHome('linux', {
       version: '0.4.8.1',
@@ -171,7 +171,7 @@ describe('Apollo Hyprland release check', () => {
     wrapper.unmount()
   })
 
-  // Bugs caught: 0, False positives: 0
+  // Bugs caught: 0, False positives: 1
   it('shows release notes as text, never as markup', async () => {
     const body = '<img src="x" onerror="alert(1)">\n**Fixes**'
     const wrapper = await mountHome('linux', {
@@ -204,7 +204,7 @@ describe('Apollo Hyprland release check', () => {
     wrapper.unmount()
   })
 
-  // Bugs caught: 0, False positives: 0
+  // Bugs caught: 0, False positives: 1
   it('offers a newer pre-release when the fork has no stable release yet', async () => {
     const wrapper = await mountHome('linux', {
       version: '0.4.8.1',
