@@ -152,6 +152,40 @@ namespace audio {
     }
   }
 
+  sink_choice_t choose_sink(const platf::sink_t &sinks, const std::string &config_sink, int channels, bool host_audio) {
+    // Order of priority:
+    // 1. Virtual sink
+    // 2. Audio sink
+    // 3. Host
+    sink_choice_t choice {config_sink.empty() ? sinks.host : config_sink};
+    bool virtual_sink = false;
+
+    // Prefer the virtual sink if host playback is disabled or there's no other sink
+    if (sinks.null && (!host_audio || choice.sink.empty())) {
+      const auto &null = *sinks.null;
+      switch (channels) {
+        case 2:
+          choice.sink = null.stereo;
+          virtual_sink = true;
+          break;
+        case 6:
+          choice.sink = null.surround51;
+          virtual_sink = true;
+          break;
+        case 8:
+          choice.sink = null.surround71;
+          virtual_sink = true;
+          break;
+      }
+    }
+
+    // If the selected sink is different than the current one, change sinks. A virtual sink that already is the
+    // default is set again: that is what mutes the host (on Linux, streams pinned to another sink move to it).
+    choice.restore = sinks.host != choice.sink;
+    choice.set_default = choice.restore || virtual_sink;
+    return choice;
+  }
+
   /**
    * @brief Run the capture loop for this backend.
    */
@@ -185,39 +219,14 @@ namespace audio {
       return;
     }
 
-    // Order of priority:
-    // 1. Virtual sink
-    // 2. Audio sink
-    // 3. Host
-    std::string *sink = &ref->sink.host;
-    if (!config::audio.sink.empty()) {
-      sink = &config::audio.sink;
-    }
-
-    // Prefer the virtual sink if host playback is disabled or there's no other sink
-    if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
-      auto &null = *ref->sink.null;
-      switch (stream.channelCount) {
-        case 2:
-          sink = &null.stereo;
-          break;
-        case 6:
-          sink = &null.surround51;
-          break;
-        case 8:
-          sink = &null.surround71;
-          break;
-      }
-    }
-
-    BOOST_LOG(info) << "Selected audio sink: "sv << *sink;
+    const auto choice = choose_sink(ref->sink, config::audio.sink, stream.channelCount, config.flags[config_t::HOST_AUDIO]);
+    BOOST_LOG(info) << "Selected audio sink: "sv << choice.sink;
 
     // Only the first to start a session may change the default sink
     if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
-      // If the selected sink is different than the current one, change sinks.
-      ref->restore_sink = ref->sink.host != *sink;
-      if (ref->restore_sink) {
-        if (control->set_sink(*sink)) {
+      ref->restore_sink = choice.restore;
+      if (choice.set_default) {
+        if (control->set_sink(choice.sink)) {
           return;
         }
       }

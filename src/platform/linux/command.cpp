@@ -12,9 +12,6 @@
 #include <filesystem>
 #include <utility>
 
-// lib includes
-#include <boost/program_options/parsers.hpp>
-
 namespace platf::command {
   namespace {
     /// The `sh -c` script used when the helper is not installed; same arguments as apollo-run-elevated.
@@ -39,19 +36,72 @@ namespace platf::command {
       return terminals;
     }
 
-    std::optional<std::vector<std::string>> split(const std::string &cmd) {
-      try {
-        auto words = boost::program_options::split_unix(cmd);
-        if (words.empty()) {
+  }  // namespace
+
+  std::optional<std::vector<std::string>> split(std::string_view cmd) {
+    std::vector<std::string> words;
+    std::string word;
+    bool in_word = false;  // Set by any character or quote, so '' and "" give an empty word.
+
+    for (std::size_t i = 0; i < cmd.size(); ++i) {
+      char c = cmd[i];
+      if (c == '\\' && i + 1 < cmd.size() && cmd[i + 1] == '\n') {
+        // A backslash and newline join lines.
+        ++i;
+        continue;
+      }
+      if (c == ' ' || c == '\t' || c == '\n') {
+        if (in_word) {
+          words.push_back(std::move(word));
+          word.clear();
+          in_word = false;
+        }
+        continue;
+      }
+
+      in_word = true;
+      if (c == '\\') {
+        if (++i == cmd.size()) {
+          // A trailing backslash stays, as with `sh -c 'echo a\'`.
+          word += c;
+        } else {
+          word += cmd[i];
+        }
+      } else if (c == '\'') {
+        auto end = cmd.find('\'', i + 1);
+        if (end == std::string_view::npos) {
           return std::nullopt;
         }
-        return words;
-      } catch (...) {
-        // Unbalanced quotes and the like.
-        return std::nullopt;
+        word.append(cmd.substr(i + 1, end - i - 1));
+        i = end;
+      } else if (c == '"') {
+        for (++i;; ++i) {
+          if (i == cmd.size()) {
+            return std::nullopt;
+          }
+          if (cmd[i] == '"') {
+            break;
+          }
+          if (cmd[i] == '\\' && i + 1 < cmd.size() && std::string_view {"$`\"\\\n"}.find(cmd[i + 1]) != std::string_view::npos) {
+            if (cmd[++i] != '\n') {
+              word += cmd[i];
+            }
+            continue;
+          }
+          word += cmd[i];
+        }
+      } else {
+        word += c;
       }
     }
-  }  // namespace
+    if (in_word) {
+      words.push_back(std::move(word));
+    }
+    if (words.empty()) {
+      return std::nullopt;
+    }
+    return words;
+  }
 
   elevation_e parse_elevation(std::string_view value) {
     if (value == "sudo") {
@@ -90,7 +140,7 @@ namespace platf::command {
     }
 
     if (!options.elevated) {
-      return plan_t {};
+      return plan_t {std::move(*words), false};
     }
 
     std::vector<std::string> argv;

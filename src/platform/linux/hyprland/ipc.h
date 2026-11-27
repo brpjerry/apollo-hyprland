@@ -133,7 +133,9 @@ namespace hyprland {
    * @brief Whether any Hyprland instance of this user is running, even one whose socket does not answer.
    *
    * An instance counts when its directory under `hypr_dir` has a `.socket.sock` and a `hyprland.lock` whose PID
-   * is alive. A signature left in the environment after Hyprland exited does not count.
+   * is alive, unless connecting to that socket is refused (a crashed instance whose PID was reused). A socket that
+   * accepts connections counts even if nothing answers on it. A signature left in the environment after Hyprland
+   * exited does not count.
    */
   bool instance_running(const std::filesystem::path &hypr_dir);
 

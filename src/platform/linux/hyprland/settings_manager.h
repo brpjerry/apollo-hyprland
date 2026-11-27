@@ -86,6 +86,9 @@ namespace hyprland::dd {
   struct layout_t {
     std::vector<output_t> outputs;
     std::vector<workspace_t> workspaces;
+    /// False when the workspace query failed: `workspaces` is then empty but not known to be. Saving or restoring
+    /// the workspaces needs them; listing and naming the outputs does not.
+    bool workspaces_listed = true;
 
     const output_t *find(std::string_view name) const;
     const workspace_t *find_workspace(std::string_view name) const;
@@ -134,7 +137,7 @@ namespace hyprland::dd {
     virtual ~compositor_t() = default;
 
     /**
-     * @return The current layout, or nullopt if the compositor cannot be reached.
+     * @return The current layout, or nullopt if the compositor cannot be reached or does not list its outputs.
      */
     virtual std::optional<layout_t> layout() = 0;
 

@@ -15,7 +15,7 @@ namespace platf::vdisplay {
     return status_e::unavailable;
   }
 
-  void cleanup_stale() {
+  void cleanup_stale(bool) {
   }
 
   std::string create(const uuid_util::uuid_t &, const std::string &, const mode_t &, const std::string &) {

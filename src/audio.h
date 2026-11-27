@@ -101,6 +101,27 @@ namespace audio {
   };
 
   /**
+   * @brief The sink a session's audio plays to, and what it does to the default sink.
+   */
+  struct sink_choice_t {
+    std::string sink;  ///< The sink to capture from.
+    bool set_default = false;  ///< Make it the default sink when the session starts.
+    bool restore = false;  ///< Put the host sink back as default when capture ends.
+  };
+
+  /**
+   * @brief Choose the sink for a session: a virtual sink when host audio is off (or there is no other sink), else
+   *        the configured sink, else the host's default.
+   *
+   * @param sinks The host's default sink and the virtual sinks.
+   * @param config_sink The configured sink (`audio_sink`), or empty.
+   * @param channels The stream's channel count.
+   * @param host_audio Whether the client asked to keep playing audio on the host.
+   * @return The choice. A virtual sink is set as default even when it already is, so the host is muted.
+   */
+  sink_choice_t choose_sink(const platf::sink_t &sinks, const std::string &config_sink, int channels, bool host_audio);
+
+  /**
    * @brief Byte buffer used for encoded audio packet payloads.
    */
   using buffer_t = util::buffer_t<std::uint8_t>;

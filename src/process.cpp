@@ -12,7 +12,9 @@
 #include <array>
 #include <cmath>
 #include <filesystem>
+#include <ranges>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -53,6 +55,9 @@
 
   // _SH constants for _wfsopen()
   #include <share.h>
+#elif !defined(__APPLE__)
+  // How run_command() splits commands into words
+  #include "platform/linux/command.h"
 #endif
 
 namespace proc {
@@ -153,16 +158,23 @@ namespace proc {
   boost::filesystem::path find_working_directory(const std::string &cmd, const boost::process::v1::environment &env) {
     // Parse the raw command string into parts to get the actual command portion
     std::vector<std::string> parts;
+#if defined(_WIN32) || defined(__APPLE__)
     try {
-#ifdef _WIN32
+  #ifdef _WIN32
       parts = boost::program_options::split_winmain(cmd);
-#else
+  #else
       parts = boost::program_options::split_unix(cmd);
-#endif
+  #endif
     } catch (boost::escaped_list_error &err) {
       BOOST_LOG(error) << "Boost failed to parse command ["sv << cmd << "] because " << err.what();
       return boost::filesystem::path();
     }
+#else
+    // The same words platf::run_command() runs.
+    if (auto words = platf::command::split(cmd)) {
+      parts = std::move(*words);
+    }
+#endif
     if (parts.empty()) {
       BOOST_LOG(error) << "Unable to parse command: "sv << cmd;
       return boost::filesystem::path();
@@ -185,7 +197,16 @@ namespace proc {
         const std::vector<boost::filesystem::path> search_dirs {path_entries.begin(), path_entries.end()};
         cmd_path = boost::process::v1::search_path(parts.at(0), search_dirs);
       } else {
+#if defined(_WIN32) || defined(__APPLE__)
         cmd_path = boost::process::v1::search_path(parts.at(0));
+#else
+        // The list platf::run_command() searches without a PATH.
+        std::vector<boost::filesystem::path> search_dirs;
+        for (const auto dir : std::views::split(std::string_view {platf::command::default_search_path}, ':')) {
+          search_dirs.emplace_back(std::string {dir.begin(), dir.end()});
+        }
+        cmd_path = boost::process::v1::search_path(parts.at(0), search_dirs);
+#endif
       }
       if (cmd_path.empty()) {
         BOOST_LOG(error) << "Unable to find executable ["sv << parts.at(0) << "]. Is it in your PATH?"sv;
@@ -953,7 +974,13 @@ namespace proc {
       }
     }
 
+#ifdef _WIN32
     bool used_virtual_display = platf::vdisplay::status() == platf::vdisplay::status_e::ok && _launch_session && _launch_session->virtual_display;
+#else
+    // The session's own record, not the backend's current status: a backend that failed and recovered during the
+    // stream still owns this session's output, so the revert must run now (before remove()), not after the delay.
+    const bool used_virtual_display = _launch_session && _launch_session->virtual_display;
+#endif
 
 #ifndef _WIN32
     // Revert before removing the virtual display: monitors disabled for the stream come back while it still exists,
@@ -964,6 +991,8 @@ namespace proc {
     }
 #endif
 
+    // On Linux also when the backend is not OK now: remove() reconnects, and if it still fails the backend removes the
+    // output on its next stale cleanup. Without the call it would keep the output for a session that is gone.
     if (used_virtual_display) {
       if (platf::vdisplay::remove(_launch_session->display_guid)) {
         BOOST_LOG(info) << "Virtual Display removed successfully";
@@ -1934,6 +1963,8 @@ namespace proc {
 
     // Only skip parsing when we have a known-good timestamp and the file hasn't changed
     if (!needs_terminate && last_apps_file_update && !ec && current_time == *last_apps_file_update) {
+      // A session's virtual display that could not be removed at its end still goes once the backend answers.
+      platf::vdisplay::cleanup_stale(true);
       return;
     }
 

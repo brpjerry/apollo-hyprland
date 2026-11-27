@@ -11,6 +11,10 @@
 #   RES [2880x1800]  FPS [120]  DURATION [60]  CLIENT_OUTPUT [eDP-1]  PROBE_REGION [712,442,16,16] (logical px)
 #   CLIENT_BIN [artemis]  PROBE [~/.cache/apollo-latency/bin/probe on the client]  REACTOR [host path, required]
 #   PHASES ["blink react"]
+#   STREAM_OUTPUT [] the stream's output, e.g. APOLLO-1a2b3c4d (stable per client, or per app with Use App Identity).
+#     Unset: the one Apollo output that appears; the run stops if a second one is there once the stream has settled.
+#   CLIENT_FOCUS [hl.dsp.focus({ window = "address:%s" })] hyprctl dispatch argument focusing the client window
+#     whose address replaces %s (hyprlang: focuswindow address:%s)
 #   REACTOR_EXTRA [] extra reactor arguments, e.g. --animate for a stream that never goes idle
 #   PROBE_EXTRA [] extra probe arguments, e.g. --inflight 2 (see probe.c; more requests in flight sample more often
 #     but load the client compositor)
@@ -24,6 +28,12 @@ CLIENT="${CLIENT:-x9.internal}"
 CLIENT_SSH_PORT="${CLIENT_SSH_PORT:-538}"
 HOST_IP="${HOST_IP:-192.168.0.115}"
 APP="${APP:-Virtual Display}"
+# The reactor covers the stream output and takes input there, so it must be one of Apollo's virtual displays, never a
+# physical monitor (e.g. CLIENT_OUTPUT given here by mistake).
+if [[ -n "${STREAM_OUTPUT:-}" && ! "$STREAM_OUTPUT" =~ ^APOLLO-[0-9a-f]{8}$ ]]; then
+  echo "run.sh: STREAM_OUTPUT must name an Apollo virtual display (APOLLO-xxxxxxxx), not '$STREAM_OUTPUT'" >&2
+  exit 2
+fi
 RES="${RES:-2880x1800}"
 FPS="${FPS:-120}"
 DURATION="${DURATION:-60}"
@@ -63,37 +73,57 @@ ssh_client "systemctl --user reset-failed apollo-latency-client 2>/dev/null; sys
 
 vout=""
 for _ in $(seq 1 150); do
-  vout="$(hypr -j monitors | jq -r "$stream_outputs | if length == 1 then .[0] else empty end")"
+  if [[ -n "${STREAM_OUTPUT:-}" ]]; then
+    vout="$(hypr -j monitors | jq -r --arg n "$STREAM_OUTPUT" '.[] | select(.name == $n) | .name')"
+  else
+    vout="$(hypr -j monitors | jq -r "$stream_outputs | if length == 1 then .[0] else empty end")"
+  fi
   [[ -n "$vout" ]] && break
   timeout 0.2 tail -f /dev/null || true
 done
 [[ -n "$vout" ]] || { log "no APOLLO output appeared"; exit 1; }
+# Without STREAM_OUTPUT, another session's output appearing after the preflight check could have been taken for this
+# stream's; by the time the client window has focus this stream's output is there, so two of them are ambiguous.
+check_one_stream_output() {
+  [[ -n "${STREAM_OUTPUT:-}" ]] && return 0
+  local outputs
+  outputs="$(hypr -j monitors | jq -r "$stream_outputs | join(\" \")")"
+  [[ "$outputs" == "$vout" ]] || { log "Apollo outputs changed to [$outputs] after picking $vout; set STREAM_OUTPUT"; exit 1; }
+}
 hypr -j monitors | jq -r ".[] | select(.name == \"$vout\") | \"virtual display \(.name) \(.width)x\(.height)@\(.refreshRate)\"" | tee -a "$out/run.log"
 
 # Wait for the client's stream window to be focused. Hyprland may tile it despite --display-mode fullscreen, so
 # make it fullscreen explicitly (CLIENT_FULLSCREEN is a hyprctl dispatch argument; Lua-config syntax by default).
 CLIENT_STREAM_CLASS="${CLIENT_STREAM_CLASS:-com.moonlight_stream.Moonlight}"
 CLIENT_FULLSCREEN="${CLIENT_FULLSCREEN:-hl.dsp.window.fullscreen({ mode = \"fullscreen\" \})}"
-focused=""
+CLIENT_FOCUS="${CLIENT_FOCUS:-hl.dsp.focus({ window = \"address:%s\" \})}"
+window=""
 for _ in $(seq 1 75); do
-  if ssh_client 'hyprctl -j activewindow' | jq -e --arg c "$CLIENT_STREAM_CLASS" '.class == $c' >/dev/null 2>&1; then
-    focused=1
-    break
-  fi
+  window="$(ssh_client 'hyprctl -j activewindow' | jq -r --arg c "$CLIENT_STREAM_CLASS" 'select(.class == $c) | .address' 2>/dev/null)" || true
+  [[ -n "$window" ]] && break
   timeout 0.2 tail -f /dev/null || true
 done
 # Never fullscreen whatever else has focus on the client.
-[[ -n "$focused" ]] || { log "client stream window ($CLIENT_STREAM_CLASS) did not take focus"; exit 1; }
-if ! ssh_client 'hyprctl -j activewindow' | jq -e --arg c "$CLIENT_STREAM_CLASS" '.class == $c and .fullscreen > 0' >/dev/null 2>&1; then
+[[ -n "$window" ]] || { log "client stream window ($CLIENT_STREAM_CLASS) did not take focus"; exit 1; }
+# From here on the stream window is named by its address: focus can move to another window at any time.
+stream_window() { ssh_client 'hyprctl -j clients' | jq -e --arg a "$window" '.[] | select(.address == $a)'; }
+if ! stream_window | jq -e '.fullscreen > 0' >/dev/null 2>&1; then
+  # The fullscreen dispatcher acts on the focused window, so only send it once the stream window has focus: a window
+  # that closed, or a focus dispatch that failed, must not fullscreen whatever else is focused.
+  # shellcheck disable=SC2059 # CLIENT_FOCUS is the format
+  ssh_client "hyprctl dispatch $(printf '%q' "$(printf "$CLIENT_FOCUS" "$window")")" >/dev/null || true
+  ssh_client 'hyprctl -j activewindow' | jq -e --arg a "$window" '.address == $a' >/dev/null ||
+    { log "could not focus the client stream window $window; not fullscreening anything"; exit 1; }
   ssh_client "hyprctl dispatch $(printf '%q' "$CLIENT_FULLSCREEN")" >/dev/null
   timeout 1 tail -f /dev/null || true
 fi
-ssh_client 'hyprctl -j activewindow' | jq -r '"client window: \(.class) fullscreen=\(.fullscreen) at \(.at) size \(.size)"' | tee -a "$out/run.log"
-ssh_client 'hyprctl -j activewindow' | jq -e --arg c "$CLIENT_STREAM_CLASS" '.class == $c and .fullscreen > 0' >/dev/null ||
+stream_window | jq -r '"client window: \(.class) fullscreen=\(.fullscreen) at \(.at) size \(.size)"' | tee -a "$out/run.log"
+ssh_client 'hyprctl -j activewindow' | jq -e --arg a "$window" '.address == $a and .fullscreen > 0' >/dev/null ||
   { log "client stream window is not fullscreen and focused"; exit 1; }
 ssh_client 'echo "client vrr=$(hyprctl getoption misc:vrr | head -1) direct_scanout=$(hyprctl getoption render:direct_scanout | head -1)"' | tee -a "$out/run.log"
 # Let the stream settle (encoder warm-up, first IDR).
 timeout 3 tail -f /dev/null || true
+check_one_stream_output
 
 systemctl --user reset-failed apollo-latency-sync 2>/dev/null || true
 systemd-run --user --quiet --collect --unit=apollo-latency-sync python3 "$here/clocksync.py" server

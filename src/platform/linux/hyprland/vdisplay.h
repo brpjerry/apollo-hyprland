@@ -152,9 +152,10 @@ namespace hyprland {
 
     /**
      * @brief Remove `APOLLO-xxxxxxxx` outputs that this process does not own and whose recorded owner process
-     * is no longer running.
+     * is no longer running, and outputs of ended sessions that remove() could not take away.
+     * @param only_if_pending Do nothing unless an ended session's output is still waiting to be removed.
      */
-    void cleanup_stale();
+    void cleanup_stale(bool only_if_pending = false);
 
     /**
      * @brief Create (or reuse) the output for an identity and give it a mode.
@@ -214,6 +215,8 @@ namespace hyprland {
      * Before removing it, what the user changed on the output during the session (scale, transform, bit depth,
      * position unless isolated, workspace) is saved for the next session (learn_settings()). If the display had focus
      * and was activated, focus goes back to the workspace that had it before activate().
+     * Windows of the session's app stop going to the output at once. If the output cannot be removed (Hyprland not
+     * answering), a later remove() or cleanup_stale() takes it away, unless create() reuses it first.
      * @return true if it existed and is gone.
      */
     bool remove(const uuid_util::uuid_t &identity);
@@ -247,6 +250,7 @@ namespace hyprland {
       int pgid = 0;  ///< Process group whose windows go to `workspace`; 0: none.
       platf::vdisplay::mode_t mode {};  ///< The mode of the rule last applied.
       std::optional<bool> hdr;  ///< HDR state set by set_hdr(); nullopt: never set, the rule leaves it alone.
+      bool ended = false;  ///< remove() was called; if the output is still there, stale cleanup removes it.
     };
 
     void on_event(std::string_view event, std::string_view data);
@@ -270,6 +274,8 @@ namespace hyprland {
     bool wait_for_mode_locked(const monitor_rule_t &rule, const platf::vdisplay::mode_t &mode, const std::optional<std::pair<int, int>> &position);
     bool wait_for_cm_locked(const std::string &name, bool hdr);
     bool remove_output_locked(const std::string &name);
+    /// The end of remove() for an owned output, given what the monitor list says about it (nullptr: not listed).
+    bool finish_remove_locked(const std::string &name, const monitor_info_t *current);
     void cleanup_stale_locked();
     /// Wait until more than `seen` monitoraddedv2 (added) or monitorremovedv2 events arrived for `name`.
     /// Falls back to polling `j/monitors` while the event socket is disconnected.
@@ -279,10 +285,26 @@ namespace hyprland {
     std::uint64_t added_count(const std::string &name);
     std::uint64_t removed_count(const std::string &name);
 
-    // Owner files.
-    void write_owner_file(const std::string &name);
+    // Owner files: `state_dir/NAME` holds `PID START_TIME` of the Apollo that created output NAME (older files: the
+    // PID alone). Claims and stale cleanup take an flock() on `state_dir/.lock`, so two instances cannot both claim
+    // a name.
+    /// An owner file's contents.
+    struct owner_t {
+      int pid = 0;
+      std::optional<std::uint64_t> start_time;  ///< The owner's start time (/proc/PID/stat field 22), if recorded.
+    };
+    /// The lock file (creating state_dir), or empty without a state_dir.
+    std::filesystem::path owner_lock_path() const;
+    /// Write this process's owner record for `name`, unless another running Apollo has claimed it. False also when
+    /// the lock or the record cannot be written.
+    bool claim_owner_file(const std::string &name);
+    /// Remove the owner file of `name` if it names this process.
+    void release_owner_file(const std::string &name);
+    bool write_owner_file(const std::string &name);
     void remove_owner_file(const std::string &name);
-    std::optional<int> read_owner_pid(const std::string &name);
+    std::optional<owner_t> read_owner(const std::string &name) const;
+    /// Whether the owner is another running Apollo: alive, not this process, and started when recorded.
+    static bool other_owner_alive(const owner_t &owner);
 
     options_t options_;
 

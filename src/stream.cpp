@@ -677,6 +677,29 @@ namespace stream {
   }
 
   /**
+   * @brief Start a client's do or undo commands, without waiting for them.
+   *
+   * Each runs with the app's environment (proc::proc.get_env()) in the directory of its program.
+   *
+   * @param cmd_list The commands, in order.
+   * @param kind "do" or "undo", for the log.
+   */
+  void spawn_client_commands(const std::list<crypto::command_entry_t> &cmd_list, const std::string_view kind) {
+    for (const auto &cmd : cmd_list) {
+      std::error_code ec;
+      auto env = proc::proc.get_env();
+      boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);
+      BOOST_LOG(info) << "Spawning client "sv << kind << " command ["sv << cmd.cmd << "] in ["sv << working_dir << ']';
+      auto child = platf::run_command(cmd.elevated, true, cmd.cmd, working_dir, env, nullptr, ec, nullptr);
+      if (ec) {
+        BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd.cmd << "]: System: "sv << ec.message();
+      } else {
+        child.detach();
+      }
+    }
+  }
+
+  /**
    * @brief Parse a control message from an ENet packet.
    *
    * @param packet ENet packet containing the control message type and payload.
@@ -2473,19 +2496,8 @@ namespace stream {
       input::reset(session.input);
 
       if (!session.undo_cmds.empty()) {
-        auto exec_thread = std::thread([cmd_list = session.undo_cmds]{
-          for (auto &cmd : cmd_list) {
-            std::error_code ec;
-            auto env = proc::proc.get_env();
-            boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);
-            auto child = platf::run_command(cmd.elevated, true, cmd.cmd, working_dir, env, nullptr, ec, nullptr);
-            BOOST_LOG(info) << "Spawning client undo command ["sv << cmd.cmd << "] in ["sv << working_dir << ']';
-            if (ec) {
-              BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd.cmd << "]: System: "sv << ec.message();
-            } else {
-              child.detach();
-            }
-          }
+        auto exec_thread = std::thread([cmd_list = session.undo_cmds] {
+          spawn_client_commands(cmd_list, "undo"sv);
         });
 
         exec_thread.detach();
@@ -2556,19 +2568,8 @@ namespace stream {
       }
 
       if (!session.do_cmds.empty()) {
-        auto exec_thread = std::thread([cmd_list = session.do_cmds]{
-          for (auto &cmd : cmd_list) {
-            std::error_code ec;
-            auto env = proc::proc.get_env();
-            boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);
-            auto child = platf::run_command(cmd.elevated, true, cmd.cmd, working_dir, env, nullptr, ec, nullptr);
-            BOOST_LOG(info) << "Spawning client do command ["sv << cmd.cmd << "] in ["sv << working_dir << ']';
-            if (ec) {
-              BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd.cmd << "]: System: "sv << ec.message();
-            } else {
-              child.detach();
-            }
-          }
+        auto exec_thread = std::thread([cmd_list = session.do_cmds] {
+          spawn_client_commands(cmd_list, "do"sv);
         });
 
         exec_thread.detach();

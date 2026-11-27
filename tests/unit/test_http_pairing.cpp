@@ -674,6 +674,27 @@ TEST_F(PairingHttpHandlerTest, ConsolePinReportsSessionExpiration) {
   EXPECT_NE(response.get().find("status_code=\"408\""), std::string::npos);
 }
 
+// Bugs caught: 0, False positives: 0
+TEST_F(PairingHttpHandlerTest, ConsolePinPromptsShareOneMutexAcrossServers) {
+  // A prompt for the HTTPS server holds the console; the HTTP one must not read stdin at the same time.
+  config::sunshine.flags[config::flag::PIN_STDIN] = true;
+  gated_input_buffer input;
+  input.release();
+  const cin_buffer_guard input_guard {&input};
+  std::unique_lock console {nvhttp::test_support::console_pin_mutex()};
+  std::packaged_task<std::string()> request_task {[this]() {
+    return request(server_certificate_target("console-waits"));
+  }};
+  auto response = request_task.get_future();
+  std::jthread request_thread {std::move(request_task)};
+
+  // Not fatal: returning early would join the request thread while it waits for the lock held here.
+  EXPECT_FALSE(wait_for_pending_pairing().empty());
+  EXPECT_EQ(response.wait_for(std::chrono::milliseconds {200}), std::future_status::timeout);
+  console.unlock();
+  EXPECT_NE(response.get().find("status_code=\"200\""), std::string::npos);
+}
+
 TEST_F(PairingSessionRegistryTest, PinApprovalTargetsExplicitPairingId) {
   std::string legitimate_pairing_id;
   ASSERT_EQ(

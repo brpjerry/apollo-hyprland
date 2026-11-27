@@ -19,7 +19,7 @@ namespace hyprland {
   enum class wake_result_e {
     already_on,  ///< The output was on; nothing was sent.
     woken,  ///< DPMS was off and has been switched on.
-    not_found,  ///< No output has this exact name (empty names and legacy indexes included).
+    not_found,  ///< The name, or the legacy index, does not resolve to an output (empty names included).
     failed,  ///< Hyprland refused the dpms dispatch.
   };
 
@@ -28,9 +28,11 @@ namespace hyprland {
    *
    * A DPMS-off output is still advertised to Wayland clients, but Hyprland stops rendering it, so it captures as
    * black (e.g. after hypridle switched the screens off before the stream started).
-   * @param output Exact connector name, e.g. `APOLLO-1a2b3c4d`.
+   * @param output Exact connector name, e.g. `APOLLO-1a2b3c4d`, or a legacy numeric index that capture accepts.
+   * @param capture_names The Wayland output names in the order capture indexes them; called only for an index
+   *        that is no connector's name. Without it, an index is not found.
    */
-  wake_result_e wake_output(const ipc_t &ipc, const std::string &output);
+  wake_result_e wake_output(const ipc_t &ipc, const std::string &output, const std::function<std::vector<std::string>()> &capture_names = {});
 
   /**
    * @brief Which windows belong to a launched app, for closing them when the app is stopped.

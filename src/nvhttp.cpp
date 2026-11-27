@@ -208,6 +208,18 @@ namespace nvhttp {
     return mutex;
   }
 
+  /**
+   * @brief Get the mutex that lets one console PIN prompt read stdin at a time.
+   *
+   * Shared by the HTTP and HTTPS pairing handlers: a static inside the templated handler would give each its own.
+   *
+   * @return Mutex held while a console PIN prompt is open.
+   */
+  std::mutex &console_pin_mutex() {
+    static std::mutex mutex;
+    return mutex;
+  }
+
   client_t client_root;  ///< In-memory representation of the paired-client database, guarded by client_auth_mutex().
   std::atomic<uint32_t> session_id_counter;  ///< Monotonic counter used to allocate GameStream session IDs.
 
@@ -1309,9 +1321,9 @@ namespace nvhttp {
 
     std::string pin;
     if (pin_stdin) {
-      // The console prompt can wait forever: it is read without the session lock. One prompt at a time.
-      static std::mutex prompt_mutex;
-      std::lock_guard prompt {prompt_mutex};
+      // The console prompt can wait forever: it is read without the session lock. One prompt at a time, whichever
+      // server it is for.
+      std::lock_guard prompt {console_pin_mutex()};
       std::cout << "Please insert pin: "sv;
       std::getline(std::cin, pin);
     }
@@ -2689,6 +2701,10 @@ namespace nvhttp {
     std::shared_ptr<crypto::named_cert_t> current_client_record(const std::string_view cert) {
       auto certificate = crypto::x509(cert);
       return nvhttp::current_client_record(certificate.get());
+    }
+
+    std::mutex &console_pin_mutex() {
+      return nvhttp::console_pin_mutex();
     }
   }  // namespace test_support
 #endif
