@@ -38,6 +38,18 @@ namespace rtsp_stream {
    */
   std::string describe_video_codecs(uint32_t codec_modes);
 
+  /**
+   * @brief Keep the client's exact frame rate only when it is the stream rate the client asked for.
+   * @details Some clients (e.g. Moonlight Android) send the refresh rate of their display as clientRefreshRateX100,
+   *          which may differ from the requested stream rate; that one is dropped. maxFPS above 4000 is in mHz
+   *          (fractional rates), as the rest of the ANNOUNCE handling reads it.
+   *
+   * @param max_fps x-nv-video[0].maxFPS as sent, in Hz or mHz.
+   * @param framerate_x100 x-nv-video[0].clientRefreshRateX100 as sent.
+   * @return `framerate_x100` when it is within 1% of maxFPS, else 0.
+   */
+  int exact_framerate_x100(int max_fps, int framerate_x100);
+
   constexpr auto RTSP_SETUP_PORT = 21;  ///< GameStream base-port offset used for the RTSP setup listener.
 
 #pragma pack(push, 1)

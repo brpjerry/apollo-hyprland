@@ -42,6 +42,16 @@ using asio::ip::udp;
 using namespace std::literals;
 
 namespace rtsp_stream {
+  int exact_framerate_x100(int max_fps, int framerate_x100) {
+    if (framerate_x100 <= 0 || max_fps <= 0) {
+      return 0;
+    }
+    // In mHz above 4000, like the normalization of maxFPS further down the ANNOUNCE handling.
+    const double requested_fps = max_fps > 4000 ? max_fps / 1000.0 : max_fps;
+    const double ratio = framerate_x100 / 100.0 / requested_fps;
+    return ratio < 0.99 || ratio > 1.01 ? 0 : framerate_x100;
+  }
+
   std::string describe_video_codecs(uint32_t codec_modes) {
     std::string result;
     if (codec_modes & SCM_MASK_HEVC) {
@@ -1207,16 +1217,7 @@ namespace rtsp_stream {
       config::cap_stream_resolution(config.monitor.width, config.monitor.height);
       config.monitor.framerate = (int) util::from_view(args.at("x-nv-video[0].maxFPS"sv));
       config.monitor.framerateX100 = (int) util::from_view(args.at("x-nv-video[0].clientRefreshRateX100"sv));
-      // Validate framerateX100 against framerate. Some clients (e.g. Moonlight Android) send the
-      // client display's refresh rate as clientRefreshRateX100, which may differ from the requested
-      // streaming framerate. Discard framerateX100 if the derived fps is not within 1% of framerate.
-      if (config.monitor.framerateX100 > 0) {
-        double fps_strict = config.monitor.framerateX100 / 100.0;
-        double ratio = fps_strict / config.monitor.framerate;
-        if (ratio < 0.99 || ratio > 1.01) {
-          config.monitor.framerateX100 = 0;
-        }
-      }
+      config.monitor.framerateX100 = exact_framerate_x100(config.monitor.framerate, config.monitor.framerateX100);
       config.monitor.bitrate = (int) util::from_view(args.at("x-nv-vqos[0].bw.maximumBitrateKbps"sv));
       config.monitor.slicesPerFrame = (int) util::from_view(args.at("x-nv-video[0].videoEncoderSlicesPerFrame"sv));
       config.monitor.numRefFrames = (int) util::from_view(args.at("x-nv-video[0].maxNumReferenceFrames"sv));
