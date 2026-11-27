@@ -134,3 +134,51 @@ TEST_P(AudioTest, TestEncode) {
   timer.join();
   capture.join();
 }
+
+// Bugs caught: 0, False positives: 0
+TEST(AudioSinkChoiceTest, VirtualSinkIsSetEvenWhenItIsAlreadyTheDefault) {
+  platf::sink_t sinks {"hw", platf::sink_t::null_t {"null-2", "null-6", "null-8"}};
+
+  auto choice = choose_sink(sinks, "", 6, false);
+  EXPECT_EQ(choice.sink, "null-6");
+  EXPECT_TRUE(choice.set_default);
+  EXPECT_TRUE(choice.restore);
+
+  // Left as the default by an earlier session: setting it again is what moves streams pinned to other sinks over.
+  sinks.host = "null-2";
+  choice = choose_sink(sinks, "", 2, false);
+  EXPECT_EQ(choice.sink, "null-2");
+  EXPECT_TRUE(choice.set_default);
+  EXPECT_FALSE(choice.restore);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(AudioSinkChoiceTest, HostAudioKeepsTheConfiguredOrDefaultSink) {
+  platf::sink_t sinks {"hw", platf::sink_t::null_t {"null-2", "null-6", "null-8"}};
+
+  auto choice = choose_sink(sinks, "", 2, true);
+  EXPECT_EQ(choice.sink, "hw");
+  EXPECT_FALSE(choice.set_default);
+  EXPECT_FALSE(choice.restore);
+
+  choice = choose_sink(sinks, "speakers", 2, true);
+  EXPECT_EQ(choice.sink, "speakers");
+  EXPECT_TRUE(choice.set_default);
+  EXPECT_TRUE(choice.restore);
+
+  // No virtual sinks (or an unknown layout): the host sink, left alone.
+  sinks.null.reset();
+  choice = choose_sink(sinks, "", 2, false);
+  EXPECT_EQ(choice.sink, "hw");
+  EXPECT_FALSE(choice.set_default);
+  sinks.null = platf::sink_t::null_t {"null-2", "null-6", "null-8"};
+  choice = choose_sink(sinks, "", 4, false);
+  EXPECT_EQ(choice.sink, "hw");
+  EXPECT_FALSE(choice.set_default);
+
+  // No host sink at all: the virtual sink even with host audio on.
+  sinks.host.clear();
+  choice = choose_sink(sinks, "", 8, true);
+  EXPECT_EQ(choice.sink, "null-8");
+  EXPECT_TRUE(choice.set_default);
+}
