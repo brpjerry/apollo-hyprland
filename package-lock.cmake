@@ -73,6 +73,7 @@ CPMDeclarePackage(libdisplaydevice
 # renovate: datasource=git-refs depName=LizardByte/libvirtualhid
 # ref=master
 set(LIBVIRTUALHID_COMMIT dd8153df338c6fb399ea4a048fa97b4c536f12a0)
+file(SHA256 "${PATCH_DIRECTORY}/libvirtualhid-0001-linux-touch-palm-area-pen-rotation-proximity.patch" LIBVIRTUALHID_PATCH_0001_SHA256)  # see moonlight-common-c
 CPMDeclarePackage(libvirtualhid
         NAME libvirtualhid
         GIT_REPOSITORY https://github.com/LizardByte/libvirtualhid.git
@@ -80,6 +81,12 @@ CPMDeclarePackage(libvirtualhid
         # Windows compiles a source file from this submodule.
         GIT_SUBMODULES third-party/lizardbyte-common
         GIT_SUBMODULES_RECURSE FALSE
+        # Apollo's Linux touch screen and pen tablet features (palm cancel, contact area, pen rotation and proximity
+        # out), and test hooks that run them on pipes. Regenerate it if the pin moves and it stops applying.
+        PATCH_COMMAND ${CMAKE_COMMAND}
+            "-DPATCH_FILES=${PATCH_DIRECTORY}/libvirtualhid-0001-linux-touch-palm-area-pen-rotation-proximity.patch"
+            "-DPATCH_SET=${LIBVIRTUALHID_PATCH_0001_SHA256}"
+            -P "${CMAKE_CURRENT_LIST_DIR}/cmake/scripts/apply_patches_once.cmake"
 )
 
 # moonlight-common-c
