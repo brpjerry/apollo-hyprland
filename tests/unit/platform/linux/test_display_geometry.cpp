@@ -85,6 +85,35 @@ TEST(KmsDisplayEnumerationTest, KeepsPlaneAndDesktopGeometryWithTheSelectedBacke
   EXPECT_EQ(software_display.env_offset_x, -1280);
 }
 
+/**
+ * @brief Only the DRM connector's own name identifies a KMS output; a compositor name matched to it is a guess.
+ */
+// Bugs caught: 0, False positives: 0
+TEST(KmsDisplayEnumerationTest, NamesOtherThanTheConnectorNameAreInferred) {
+  const platf::kms::output_t output {"Unknown-1", 0U, 31U, 51U};
+  EXPECT_FALSE(output.name_inferred("Unknown-1"));
+  EXPECT_TRUE(output.name_inferred("APOLLO-00000001"));
+  EXPECT_TRUE(output.name_inferred(""));
+}
+
+/**
+ * @brief Only connector type names give a compositor output's name to a DRM connector.
+ */
+// Bugs caught: 0, False positives: 0
+TEST(KmsDisplayEnumerationTest, ConnectorTypesComeOnlyFromConnectorNames) {
+  using platf::kms::connector_type_from_name;
+  EXPECT_EQ(connector_type_from_name("HDMI-A"), DRM_MODE_CONNECTOR_HDMIA);
+  EXPECT_EQ(connector_type_from_name("DP"), DRM_MODE_CONNECTOR_DisplayPort);
+  EXPECT_EQ(connector_type_from_name("Meta"), DRM_MODE_CONNECTOR_VIRTUAL);
+  EXPECT_EQ(connector_type_from_name("Unknown"), DRM_MODE_CONNECTOR_Unknown);
+  EXPECT_EQ(connector_type_from_name("Unknown14"), 14U);
+  // A virtual display, a headless output, or a name that only starts like a raw connector type.
+  for (const auto *name : {"APOLLO", "HEADLESS", "UnknownPanel", "Unknown14x", "Unknown-", "Unknown+1", "", "hdmi-a"}) {
+    SCOPED_TRACE(name);
+    EXPECT_FALSE(connector_type_from_name(name));
+  }
+}
+
 TEST(LinuxDisplayGeometryTest, EmptyAndInvalidMonitorsDoNotCreateAnInputDesktop) {
   platf::desktop_geometry_t desktop;
   EXPECT_EQ(desktop.bounds().width, 0);

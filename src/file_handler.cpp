@@ -81,15 +81,37 @@ namespace file_handler {
     /**
      * @brief Overwrite an existing file in place, keeping its inode (hard links, owner, group, ACLs).
      *
-     * Not atomic: used only where replacing the file would change it in some other way.
+     * Not atomic: used only where replacing the file would change it in some other way. Before truncating, the opened
+     * file must be a regular file with the device and inode numbers inspected earlier, so a file put in its place
+     * meanwhile (by an editor or a configuration manager) is left alone; only a new file that reuses the inode in
+     * between can't be told apart. Opening a FIFO doesn't block.
+     *
+     * @param target File to overwrite.
+     * @param path Path to name in log messages.
+     * @param contents New contents.
+     * @param device Device of the file inspected earlier.
+     * @param inode Inode of the file inspected earlier.
+     * @return 0 on success, -1 on failure.
      */
-    int write_in_place(const std::filesystem::path &target, const char *path, const std::string_view contents) {
-      const int fd = ::open(target.c_str(), O_WRONLY | O_TRUNC | O_CLOEXEC);
+    int write_in_place(const std::filesystem::path &target, const char *path, const std::string_view contents, const dev_t device, const ino_t inode) {
+      const int fd = ::open(target.c_str(), O_WRONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
       if (fd < 0) {
         BOOST_LOG(error) << "Couldn't write "sv << path << ": "sv << std::strerror(errno);
         return -1;
       }
-      int failure = write_all(fd, contents);
+      struct stat opened {};
+      int failure = 0;
+      if (::fstat(fd, &opened) != 0) {
+        failure = errno;
+      } else if (!S_ISREG(opened.st_mode) || opened.st_dev != device || opened.st_ino != inode) {
+        BOOST_LOG(error) << "Couldn't write "sv << path << ": it was replaced while being saved"sv;
+        ::close(fd);
+        return -1;
+      } else if (::ftruncate(fd, 0) != 0) {
+        failure = errno;
+      } else {
+        failure = write_all(fd, contents);
+      }
       if (!failure && ::fsync(fd) != 0) {
         failure = errno;
       }
@@ -104,12 +126,27 @@ namespace file_handler {
     }
 
     /**
-     * @brief Whether a file has a POSIX access ACL, which a replacement would not carry.
+     * @brief Whether a file may have a POSIX access ACL, which a replacement would not carry.
+     *
+     * @param target File to check.
+     * @return `false` only when the file is known to have no access ACL.
      */
-    bool has_access_acl(const std::filesystem::path &target) {
-      return ::getxattr(target.c_str(), access_acl_attribute, nullptr, 0) >= 0;
+    bool may_have_access_acl(const std::filesystem::path &target) {
+      const auto result = ::getxattr(target.c_str(), access_acl_attribute, nullptr, 0);
+      return !detail::access_acl_absent(result, result < 0 ? errno : 0);
     }
   }  // namespace
+
+  namespace detail {
+    bool access_acl_absent(const long probe_result, const int probe_errno) {
+      // Only "no such attribute" and "no ACL support" prove it; an access or I/O error proves nothing.
+      return probe_result < 0 && (probe_errno == ENODATA || probe_errno == ENOTSUP || probe_errno == EOPNOTSUPP);
+    }
+
+    int write_in_place(const char *path, const std::string_view contents, const std::uint64_t device, const std::uint64_t inode) {
+      return file_handler::write_in_place(path, path, contents, static_cast<dev_t>(device), static_cast<ino_t>(inode));
+    }
+  }  // namespace detail
 #endif
 
   int write_file(const char *path, const std::string_view &contents) {
@@ -149,8 +186,8 @@ namespace file_handler {
         return -1;
       }
       // A replacement would leave other hard links with the old contents, and wouldn't carry an access ACL.
-      if (existing.st_nlink > 1 || has_access_acl(target)) {
-        return write_in_place(target, path, contents);
+      if (existing.st_nlink > 1 || may_have_access_acl(target)) {
+        return write_in_place(target, path, contents, existing.st_dev, existing.st_ino);
       }
     } else if (errno != ENOENT) {
       BOOST_LOG(error) << "Couldn't inspect "sv << path << ": "sv << std::strerror(errno);
@@ -167,7 +204,7 @@ namespace file_handler {
     if (fd < 0) {
       // E.g. a writable file in a directory we can't create files in: write it in place, as before.
       if (replacing && (errno == EACCES || errno == EPERM)) {
-        return write_in_place(target, path, contents);
+        return write_in_place(target, path, contents, existing.st_dev, existing.st_ino);
       }
       BOOST_LOG(error) << "Couldn't write "sv << path << ": "sv << std::strerror(errno);
       return -1;
@@ -189,7 +226,7 @@ namespace file_handler {
         ::fchmod(fd, existing.st_mode & 07777) == 0;
       if (!metadata_kept) {
         discard();
-        return write_in_place(target, path, contents);
+        return write_in_place(target, path, contents, existing.st_dev, existing.st_ino);
       }
     }
     failure = write_all(fd, contents);
@@ -212,7 +249,7 @@ namespace file_handler {
     ::unlink(temporary.c_str());
     // The file may be a bind mount (a container's config file), which can be written but not replaced.
     if (replacing && (rename_errno == EBUSY || rename_errno == EXDEV || rename_errno == EPERM || rename_errno == EACCES)) {
-      return write_in_place(target, path, contents);
+      return write_in_place(target, path, contents, existing.st_dev, existing.st_ino);
     }
     BOOST_LOG(error) << "Couldn't write "sv << path << ": "sv << std::strerror(rename_errno);
     return -1;

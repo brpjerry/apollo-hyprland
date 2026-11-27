@@ -864,7 +864,7 @@ namespace platf {
 
     // Offsets for when streaming a specific monitor. By default, they are 0.
     std::string output_name;  ///< Native connector name of the captured display for absolute input assignment.
-    bool output_name_inferred {false};  ///< output_name was guessed from the desktop geometry, not reported by the backend.
+    bool output_name_inferred {false};  ///< output_name was guessed (from the desktop geometry, or matched to a DRM connector), not reported by the backend.
     int offset_x {0};  ///< Horizontal capture offset in physical pixels.
     int offset_y {0};  ///< Vertical capture offset in physical pixels.
     int env_offset_x {0};  ///< Horizontal origin of the full capture environment in native desktop coordinates.

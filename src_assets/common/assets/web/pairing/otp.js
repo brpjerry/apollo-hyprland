@@ -61,12 +61,14 @@ export function guessHost(serverIp, location) {
 /**
  * @brief Read the host address the user entered by hand in this browser session.
  *
- * @param {Storage} storage Session storage.
+ * A browser that denies storage access (even reading `sessionStorage` can throw) just has no saved host.
+ *
+ * @param {Storage} [storage] Storage to read instead of the session storage.
  * @return {?{hostAddr: string, hostPort: (string|number)}} Saved host, if any.
  */
 export function readSavedHost(storage) {
   try {
-    const saved = JSON.parse(storage.getItem(HOST_INFO_KEY))
+    const saved = JSON.parse((storage ?? globalThis.sessionStorage).getItem(HOST_INFO_KEY))
     return saved && saved.hostAddr ? { hostAddr: saved.hostAddr, hostPort: saved.hostPort } : null
   } catch {
     return null
@@ -74,13 +76,23 @@ export function readSavedHost(storage) {
 }
 
 /**
- * @brief Remember a host address entered by hand for this browser session.
+ * @brief Remember a host address entered by hand for this browser session, where the browser allows it.
  *
- * @param {Storage} storage Session storage.
+ * Pairing only needs the address on the current page, so a storage that can't be used is not an error.
+ *
  * @param {{hostAddr: string, hostPort: (string|number)}} host Host to save.
+ * @param {Storage} [storage] Storage to write instead of the session storage.
+ * @return {boolean} Whether the host was saved.
  */
-export function saveHost(storage, { hostAddr, hostPort }) {
-  storage.setItem(HOST_INFO_KEY, JSON.stringify({ hostAddr, hostPort }))
+export function saveHost({ hostAddr, hostPort }, storage) {
+  try {
+    const target = storage ?? globalThis.sessionStorage
+    target.setItem(HOST_INFO_KEY, JSON.stringify({ hostAddr, hostPort }))
+    return true
+  } catch (e) {
+    console.warn('Could not remember the pairing host', e)
+    return false
+  }
 }
 
 let qrCodeLoader = null

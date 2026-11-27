@@ -121,7 +121,7 @@ describe('Apollo configuration options', () => {
     const config = cleanConfigForSave({
       global_prep_cmd: [{ do: ' ', undo: '' }, { do: 'x', undo: '' }],
       global_state_cmd: [{ do: '', undo: 'y' }, { do: '', undo: '  ' }],
-      server_cmd: [{ name: 'Lock', cmd: '' }, { name: 'Lock', cmd: 'lock' }],
+      server_cmd: [{ name: 'Lock', cmd: 'lock' }, { name: '', cmd: ' ' }],
       fallback_mode: '1920x1080',
     })
 
@@ -130,6 +130,32 @@ describe('Apollo configuration options', () => {
     expect(config.server_cmd).toEqual([{ name: 'Lock', cmd: 'lock' }])
     expect(config).not.toHaveProperty('fallback_mode')
     expect(cleanConfigForSave({ fallback_mode: '2560x1440x120' }).fallback_mode).toBe('2560x1440x120')
+  })
+
+  // Clients run server commands by position, and the server keeps rows without a command: dropping one in the middle
+  // would make the next button run another command.
+  // Bugs caught: 0, False positives: 0
+  it('keeps the position of every server command when saving', () => {
+    const rows = [
+      { name: 'Unfinished', cmd: '' },
+      { name: '', cmd: '' },
+      { name: 'Lock', cmd: 'lock' },
+      { name: '', cmd: '' },
+      { name: ' ', cmd: '' },
+    ]
+    const config = cleanConfigForSave({ server_cmd: structuredClone(rows) })
+
+    expect(config.server_cmd).toEqual(rows.slice(0, 3))
+    expect(cleanConfigForSave({ server_cmd: [{ name: '', cmd: '' }] }).server_cmd).toEqual([])
+  })
+
+  // The server reads a hand-edited numeric label as text, so saving must not trip over it.
+  // Bugs caught: 0, False positives: 0
+  it('saves server commands whose fields are numbers', () => {
+    const rows = [{ name: 'Lock', cmd: 'lock' }, { name: 1, cmd: 2 }, { name: 1, cmd: '' }, { name: '', cmd: null }]
+    const config = cleanConfigForSave({ server_cmd: structuredClone(rows) })
+
+    expect(config.server_cmd).toEqual(rows.slice(0, 3))
   })
 
   // Saving without the invalid value would remove the previously saved mode from the configuration file.

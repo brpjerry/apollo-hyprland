@@ -948,6 +948,33 @@ TEST_F(ProcessRefreshTest, StringElevatedStateCommandsAreMigrated) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(ProcessTest, CommandElevationAcceptsOnlyItsDocumentedValues) {
+  using json = nlohmann::json;
+  for (const json &value : {json(true), json(1), json(1.0), json("1"), json("true")}) {
+    SCOPED_TRACE(value.dump());
+    EXPECT_TRUE(proc::command_elevated(json {{"do", "a"}, {"elevated", value}}));
+  }
+  for (const json &value : {json(false), json(0), json(2), json(-1), json(0.5), json("0"), json("2"), json("yes"), json(nullptr)}) {
+    SCOPED_TRACE(value.dump());
+    EXPECT_FALSE(proc::command_elevated(json {{"do", "a"}, {"elevated", value}}));
+  }
+  EXPECT_FALSE(proc::command_elevated(json {{"do", "a"}}));
+  EXPECT_FALSE(proc::command_elevated(json("a")));
+
+  // Migration stores the same reading as a boolean, for prep and state commands alike.
+  const auto commands = json::array({json {{"do", "a"}, {"elevated", 1}}, json {{"do", "b"}, {"elevated", "1"}}, json {{"do", "c"}, {"elevated", 2}}});
+  json tree {{"apps", json::array({json {{"name", "x"}, {"prep-cmd", commands}, {"state-cmd", commands}}})}};
+  proc::migration_v2(tree);
+  for (const auto *key : {"prep-cmd", "state-cmd"}) {
+    SCOPED_TRACE(key);
+    const auto &migrated = tree["apps"][0][key];
+    EXPECT_EQ(migrated[0]["elevated"], true);
+    EXPECT_EQ(migrated[1]["elevated"], true);
+    EXPECT_EQ(migrated[2]["elevated"], false);
+  }
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(ProcessTest, CompatibleClientFpsIsAWholeNumber) {
   EXPECT_EQ(proc::compatible_client_fps(60000), "60");
   EXPECT_EQ(proc::compatible_client_fps(59940), "60");

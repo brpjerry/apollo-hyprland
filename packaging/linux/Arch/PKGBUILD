@@ -121,7 +121,8 @@ build() {
   export CUDA_PATH=/opt/cuda
   # No CPM source cache: CPM reuses a cached checkout without running its PATCH_COMMAND, so a cached tree that was
   # reset or half-patched would be built as it is. Without one, the dependencies are fetched into build/_deps (inside
-  # the makepkg tree) and cmake/scripts/apply_patches_once.cmake checks their patches on every configure.
+  # the makepkg tree) and cmake/scripts/apply_patches_once.cmake checks their patches on every configure. The cache
+  # entry is set too, because CPM keeps a CPM_SOURCE_CACHE already in the cache of a reused build directory.
   unset CPM_SOURCE_CACHE
 
   local _tests=OFF
@@ -132,6 +133,7 @@ build() {
     -D CMAKE_INSTALL_PREFIX=/usr \
     -D BUILD_DOCS=OFF \
     -D BUILD_TESTS="${_tests}" \
+    -D CPM_SOURCE_CACHE:PATH=OFF \
     -D SUNSHINE_SYSTEM_WAYLAND_PROTOCOLS=ON \
     -D SUNSHINE_SYSTEM_VULKAN_HEADERS=ON \
     -D SUNSHINE_ENABLE_CUDA=ON \

@@ -264,15 +264,29 @@ namespace nvhttp {
   }
 
   /**
-   * @brief Persist the current state to its backing store.
+   * @brief UUIDs of the clients unpaired since the last successful save, which the state file still holds.
+   *
+   * Guarded by `client_auth_mutex()`.
+   */
+  std::unordered_set<std::string> pending_unpairs;
+
+  /**
+   * @brief Write the current state to its backing store.
    *
    * @return `true` when the state file now holds the in-memory state.
-   * @note The caller must hold `client_auth_mutex()`.
+   * @note The caller must hold `client_auth_mutex()`. A file system error is a failed save, not an exception.
    */
-  bool save_state() {
+  bool write_state() {
     nlohmann::json root = nlohmann::json::object();
-    // If the state file exists, try to read it.
-    if (fs::exists(config::nvhttp.file_state)) {
+    // If the state file exists, try to read it. A failed check (an inaccessible directory) is a failed save, not an
+    // exception past the caller's rollback or stream shutdown.
+    std::error_code exists_error;
+    const bool exists = fs::exists(config::nvhttp.file_state, exists_error);
+    if (exists_error) {
+      BOOST_LOG(error) << "Couldn't check "sv << config::nvhttp.file_state << ": "sv << exists_error.message();
+      return false;
+    }
+    if (exists) {
       try {
         std::ifstream in(config::nvhttp.file_state);
         in >> root;
@@ -355,6 +369,21 @@ namespace nvhttp {
       BOOST_LOG(error) << "Couldn't save "sv << config::nvhttp.file_state;
       return false;
     }
+    return true;
+  }
+
+  /**
+   * @brief Persist the current state to its backing store, unless this run keeps its state in memory only.
+   *
+   * @return `true` when the state file now holds the in-memory state, or persistence is disabled for this run (the
+   * fresh-state flag: the state file holds pairings this run didn't load, which must not be overwritten).
+   * @note The caller must hold `client_auth_mutex()`.
+   */
+  bool save_state() {
+    if (!config::sunshine.flags[config::flag::FRESH_STATE] && !write_state()) {
+      return false;
+    }
+    pending_unpairs.clear();
     return true;
   }
 
@@ -580,7 +609,7 @@ namespace nvhttp {
       rebuild_client_cert_chain();
 
       // A pairing that can't be saved would be gone after a restart: undo it and report the failure.
-      if (!config::sunshine.flags[config::flag::FRESH_STATE] && !save_state()) {
+      if (!save_state()) {
         client_root.named_devices = previous;
         rebuild_client_cert_chain();
         return {};
@@ -1649,11 +1678,14 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
-  nlohmann::json get_all_clients() {
+  nlohmann::json get_all_clients(bool *unpair_pending) {
     nlohmann::json named_cert_nodes = nlohmann::json::array();
     std::list<std::string> connected_uuids = rtsp_stream::get_all_session_uuids();
 
     std::lock_guard lock {client_auth_mutex()};
+    if (unpair_pending) {
+      *unpair_pending = !pending_unpairs.empty();
+    }
     for (const auto &named_cert : client_root.named_devices) {
       nlohmann::json named_cert_node;
       named_cert_node["name"] = named_cert->name;
@@ -2410,6 +2442,9 @@ namespace nvhttp {
 
   client_change_t erase_all_clients() {
     std::lock_guard lock {client_auth_mutex()};
+    for (const auto &client : client_root.named_devices) {
+      pending_unpairs.insert(client->uuid);
+    }
     client_root = {};
     rebuild_client_cert_chain();
     // A revocation stays in effect even when it can't be saved: an admin must be able to cut clients off.
@@ -2452,17 +2487,27 @@ namespace nvhttp {
    * @param after Record after the edit.
    */
   bool only_revokes(const crypto::named_cert_t &before, const crypto::named_cert_t &after) {
-    const auto same_commands = [](const cmd_list_t &a, const cmd_list_t &b) {
-      return std::ranges::equal(a, b, [](const auto &x, const auto &y) {
-        return x.cmd == y.cmd && x.elevated == y.elevated;
-      });
+    // Each remaining command is a later command of the old list, no more elevated: removals and lost elevation only.
+    // Matching in order also keeps an added duplicate or a reordering from counting as a removal.
+    const auto only_removes_commands = [](const cmd_list_t &old_commands, const cmd_list_t &new_commands) {
+      auto next = old_commands.begin();
+      for (const auto &command : new_commands) {
+        next = std::find_if(next, old_commands.end(), [&command](const auto &old) {
+          return old.cmd == command.cmd && (!command.elevated || old.elevated);
+        });
+        if (next == old_commands.end()) {
+          return false;
+        }
+        ++next;
+      }
+      return true;
     };
     const auto before_perm = static_cast<std::uint32_t>(before.perm);
     const auto after_perm = static_cast<std::uint32_t>(after.perm);
     return (after_perm & ~before_perm) == 0 &&
            (!after.allow_client_commands || before.allow_client_commands) &&
            after.name == before.name && after.display_mode == before.display_mode &&
-           same_commands(after.do_cmds, before.do_cmds) && same_commands(after.undo_cmds, before.undo_cmds) &&
+           only_removes_commands(before.do_cmds, after.do_cmds) && only_removes_commands(before.undo_cmds, after.undo_cmds) &&
            after.enable_legacy_ordering == before.enable_legacy_ordering &&
            after.always_use_virtual_display == before.always_use_virtual_display;
   }
@@ -2510,9 +2555,30 @@ namespace nvhttp {
     return change;
   }
 
+  client_change_t combine_client_changes(const client_change_t &settings, const bool enabled, const client_change_t &enable) {
+    const bool settings_saved = settings.saved || (settings.applied && enable.applied && enable.saved);
+    if (settings.applied == enable.applied) {
+      return {.applied = settings.applied, .saved = settings_saved && enable.saved};
+    }
+    // One step took effect and the other didn't (a grant undone beside a disable, or an enable undone beside a
+    // removal): neither "made" nor "not made" describes the request, so say what happened to each.
+    const auto outcome = [](const bool applied, const bool saved) {
+      if (!applied) {
+        return saved ? "was not made" : "could not be saved, so it was not made";
+      }
+      return saved ? "was made and saved" : "is in effect but could not be saved, and will be undone on restart";
+    };
+    return {
+      .applied = true,
+      .saved = settings.applied ? settings_saved : enable.saved,
+      .partly = std::format("The settings change {}. {} the client {}.", outcome(settings.applied, settings_saved), enabled ? "Enabling" : "Disabling", outcome(enable.applied, enable.saved)),
+    };
+  }
+
   client_change_t unpair_client(const std::string_view uuid) {
     bool no_clients_left = false;
     bool saved = true;
+    bool retried = false;
     std::vector<std::string> removed_certs;
     {
       std::lock_guard lock {client_auth_mutex()};
@@ -2527,14 +2593,23 @@ namespace nvhttp {
 
       rebuild_client_cert_chain();
       // A revocation stays in effect even when it can't be saved (the caller reports that it will be undone on
-      // restart): an admin must be able to cut a client off.
+      // restart): an admin must be able to cut a client off. Retrying the unpair of a client that is already gone
+      // retries that save.
       if (!removed_certs.empty()) {
+        pending_unpairs.emplace(uuid);
+      }
+      retried = removed_certs.empty() && pending_unpairs.contains(std::string {uuid});
+      if (!removed_certs.empty() || retried) {
         saved = save_state();
       }
       no_clients_left = client_root.named_devices.empty();
     }
 
     const bool removed = !removed_certs.empty();
+    if (retried) {
+      // The client is already gone from memory; the save decides whether that lasts.
+      return {.applied = true, .saved = saved};
+    }
     if (removed) {
       // Every stream of the client, and the input devices it kept for a resume, not just the first stream found.
       for (const auto &cert : removed_certs) {
@@ -2624,6 +2699,7 @@ namespace nvhttp {
       std::lock_guard lock {client_auth_mutex()};
       client_root = {};
       cert_chain.clear();
+      pending_unpairs.clear();
     }
 
     std::string add_client(const std::string &name, std::string cert, bool enabled) {

@@ -215,6 +215,22 @@ namespace confighttp {
   void resetPortalToken(const resp_https_t &response, const req_https_t &request);
 
   /**
+   * @brief Send the application list, with legacy string and number values converted for the editor.
+   *
+   * @param response HTTPS response receiving the list.
+   * @param request Authenticated request.
+   */
+  void getApps(const resp_https_t &response, const req_https_t &request);
+
+  /**
+   * @brief Reorder the applications by UUID; the response's `order_matched` says whether every UUID was found.
+   *
+   * @param response HTTPS response receiving the result.
+   * @param request Authenticated, CSRF protected request with the `order` array.
+   */
+  void reorderApps(const resp_https_t &response, const req_https_t &request);
+
+  /**
    * @brief Save an application with optional fields normalized before persistence.
    */
   void saveApp(const resp_https_t &response, const req_https_t &request);

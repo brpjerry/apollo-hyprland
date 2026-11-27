@@ -13,6 +13,7 @@
 #include <iterator>
 #include <fstream>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -549,6 +550,188 @@ TEST_F(UnsavableClientStateTest, GrantsThatCantBeSavedAreUndone) {
   EXPECT_TRUE(nvhttp::test_support::add_client("new", other_credentials.x509, true).empty());
   EXPECT_FALSE(nvhttp::test_support::authorize_client_certificate(other_credentials.x509));
   expect_state_file_untouched();
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(UnsavableClientStateTest, RemovingClientCommandsStaysInEffect) {
+  const nvhttp::cmd_list_t commands {{"first", true}, {"second", false}, {"first", true}};
+  {
+    std::ofstream out(state_file);
+    out << "{}";
+  }
+  ASSERT_TRUE(nvhttp::update_device_info(uuid, "kept", "", commands, commands, crypto::PERM::_default, true, true, false));
+  {
+    std::ofstream out(state_file);
+    out << "[1]";
+  }
+  const auto commands_of = [this](const char *key) {
+    for (const auto &client : nvhttp::get_all_clients()) {
+      if (client.at("uuid") == uuid) {
+        return client.value(key, nlohmann::json::array());
+      }
+    }
+    return nlohmann::json {};
+  };
+
+  // Adding, reordering or elevating a command grants something and is undone.
+  const nvhttp::cmd_list_t added {{"first", true}, {"second", false}, {"first", true}, {"third", false}};
+  const nvhttp::cmd_list_t reordered {{"second", false}, {"first", true}, {"first", true}};
+  const nvhttp::cmd_list_t elevated {{"first", true}, {"second", true}, {"first", true}};
+  for (const auto &edit : {added, reordered, elevated}) {
+    EXPECT_FALSE(nvhttp::update_device_info(uuid, "kept", "", edit, commands, crypto::PERM::_default, true, true, false).applied);
+    EXPECT_FALSE(nvhttp::update_device_info(uuid, "kept", "", commands, edit, crypto::PERM::_default, true, true, false).applied);
+  }
+  EXPECT_EQ(commands_of("do").size(), 3);
+
+  // Removing one of two duplicates, or dropping elevation, only takes something away and stays in effect.
+  const nvhttp::cmd_list_t removed {{"second", false}, {"first", false}};
+  const auto change = nvhttp::update_device_info(uuid, "kept", "", removed, {}, crypto::PERM::_default, true, true, false);
+  EXPECT_TRUE(change.applied);
+  EXPECT_FALSE(change.saved);
+  ASSERT_EQ(commands_of("do").size(), 2);
+  EXPECT_EQ(commands_of("do").at(1).at("elevated"), false);
+  EXPECT_TRUE(commands_of("undo").empty());
+  expect_state_file_untouched();
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(UnsavableClientStateTest, RetryingAnUnpairRetriesItsSave) {
+  bool pending = true;
+  nvhttp::get_all_clients(&pending);
+  EXPECT_FALSE(pending);
+  ASSERT_TRUE(nvhttp::unpair_client(uuid).applied);  // in effect, not saved
+  // The client list says so, for a Web UI page loaded after the unpair.
+  nvhttp::get_all_clients(&pending);
+  EXPECT_TRUE(pending);
+
+  // Still unsavable: the retry reports it. A client that was never paired is not a retry.
+  const auto still_unsaved = nvhttp::unpair_client(uuid);
+  EXPECT_TRUE(still_unsaved.applied);
+  EXPECT_FALSE(still_unsaved.saved);
+  EXPECT_FALSE(nvhttp::unpair_client("00000000-0000-4000-8000-000000000000").applied);
+  expect_state_file_untouched();
+
+  {
+    std::ofstream out(state_file);
+    out << "{}";
+  }
+  EXPECT_TRUE(nvhttp::unpair_client(uuid));
+  nvhttp::test_support::reset_client_state();
+  nvhttp::test_support::reload_client_state();
+  ASSERT_EQ(nvhttp::get_all_clients().size(), 1);
+  EXPECT_EQ(nvhttp::get_all_clients().at(0).at("uuid"), first_uuid);
+
+  // With everything saved, an unknown client is just not found.
+  EXPECT_FALSE(nvhttp::unpair_client(uuid).applied);
+  nvhttp::get_all_clients(&pending);
+  EXPECT_FALSE(pending);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(UnsavableClientStateTest, OnlyUnsavedRemovalsArePendingUnpairs) {
+  // A grant that couldn't be saved was undone: nothing is pending, and an unknown client is just not found.
+  EXPECT_FALSE(nvhttp::update_device_info(uuid, "kept", "", {}, {}, crypto::PERM::_all, true, true, false).applied);
+  bool pending = true;
+  nvhttp::get_all_clients(&pending);
+  EXPECT_FALSE(pending);
+  EXPECT_FALSE(nvhttp::unpair_client("00000000-0000-4000-8000-000000000000").applied);
+
+  // Unpairing everyone leaves each of them pending.
+  EXPECT_FALSE(nvhttp::erase_all_clients().saved);
+  nvhttp::get_all_clients(&pending);
+  EXPECT_TRUE(pending);
+  const auto retried = nvhttp::unpair_client(first_uuid);
+  EXPECT_TRUE(retried.applied);
+  EXPECT_FALSE(retried.saved);
+  expect_state_file_untouched();
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ClientAuthorizationTest, InaccessibleStateDirectoryIsAFailedSave) {
+  const auto credentials = test_utils::certificates::generate_ca_credentials();
+  const auto uuid = nvhttp::test_support::add_client("paired", credentials.x509, true);
+  ASSERT_FALSE(uuid.empty());
+
+  // A state file whose directory can't be searched: checking for it fails rather than finding nothing.
+  const auto locked_dir = fs::path {SUNSHINE_TEST_BIN_DIR} / "client_authorization_locked";
+  std::error_code ignored;
+  fs::remove_all(locked_dir, ignored);
+  fs::create_directories(locked_dir);
+  config::nvhttp.file_state = (locked_dir / "state.json").string();
+  fs::permissions(locked_dir, fs::perms::none);
+  std::error_code probe_error;
+  std::ignore = fs::exists(config::nvhttp.file_state, probe_error);
+  if (!probe_error) {
+    fs::permissions(locked_dir, fs::perms::owner_all);
+    fs::remove_all(locked_dir, ignored);
+    GTEST_SKIP() << "Directory permissions are not enforced here (running as root?)";
+  }
+
+  nvhttp::client_change_t change;
+  EXPECT_NO_THROW(change = nvhttp::unpair_client(uuid));
+  EXPECT_TRUE(change.applied);
+  EXPECT_FALSE(change.saved);
+  EXPECT_FALSE(nvhttp::test_support::authorize_client_certificate(credentials.x509));
+  EXPECT_NO_THROW(change = nvhttp::erase_all_clients());
+  EXPECT_FALSE(change.saved);
+
+  fs::permissions(locked_dir, fs::perms::owner_all);
+  fs::remove_all(locked_dir, ignored);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ClientAuthorizationTest, FreshStateNeverWritesTheStateFile) {
+  const std::string persistent = R"({"root":{"uniqueid":"kept","named_devices":[]},"credentials":"kept"})";
+  {
+    std::ofstream out(state_file);
+    out << persistent;
+  }
+  config::sunshine.flags[config::flag::FRESH_STATE] = true;
+
+  // A temporary client pairs, is edited, disabled and unpaired without touching the persistent pairings.
+  const auto credentials = test_utils::certificates::generate_ca_credentials();
+  const auto uuid = nvhttp::test_support::add_client("temporary", credentials.x509, true);
+  ASSERT_FALSE(uuid.empty());
+  EXPECT_TRUE(nvhttp::update_device_info(uuid, "renamed", "", {}, {}, crypto::PERM::_all, true, true, false));
+  EXPECT_TRUE(nvhttp::set_client_enabled(uuid, false));
+  EXPECT_TRUE(nvhttp::set_client_enabled(uuid, true));
+  EXPECT_TRUE(nvhttp::unpair_client(uuid));
+  EXPECT_TRUE(nvhttp::erase_all_clients());
+
+  std::ifstream in(state_file);
+  EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), persistent);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ClientChangeTest, ASuccessfulSecondSaveHoldsARevocationThatStayedInEffect) {
+  const nvhttp::client_change_t saved {.applied = true, .saved = true};
+  const nvhttp::client_change_t kept_unsaved {.applied = true, .saved = false};
+  const nvhttp::client_change_t undone {.applied = false, .saved = false};
+
+  // The revocation's first save failed, the disable's save wrote the whole state: both are saved.
+  EXPECT_TRUE(nvhttp::combine_client_changes(kept_unsaved, false, saved));
+  EXPECT_TRUE(nvhttp::combine_client_changes(kept_unsaved, true, saved));
+  // A grant that was undone beside a disable that took effect and was saved: the response says what happened to each.
+  const auto disable_beside_undone = nvhttp::combine_client_changes(undone, false, saved);
+  EXPECT_FALSE(disable_beside_undone);
+  EXPECT_TRUE(disable_beside_undone.applied);
+  EXPECT_TRUE(disable_beside_undone.saved);
+  EXPECT_EQ(disable_beside_undone.partly, "The settings change could not be saved, so it was not made. Disabling the client was made and saved.");
+  // A command removal that stayed in effect beside an enable that was undone.
+  const auto removal_beside_undone_enable = nvhttp::combine_client_changes(kept_unsaved, true, undone);
+  EXPECT_FALSE(removal_beside_undone_enable);
+  EXPECT_TRUE(removal_beside_undone_enable.applied);
+  EXPECT_FALSE(removal_beside_undone_enable.saved);
+  EXPECT_EQ(
+    removal_beside_undone_enable.partly,
+    "The settings change is in effect but could not be saved, and will be undone on restart. Enabling the client could not be saved, so it was not made."
+  );
+  EXPECT_TRUE(nvhttp::combine_client_changes(saved, true, saved).partly.empty());
+  // Both saves failing is a failure to save.
+  const auto both_unsaved = nvhttp::combine_client_changes(kept_unsaved, false, kept_unsaved);
+  EXPECT_TRUE(both_unsaved.applied);
+  EXPECT_FALSE(both_unsaved.saved);
+  EXPECT_TRUE(nvhttp::combine_client_changes(saved, true, saved));
 }
 
 // Bugs caught: 0, False positives: 0

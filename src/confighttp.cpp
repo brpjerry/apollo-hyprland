@@ -644,6 +644,11 @@ namespace confighttp {
    */
   void report_client_change(nlohmann::json &output_tree, const nvhttp::client_change_t &change) {
     output_tree["status"] = static_cast<bool>(change);
+    if (!change.partly.empty()) {
+      output_tree["applied"] = change.applied;
+      output_tree["error"] = change.partly;
+      return;
+    }
     if (change.saved) {
       return;
     }
@@ -1256,10 +1261,14 @@ namespace confighttp {
             app[key] = std::stoi(app[key].get<std::string>());
           }
         }
-        if (app.contains("prep-cmd")) {
-          for (auto &prep : app["prep-cmd"]) {
-            if (prep.contains("elevated") && prep["elevated"].is_string()) {
-              prep["elevated"] = prep["elevated"] == "true";
+        // The editor gets each command's elevation as the app list reader sees it, so saving an unrelated change
+        // keeps it.
+        for (const auto *key : {"prep-cmd", "state-cmd"}) {
+          if (const auto commands = app.find(key); commands != app.end() && commands->is_array()) {
+            for (auto &command : *commands) {
+              if (command.is_object() && command.contains("elevated")) {
+                command["elevated"] = proc::command_elevated(command);
+              }
             }
           }
         }
@@ -1520,6 +1529,8 @@ namespace confighttp {
    * @brief Reorder applications.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
+   * The response's `order_matched` says whether every UUID of `order` was found, so each app is at its position in
+   * `order`.
    *
    * @api_examples{/api/apps/reorder|:| POST|:| {"order": ["aaaa-bbbb", "cccc-dddd"]}}
    */
@@ -1612,6 +1623,10 @@ namespace confighttp {
           BOOST_LOG(debug) << "ReorderApps: UUID '" << target_uuid << "' from 'order' array not found in available apps list or its matching app was already processed. Omitting.";
         }
       }
+
+      // Whether each app is now at its position in the submitted order: the Web UI requests covers by position, and
+      // an omitted UUID (an app another admin removed) moves every later app up.
+      output_tree["order_matched"] = reordered_apps_list.size() == order_uuids_json.size();
 
       // Phase 2: Append any remaining apps from the original list that were not explicitly ordered.
       // These are app objects that were not marked 'item_moved' in Phase 1.
@@ -1776,10 +1791,13 @@ namespace confighttp {
 
     print_req(request);
 
-    const nlohmann::json named_certs = nvhttp::get_all_clients();
+    bool unpair_pending = false;
+    const nlohmann::json named_certs = nvhttp::get_all_clients(&unpair_pending);
 
     nlohmann::json output_tree;
     output_tree["named_certs"] = named_certs;
+    // A client unpaired while the state file couldn't be saved comes back on restart: the Web UI offers a retry.
+    output_tree["unpair_pending"] = unpair_pending;
     output_tree["platform"] = SUNSHINE_PLATFORM;
     output_tree["status"] = true;
     send_response(response, output_tree);
@@ -1854,7 +1872,7 @@ namespace confighttp {
         const bool enabled = input_tree.value("enabled", true);
         const auto enable_change = nvhttp::set_client_enabled(uuid, enabled);
         // A disable that took effect is what the response reports as applied, even when a grant beside it was undone.
-        change = {.applied = (change.applied || !enabled) && enable_change.applied, .saved = change.saved && enable_change.saved};
+        change = nvhttp::combine_client_changes(change, enabled, enable_change);
 
         // set_client_enabled() stops a disabled client's streams, also when the change couldn't be saved.
       }

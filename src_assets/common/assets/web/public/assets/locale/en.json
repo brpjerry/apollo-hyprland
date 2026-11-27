@@ -143,6 +143,7 @@
     "resolution_scale_factor_desc": "Scale the client requested resolution based on this factor. e.g. 2000x1000 with a factor of 120% will become 2400x1200. Overrides client requested factor when the number isn't 100%. This option won't affect client requested streaming resolution.",
     "save_failed": "Failed to save app: ",
     "save_order": "Save Order",
+    "save_unconfirmed": "Could not confirm the save. Reload the list before retrying: ",
     "terminate_on_pause": "Terminate on Pause",
     "terminate_on_pause_desc": "Terminate the app when all clients are disconnected.",
     "use_app_identity": "Use App Identity",

@@ -65,7 +65,7 @@
         <div class="card app-card h-100" :class="{ 'border-success': isRunning(app) }">
           <div class="app-poster-container">
             <img
-              v-if="app['image-path']"
+              v-if="app['image-path'] && savedPositions"
               :src="coverUrl(app, index)"
               class="app-poster"
               :alt="app.name"
@@ -695,6 +695,9 @@
     "scale-factor": 100,
   });
 
+  /** `elevated` values of an application command that the server's app list reader takes as elevated. */
+  const ELEVATED_FLAGS = new Set([true, "true", 1, "1"]);
+
   /** Environment variables Apollo sets for application commands. */
   const ENV_VARS = [
     ["APOLLO_APP_ID", "apps.env_app_id"],
@@ -854,7 +857,8 @@
         dragIndex: -1,
         dragOverIndex: -1,
         orderChanged: false,
-        // Position of each application (by UUID) in the saved list; covers are served by that position.
+        // Position of each application (by UUID) in the saved list; covers are served by that position. Null while
+        // the positions are unknown (a change whose reload failed): the cards show their placeholder.
         savedPositions: new Map(),
         envVars: ENV_VARS,
       };
@@ -967,11 +971,11 @@
         for (const [key, value] of Object.entries(APP_FIELD_DEFAULTS)) {
           this.editForm[key] ??= structuredClone(value);
         }
-        // The elevation Checkbox emits values of its model's type: a missing flag would toggle to the string
-        // "true", which the server's command reader rejects. Give it a boolean.
+        // The elevation Checkbox emits values of its model's type: give it a boolean for legacy and missing flags
+        // (a missing one would toggle to the string "true").
         if (this.canElevate) {
           for (const command of [...this.editForm["prep-cmd"], ...this.editForm["state-cmd"]]) {
-            command.elevated = command.elevated === true || command.elevated === "true";
+            command.elevated = ELEVATED_FLAGS.has(command.elevated);
           }
         }
         this.editFormError = "";
@@ -991,21 +995,22 @@
       /**
        * @brief Load the applications, the running application and the host identity.
        *
-       * A failed request keeps the list shown (and an unsaved order) and reports the error above the list.
+       * A failed request keeps the list shown (and an unsaved order) and reports the error above the list, after the
+       * error of the action that asked for the reload.
        *
+       * @param {string} [actionError] Error of the action this reload follows, kept in front of a reload error.
        * @return {Promise<boolean>} Whether the list was loaded.
        */
-      async loadApps() {
+      async loadApps(actionError = "") {
         let body;
         try {
           const r = await apiFetch("./api/apps");
           if (r.status !== 200) {
-            this.actionError = this.$t('apps.load_failed') + (await this.errorText(r));
-            return false;
+            throw new Error(await this.errorText(r));
           }
           body = await r.json();
         } catch (e) {
-          this.actionError = this.$t('apps.load_failed') + e.message;
+          this.actionError = [actionError, this.$t('apps.load_failed') + e.message].filter(Boolean).join(" ");
           return false;
         }
         this.apps = body.apps ?? [];
@@ -1020,9 +1025,10 @@
        * @brief Delete the application chosen in the delete dialog: by UUID, or by position for an application
        * saved before UUIDs existed.
        *
-       * Actions stay disabled until the list is reloaded. A delete moves every later app down one position on the
-       * server, so when the reload fails, a list with apps identified by position is dropped rather than left usable
-       * with stale positions.
+       * Actions stay disabled until the list is reloaded, which happens after a failed request too: the server (or a
+       * proxy in front of it) can fail after writing the shortened list. A delete moves every later app down one
+       * position on the server, so when the reload fails, a list with apps identified by position is dropped rather
+       * than left usable with stale positions, and otherwise the deleted app goes (saving it would recreate it).
        *
        * @return {Promise<void>} Completion of the request.
        */
@@ -1031,6 +1037,7 @@
           return;
         }
         this.actionDisabled = true;
+        this.actionError = "";
         const target = this.deleteTarget;
         try {
           try {
@@ -1050,14 +1057,15 @@
               }));
             if (r.status !== 200) {
               this.actionError = this.$t('apps.delete_failed') + (await this.errorText(r));
-              return;
             }
           } catch (e) {
-            // The delete may still have happened, so the list is reloaded as after a success.
             this.actionError = this.$t('apps.delete_failed') + e.message;
           }
-          if (!(await this.loadApps()) && this.apps.some(app => !app.uuid)) {
-            this.apps = [];
+          // The delete may have happened either way, so the list is reloaded as after a success.
+          if (!(await this.loadApps(this.actionError))) {
+            this.apps = this.apps.some(app => !app.uuid) ? [] : this.apps.filter(app => app.uuid !== target.uuid);
+            // Every app after the deleted one may have moved up a position.
+            this.savedPositions = null;
           }
         } finally {
           this.closeDeleteModal();
@@ -1110,7 +1118,7 @@
        * @return {string} Cover URL.
        */
       coverUrl(app, index) {
-        const position = app.uuid ? this.savedPositions.get(app.uuid) : undefined;
+        const position = app.uuid ? this.savedPositions?.get(app.uuid) : undefined;
         return `/api/covers/${position ?? index}`;
       },
       isRunning(app) {
@@ -1160,9 +1168,15 @@
           if (r.status !== 200) {
             this.actionError = this.$t('apps.launch_failed') + (await this.errorText(r));
           }
+        } catch (e) {
+          this.actionError = this.$t('apps.launch_failed') + e.message;
         } finally {
-          this.actionDisabled = false;
-          await this.loadApps();
+          // Locked until the list is back, so this reload can't overwrite what a later action shows.
+          try {
+            await this.loadApps(this.actionError);
+          } finally {
+            this.actionDisabled = false;
+          }
         }
       },
       /**
@@ -1186,9 +1200,14 @@
           if (r.status !== 200) {
             this.actionError = this.$t('apps.close_failed');
           }
+        } catch (e) {
+          this.actionError = `${this.$t('apps.close_failed')} ${e.message}`;
         } finally {
-          this.actionDisabled = false;
-          await this.loadApps();
+          try {
+            await this.loadApps(this.actionError);
+          } finally {
+            this.actionDisabled = false;
+          }
         }
       },
       /**
@@ -1273,14 +1292,21 @@
             body: JSON.stringify({ order }),
           });
           if (r.status !== 200) {
+            // The server (or a proxy after it) may have written the new order anyway.
+            this.savedPositions = null;
             this.actionError = this.$t('apps.reorder_failed') + (await this.errorText(r));
             return;
           }
-          // On a failed reload the shown (sorted) list is still the saved order, so keep showing it.
+          // On a failed reload the shown (sorted) list is still the saved order, so keep showing it. Covers follow
+          // the submitted positions only when the server placed every app there (none was removed meanwhile).
           if (await this.loadApps()) {
             this.sortMode = "default";
+          } else {
+            const result = await Promise.resolve().then(() => r.json()).catch(() => null);
+            this.savedPositions = result?.order_matched === true ? new Map(order.map((uuid, index) => [uuid, index])) : null;
           }
         } catch (e) {
+          this.savedPositions = null;
           this.actionError = this.$t('apps.reorder_failed') + e.message;
         } finally {
           this.actionDisabled = false;
@@ -1487,6 +1513,9 @@
           } else {
             this.editFormError = this.$t('apps.save_failed') + (await this.errorText(r));
           }
+        }, (e) => {
+          // The server may have saved the app before the connection dropped.
+          this.editFormError = this.$t('apps.save_unconfirmed') + e.message;
         });
       },
       handleImageError(event) {

@@ -129,6 +129,23 @@ describe('command elevation flags', () => {
     expect(ctx.editForm['prep-cmd'].map(c => c.elevated)).toEqual([false, true])
     expect(ctx.editForm['state-cmd'].map(c => c.elevated)).toEqual([false, false])
   })
+
+  // The server's app list reader takes 1 and "1" as elevated: an editor that read them as false would drop the
+  // elevation when an unrelated field is saved.
+  // Bugs caught: 0, False positives: 0
+  it('keeps the elevation of commands flagged with 1 or "1"', () => {
+    const app = {
+      name: 'Commands',
+      'prep-cmd': [{ do: 'a', undo: '', elevated: 1 }, { do: 'b', undo: '', elevated: '1' }, { do: 'c', undo: '', elevated: 2 }],
+      'state-cmd': [{ do: 'd', undo: '', elevated: 1 }, { do: 'e', undo: '', elevated: 0 }],
+    }
+    const ctx = editContext(app)
+
+    Apps.methods.editApp.call(ctx, 0)
+
+    expect(ctx.editForm['prep-cmd'].map(c => c.elevated)).toEqual([true, true, false])
+    expect(ctx.editForm['state-cmd'].map(c => c.elevated)).toEqual([true, false])
+  })
 })
 
 describe('UUID-based applications', () => {
@@ -146,6 +163,18 @@ describe('UUID-based applications', () => {
     expect(body).not.toHaveProperty('index')
     expect(body['scale-factor']).toBe(120)
     expect(body['exit-timeout']).toBe(7)
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('says a save whose connection dropped is unconfirmed', async () => {
+    apiFetch.mockRejectedValueOnce(new Error('offline'))
+    const ctx = editContext({ name: 'Desktop', uuid: 'aaaa-bbbb' })
+
+    Apps.methods.editApp.call(ctx, 0)
+    await Apps.methods.save.call(ctx)
+
+    expect(ctx.editFormError).toBe('apps.save_unconfirmed' + 'offline')
+    expect(ctx.closeEditModal).not.toHaveBeenCalled()
   })
 
   // Bugs caught: 0, False positives: 0
@@ -198,7 +227,7 @@ describe('UUID-based applications', () => {
     expect(apiFetch.mock.calls[0][1].method).toBe('DELETE')
   })
 
-  // Bugs caught: 0, False positives: 1
+  // Bugs caught: 0, False positives: 2
   it('reorders by UUID in the order shown', async () => {
     apiFetch.mockResolvedValueOnce({ status: 200 })
     const apps = [{ name: 'B', uuid: 'b' }, { name: 'A', uuid: 'a' }, { name: 'C', uuid: 'c' }]
@@ -443,8 +472,9 @@ describe('applications page', () => {
     apiFetch.mockReset()
   })
 
+  // Saving the deleted app from a list that still shows it would create it again.
   // Bugs caught: 0, False positives: 0
-  it('keeps a list of UUID apps when it cannot be reloaded after a delete', async () => {
+  it('keeps the other UUID apps but not the deleted one when the list cannot be reloaded after a delete', async () => {
     const wrapper = await mountApps([{ name: 'A', uuid: 'a' }, { name: 'B', uuid: 'b' }])
     apiFetch.mockImplementation(async url => (url === './api/apps/delete'
       ? { status: 200 }
@@ -453,8 +483,142 @@ describe('applications page', () => {
     wrapper.vm.deleteTarget = { index: 0, uuid: 'a', name: 'A' }
     await wrapper.vm.confirmDelete()
 
-    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['A', 'B'])
+    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['B'])
     expect(wrapper.vm.actionError).toContain('apps.json unreadable')
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // The server writes the shortened list before it can fail (and a proxy can fail after the write): a retry against
+  // the old positions would delete the next app.
+  // Bugs caught: 0, False positives: 0
+  it('reloads the list after a delete that reported an error', async () => {
+    const wrapper = await mountApps([{ name: 'Legacy 1' }, { name: 'Legacy 2' }])
+    apiFetch.mockImplementation(async url => (url === './api/apps/0'
+      ? { status: 502, json: async () => ({ error: 'Bad gateway' }) }
+      : { status: 200, json: async () => ({ apps: [{ name: 'Legacy 2' }] }) }))
+
+    wrapper.vm.deleteTarget = { index: 0, uuid: undefined, name: 'Legacy 1' }
+    await wrapper.vm.confirmDelete()
+
+    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['Legacy 2'])
+    expect(wrapper.vm.actionError).toContain('Bad gateway')
+
+    // When that reload fails too, the positional list is dropped.
+    apiFetch.mockImplementation(async url => (url === './api/apps/0'
+      ? { status: 502, json: async () => ({ error: 'Bad gateway' }) }
+      : { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }))
+    wrapper.vm.deleteTarget = { index: 0, uuid: undefined, name: 'Legacy 2' }
+    await wrapper.vm.confirmDelete()
+    expect(wrapper.vm.apps).toEqual([])
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('requests covers by the saved order after a reorder whose reload failed', async () => {
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }, { name: 'B', uuid: 'b' }])
+    wrapper.vm.moveApp(0, 1)
+    apiFetch.mockImplementation(async url => (url === './api/apps'
+      ? { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }
+      : { status: 200, json: async () => ({ status: true, order_matched: true }) }))
+
+    await wrapper.vm.saveOrder()
+
+    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['B', 'A'])
+    expect(wrapper.vm.coverUrl(wrapper.vm.apps[0], 0)).toBe('/api/covers/0')
+    expect(wrapper.vm.coverUrl(wrapper.vm.apps[1], 1)).toBe('/api/covers/1')
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // A UUID another admin removed meanwhile moves every later app up: positions are unknown until a reload.
+  // Bugs caught: 0, False positives: 0
+  it('shows no covers after a partly matched reorder whose reload failed', async () => {
+    const { flushPromises } = await import('@vue/test-utils')
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a', 'image-path': 'a.png' }, { name: 'B', uuid: 'b', 'image-path': 'b.png' }])
+    expect(wrapper.findAll('img.app-poster')).toHaveLength(2)
+    wrapper.vm.moveApp(0, 1)
+    apiFetch.mockImplementation(async url => (url === './api/apps'
+      ? { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }
+      : { status: 200, json: async () => ({ status: true, order_matched: false }) }))
+
+    await wrapper.vm.saveOrder()
+    await flushPromises()
+
+    expect(wrapper.vm.savedPositions).toBeNull()
+    expect(wrapper.findAll('img.app-poster')).toHaveLength(0)
+    expect(wrapper.findAll('.app-poster-placeholder').length).toBeGreaterThan(0)
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // After deleting A from [A, B, C] the server serves C's cover at B's old position.
+  // Bugs caught: 0, False positives: 0
+  it('shows no covers for the apps left after a delete whose reload failed', async () => {
+    const { flushPromises } = await import('@vue/test-utils')
+    const wrapper = await mountApps([
+      { name: 'A', uuid: 'a', 'image-path': 'a.png' },
+      { name: 'B', uuid: 'b', 'image-path': 'b.png' },
+      { name: 'C', uuid: 'c', 'image-path': 'c.png' },
+    ])
+    apiFetch.mockImplementation(async url => (url === './api/apps/delete'
+      ? { status: 200 }
+      : { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }))
+
+    wrapper.vm.deleteTarget = { index: 0, uuid: 'a', name: 'A' }
+    await wrapper.vm.confirmDelete()
+    await flushPromises()
+
+    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['B', 'C'])
+    expect(wrapper.findAll('img.app-poster')).toHaveLength(0)
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('keeps the action error in front of a reload error', async () => {
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }])
+    wrapper.vm.actionError = 'apps.close_failed earlier'
+    apiFetch.mockImplementation(async url => (url === './api/apps/delete'
+      ? { status: 400, json: async () => ({ error: 'Invalid uuid' }) }
+      : { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }))
+
+    wrapper.vm.deleteTarget = { index: 0, uuid: 'a', name: 'A' }
+    await wrapper.vm.confirmDelete()
+
+    expect(wrapper.vm.actionError).toBe('apps.delete_failedInvalid uuid apps.load_failedapps.json unreadable')
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // A dropped connection used to escape the action without a message, and the grid unlocked before its refresh
+  // finished, so that older list could overwrite a later action's result.
+  // Bugs caught: 0, False positives: 0
+  it.each([
+    ['launch', './api/apps/launch', 'apps.launch_failed'],
+    ['close', './api/apps/close', 'apps.close_failed'],
+  ])('reports a %s request that never reached the server and stays locked until the list is back', async (action, actionUrl, message) => {
+    const { flushPromises } = await import('@vue/test-utils')
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }])
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    let answerList
+    apiFetch.mockImplementation(url => {
+      if (url === actionUrl) return Promise.reject(new Error('offline'))
+      if (url === './api/apps') return new Promise(resolve => { answerList = resolve })
+      return Promise.resolve({ status: 200, json: async () => ({}) })
+    })
+
+    const done = action === 'launch' ? wrapper.vm.launchApp({ name: 'A', uuid: 'a' }) : wrapper.vm.closeApp()
+    await flushPromises()
+    expect(wrapper.vm.actionError).toContain(message)
+    expect(wrapper.vm.actionError).toContain('offline')
+    expect(wrapper.vm.actionDisabled).toBe(true)
+
+    answerList({ status: 200, json: async () => ({ apps: [{ name: 'A', uuid: 'a' }] }) })
+    await done
+    expect(wrapper.vm.actionDisabled).toBe(false)
+    vi.unstubAllGlobals()
     wrapper.unmount()
     apiFetch.mockReset()
   })

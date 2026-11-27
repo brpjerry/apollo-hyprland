@@ -101,11 +101,43 @@ TEST(FileHandlerTests, ReadMissingFileTest) {
 }
 
 #ifndef _WIN32
-  #include <filesystem>
+  // standard includes
+  #include <cerrno>
+  #include <chrono>
   #include <cstdlib>
+  #include <fcntl.h>
+  #include <filesystem>
+  #include <fstream>
+  #include <future>
+  #include <string>
+  #include <string_view>
   #include <sys/stat.h>
   #include <sys/xattr.h>
   #include <unistd.h>
+  #include <vector>
+
+  // local includes
+  #include <src/compat/boost_process.h>
+
+namespace {
+  /**
+   * @brief Read a file's access ACL attribute.
+   *
+   * @param file File to read.
+   * @return The raw attribute, or an empty string when the file has none.
+   */
+  std::string access_acl_of(const std::filesystem::path &file) {
+    // Ask for the size first: an inherited default ACL can make the attribute longer than any fixed buffer.
+    const auto needed = ::getxattr(file.c_str(), "system.posix_acl_access", nullptr, 0);
+    if (needed <= 0) {
+      return {};
+    }
+    std::string value(static_cast<std::size_t>(needed), '\0');
+    const auto size = ::getxattr(file.c_str(), "system.posix_acl_access", value.data(), value.size());
+    value.resize(size < 0 ? 0 : static_cast<std::size_t>(size));
+    return value;
+  }
+}  // namespace
 
 // Bugs caught: 0, False positives: 0
 TEST(FileHandlerTests, WriteFileReplacesAtomicallyAndKeepsPermissionsAndSymlinks) {
@@ -198,18 +230,93 @@ TEST(FileHandlerTests, WriteFileKeepsHardLinksAndAccessAcls) {
   EXPECT_EQ(file_handler::read_file(alias.c_str()), "new");
   EXPECT_EQ(fs::hard_link_count(file), 2U);
 
-  // An access ACL survives the save (skipped where setfacl or ACL support is missing).
+  // An access ACL survives the save unchanged (skipped where setfacl or ACL support is missing). The file name is an
+  // argument, not shell text, so no build directory name can turn the check into a skip.
   const auto acl_file = dir / "acl.json";
   ASSERT_EQ(file_handler::write_file(acl_file.c_str(), "old"), 0);
-  const auto set_acl = std::format("setfacl -m u:nobody:r '{}' 2>/dev/null", acl_file.string());
-  if (std::system(set_acl.c_str()) == 0) {
-    ASSERT_GE(::getxattr(acl_file.c_str(), "system.posix_acl_access", nullptr, 0), 0);
+  namespace bp = boost::process::v1;
+  // Explicit PATH entries: the default search reads PATH through the process locale, which can be unavailable.
+  std::vector<boost::filesystem::path> path_dirs;
+  if (const char *path = std::getenv("PATH")) {
+    std::string_view rest {path};
+    while (!rest.empty()) {
+      const auto colon = rest.find(':');
+      if (const auto dir_entry = rest.substr(0, colon); !dir_entry.empty()) {
+        path_dirs.emplace_back(std::string {dir_entry});
+      }
+      rest = colon == std::string_view::npos ? std::string_view {} : rest.substr(colon + 1);
+    }
+  }
+  const auto setfacl = bp::search_path("setfacl", path_dirs);
+  if (!setfacl.empty() && bp::system(setfacl, "-m", "u:nobody:r", "--", acl_file.string(), bp::std_out > bp::null, bp::std_err > bp::null) == 0) {
+    const auto acl = access_acl_of(acl_file);
+    ASSERT_FALSE(acl.empty());
     ASSERT_EQ(file_handler::write_file(acl_file.c_str(), "new"), 0);
     EXPECT_EQ(file_handler::read_file(acl_file.c_str()), "new");
-    EXPECT_GE(::getxattr(acl_file.c_str(), "system.posix_acl_access", nullptr, 0), 0);
+    EXPECT_EQ(access_acl_of(acl_file), acl);
   }
 
   std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(FileHandlerTests, OnlyAMissingAttributeOrNoAclSupportProvesThereIsNoAcl) {
+  EXPECT_TRUE(file_handler::detail::access_acl_absent(-1, ENODATA));
+  EXPECT_TRUE(file_handler::detail::access_acl_absent(-1, EOPNOTSUPP));
+  EXPECT_TRUE(file_handler::detail::access_acl_absent(-1, ENOTSUP));
+  // A failed probe proves nothing; replacing the file could drop its ACL.
+  EXPECT_FALSE(file_handler::detail::access_acl_absent(-1, EACCES));
+  EXPECT_FALSE(file_handler::detail::access_acl_absent(-1, EIO));
+  EXPECT_FALSE(file_handler::detail::access_acl_absent(28, 0));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(FileHandlerTests, InPlaceWriteLeavesAFileReplacedMeanwhileAlone) {
+  namespace fs = std::filesystem;
+  const auto dir = fs::path {SUNSHINE_TEST_BIN_DIR} / "write_file_in_place";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir);
+  const auto file = dir / "sunshine_state.json";
+
+  ASSERT_EQ(file_handler::write_file(file.c_str(), "old"), 0);
+  struct stat inspected {};
+  ASSERT_EQ(::stat(file.c_str(), &inspected), 0);
+  ASSERT_EQ(file_handler::detail::write_in_place(file.c_str(), "new", inspected.st_dev, inspected.st_ino), 0);
+  EXPECT_EQ(file_handler::read_file(file.c_str()), "new");
+
+  // An editor saved its own copy after the inspection: its contents stay.
+  const auto replacement = dir / "replacement.json";
+  {
+    std::ofstream out(replacement);
+    out << "edited elsewhere";
+  }
+  fs::rename(replacement, file);
+  EXPECT_NE(file_handler::detail::write_in_place(file.c_str(), "ours", inspected.st_dev, inspected.st_ino), 0);
+  EXPECT_EQ(file_handler::read_file(file.c_str()), "edited elsewhere");
+
+  // A FIFO put in its place doesn't block the write.
+  fs::remove(file);
+  ASSERT_EQ(::mkfifo(file.c_str(), 0600), 0);
+  struct stat fifo {};
+  ASSERT_EQ(::stat(file.c_str(), &fifo), 0);
+  auto result = std::async(std::launch::async, [&] {
+    return file_handler::detail::write_in_place(file.c_str(), "ours", fifo.st_dev, fifo.st_ino);
+  });
+  const bool finished = result.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+  if (!finished) {
+    // A writer stuck opening the FIFO waits for a reader: give it one, so the test fails instead of hanging the suite.
+    // (A death test can't run here: BaseTest already captures stderr.)
+    const int reader = ::open(file.c_str(), O_RDONLY | O_NONBLOCK);
+    result.wait();
+    if (reader >= 0) {
+      ::close(reader);
+    }
+  }
+  EXPECT_TRUE(finished) << "Opening the FIFO blocked";
+  EXPECT_NE(result.get(), 0);
+
   fs::remove_all(dir, ec);
 }
 #endif

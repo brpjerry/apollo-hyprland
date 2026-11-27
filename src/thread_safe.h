@@ -168,6 +168,9 @@ namespace safe {
      * @return True when a value is available to inspect.
      */
     bool peek() const {
+      // Under the lock: another thread may be raising, popping or stopping the event (a stream worker checks its
+      // session's shutdown while the session is stopped).
+      std::lock_guard lg {_lock};
       return _continue && (bool) _status;
     }
 
@@ -199,6 +202,7 @@ namespace safe {
      * @return True while the queue accepts producers and consumers.
      */
     [[nodiscard]] bool running() const {
+      std::lock_guard lg {_lock};
       return _continue;
     }
 
@@ -207,7 +211,7 @@ namespace safe {
     status_t _status {util::false_v<status_t>};
 
     std::condition_variable _cv;
-    std::mutex _lock;
+    mutable std::mutex _lock;
   };
 
   /**
