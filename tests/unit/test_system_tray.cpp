@@ -38,8 +38,11 @@
 
   // local includes
   #include <src/config.h>
+  #include <src/confighttp.h>
+  #include <src/network.h>
   #include <src/system_tray.h>
   #include <src/thread_safe.h>
+  #include <src/utility.h>
 
 namespace {
   using namespace std::chrono_literals;
@@ -322,6 +325,35 @@ private:
   std::string original_gamepad_driver_;  ///< Original gamepad backend setting restored after each test.
   #endif
 };
+
+// Bugs caught: 0, False positives: 0
+TEST(SystemTrayMenuOptionsTest, TitleNamesTheInstanceAndHideRemovesTheControls) {
+  const auto original_name = config::nvhttp.sunshine_name;
+  const auto original_hide = config::sunshine.hide_tray_controls;
+  const auto restore = util::fail_guard([&]() {
+    config::nvhttp.sunshine_name = original_name;
+    config::sunshine.hide_tray_controls = original_hide;
+    system_tray::reset_tray_data_for_testing();
+  });
+  const auto &tray_data = system_tray::tray_data_for_testing();
+  const auto expected_title = std::format("Open Apollo (Den PC:{})", net::map_port(confighttp::PORT_HTTPS));
+
+  config::nvhttp.sunshine_name = "Den PC";
+  config::sunshine.hide_tray_controls = false;
+  system_tray::apply_menu_options_for_testing();
+  EXPECT_EQ(std::string(tray_data.menu[0].text), expected_title);
+  ASSERT_NE(tray_data.menu[1].text, nullptr);
+  EXPECT_STREQ(tray_data.menu[1].text, "-");
+
+  config::sunshine.hide_tray_controls = true;
+  system_tray::apply_menu_options_for_testing();
+  EXPECT_EQ(std::string(tray_data.menu[0].text), expected_title);
+  EXPECT_EQ(tray_data.menu[1].text, nullptr);
+
+  config::sunshine.hide_tray_controls = false;
+  system_tray::apply_menu_options_for_testing();
+  EXPECT_STREQ(tray_data.menu[1].text, "-");
+}
 
 TEST_F(SystemTrayTest, UpdatesAreIgnoredBeforeInitialization) {
   EXPECT_FALSE(system_tray::tray_initialized_for_testing());

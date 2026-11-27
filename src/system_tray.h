@@ -199,5 +199,10 @@ namespace system_tray {
    * @brief Resolve all tray icon paths using the production platform logic.
    */
   void resolve_tray_icon_paths_for_testing();
+
+  /**
+   * @brief Apply the configured menu title and hidden controls, as tray initialization does.
+   */
+  void apply_menu_options_for_testing();
 #endif
 }  // namespace system_tray

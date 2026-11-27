@@ -615,6 +615,25 @@ environment, is replaced. The service does not need to be enabled in this setup.
 After logging in, `journalctl --user -u sunshine` should show `Screencasting with Wayland's protocol`. When you log
 out, the service stops: Sunshine receives `SIGTERM` (or `SIGHUP`), ends the running app and cleans up before exiting.
 
+##### Firewall
+The packages install a firewalld service and a ufw application profile for the default ports (base port 47989), but
+leave them disabled. Open them on the network you stream over:
+
+```bash
+sudo firewall-cmd --permanent --add-service=apollo && sudo firewall-cmd --reload   # firewalld
+sudo ufw allow Apollo && sudo ufw allow mDNS                                        # ufw
+```
+
+They cover TCP 47984, 47989, 47990 and 48010, UDP 47998-48000, 48002 and 48010, and mDNS (UDP 5353) for discovery.
+With a different `port` in `sunshine.conf`, every port moves by the same amount: copy
+`/usr/lib/firewalld/services/apollo.xml` to `/etc/firewalld/services/` (or edit `/etc/ufw/applications.d/apollo`) and
+shift the ports.
+
+##### Tray icon
+The tray icon is a StatusNotifierItem, so it only shows up when something in your session hosts one, such as
+Waybar's `tray` module. Its first entry, *Open Apollo (name:port)*, names the instance and its web UI port, which
+tells several instances apart. `hide_tray_controls` removes the other entries.
+
 ##### Virtual displays
 On Hyprland, a virtual display is a headless output named `APOLLO-` followed by 8 hex digits, created for the
 session and removed when the app quits. Clients see virtual display support once Sunshine reaches Hyprland's IPC
