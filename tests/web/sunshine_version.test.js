@@ -123,6 +123,16 @@ describe('Apollo Hyprland release versions', () => {
     expect(stable.version).toBe('v0.4.8.2')
   })
 
+  // A higher version may sit on a page that was not read, so the result must not claim to be complete.
+  // Bugs caught: 0, False positives: 0
+  it('returns no versions when every page it may read is full', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ tag_name: `v0.3.${i}`, prerelease: false }))
+    const fetchJson = vi.fn(async () => full)
+
+    expect(await fetchReleaseVersions(fetchJson)).toEqual({ stable: null, preRelease: null })
+    expect(fetchJson).toHaveBeenCalledTimes(10)
+  })
+
   // Bugs caught: 0, False positives: 0
   it('returns no versions when a later page fails', async () => {
     const full = Array.from({ length: 100 }, (_, i) => ({ tag_name: `v0.3.${i}`, prerelease: false }))

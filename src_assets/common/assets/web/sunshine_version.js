@@ -139,7 +139,7 @@ const MAX_RELEASE_PAGES = 10;
  *
  * The highest version wins, not the most recently published one: a maintenance release of an older branch can be
  * published after a newer version. Pages are read while GitHub returns full ones, so a higher version further down
- * the list is not missed. A failed page makes the whole result unknown.
+ * the list is not missed. A failed page, or a full last page within the page limit, makes the whole result unknown.
  *
  * @param {Function} [fetchJson] Loader returning parsed JSON for a URL.
  * @return {Promise<{stable: ?SunshineVersion, preRelease: ?SunshineVersion}>} Release versions, null when absent.
@@ -165,10 +165,11 @@ export async function fetchReleaseVersions(fetchJson = async url => (await fetch
       }
     }
     if (releases.length < RELEASES_PER_PAGE) {
-      break;
+      return newest;
     }
   }
-  return newest;
+  // Every page read was full: a higher version may be on one that was not read.
+  return { stable: null, preRelease: null };
 }
 
 export default SunshineVersion;
