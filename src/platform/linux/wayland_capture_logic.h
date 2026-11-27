@@ -487,21 +487,20 @@ namespace wl {
    * @param refresh_mhz Refresh rate of the output in mHz, 0 when unknown.
    * @return The matched rate, or nothing when the stream rate is kept.
    */
-  inline std::optional<frame_rate_t> refresh_matched_rate(std::int64_t stream_fps, std::int32_t refresh_mhz) {
+  inline std::optional<frame_rate_t> refresh_matched_rate(std::int32_t stream_fps, std::int32_t refresh_mhz) {
     // An integral refresh rate (or none) needs no adjustment.
-    if (stream_fps <= 0 || refresh_mhz <= 0 || refresh_mhz % 1000 == 0) {
-      return std::nullopt;
-    }
-    const std::int64_t rounded = (static_cast<std::int64_t>(refresh_mhz) + 500) / 1000;
-    if (rounded == 0) {
+    if (stream_fps <= 0 || refresh_mhz < 500 || refresh_mhz % 1000 == 0) {
       return std::nullopt;
     }
 
+    // The nearest multiple or fraction of the measured rate: rounding it to whole Hz first would miss half of
+    // 599.4 Hz for a 300 fps stream.
+    const std::int64_t stream_mhz = static_cast<std::int64_t>(stream_fps) * 1000;
     frame_rate_t candidate {refresh_mhz, 1000};
-    if (stream_fps % rounded == 0) {
-      candidate.num *= stream_fps / rounded;
-    } else if (rounded % stream_fps == 0) {
-      candidate.den *= rounded / stream_fps;
+    if (stream_mhz >= refresh_mhz) {
+      candidate.num *= (stream_mhz + refresh_mhz / 2) / refresh_mhz;
+    } else {
+      candidate.den *= (refresh_mhz + stream_mhz / 2) / stream_mhz;
     }
 
     const double candidate_fps = static_cast<double>(candidate.num) / static_cast<double>(candidate.den);

@@ -368,6 +368,8 @@ TEST(WaylandCaptureLogic, StreamRateIsLoweredToAFractionalRefreshRate) {
   EXPECT_EQ(wl::refresh_matched_rate(144, 143856), (rate {143856, 1000}));
   // Monitors that report 59.951 Hz for "60 Hz" are matched too, as on Windows.
   EXPECT_EQ(wl::refresh_matched_rate(60, 59951), (rate {59951, 1000}));
+  // Half of a 599.4 Hz output: 599.4 rounded to whole Hz first has neither 300 as a multiple nor as a fraction.
+  EXPECT_EQ(wl::refresh_matched_rate(300, 599400), (rate {599400, 2000}));
 }
 
 // Bugs caught: 0, False positives: 0
