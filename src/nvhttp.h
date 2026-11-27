@@ -646,6 +646,13 @@ namespace nvhttp {
      * @return Copy of the client's current record, or nullptr when it may no longer connect.
      */
     std::shared_ptr<crypto::named_cert_t> current_client_record(std::string_view cert);
+
+    /**
+     * @brief The mutex the HTTP and HTTPS pairing handlers share for console PIN prompts.
+     *
+     * @return Mutex held while a console PIN prompt reads stdin.
+     */
+    std::mutex &console_pin_mutex();
   }  // namespace test_support
 #endif
 }  // namespace nvhttp
