@@ -274,9 +274,10 @@ describe('UUID-based applications', () => {
     expect(Apps.methods.isRunning.call({ currentApp: '' }, {})).toBe(false)
   })
 
-  // Bugs caught: 0, False positives: 0
+  // Bugs caught: 0, False positives: 1
   it('loads the running application and host identity with the list', async () => {
     apiFetch.mockResolvedValueOnce({
+      status: 200,
       json: async () => ({ apps: [{ name: 'A', uuid: 'a' }], current_app: 'a', host_uuid: 'h', host_name: 'Host' }),
     })
     const ctx = { orderChanged: true }
@@ -290,9 +291,10 @@ describe('UUID-based applications', () => {
 })
 
 describe('applications page', () => {
-  // Bugs caught: 0, False positives: 0
+  // Bugs caught: 0, False positives: 1
   it('keeps cover URLs on the saved position while a dragged order is unsaved', async () => {
     apiFetch.mockResolvedValueOnce({
+      status: 200,
       json: async () => ({ apps: [{ name: 'A', uuid: 'a' }, { name: 'B', uuid: 'b' }, { name: 'Legacy' }] }),
     })
     const ctx = { orderChanged: false }
@@ -374,6 +376,26 @@ describe('applications page', () => {
     expect(wrapper.vm.canSaveOrder).toBe(true)
     const alerts = wrapper.findAll('.alert-danger').filter(alert => !alert.element.closest('.modal'))
     expect(alerts.map(alert => alert.text()).join()).toContain('Disk full')
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('keeps the list and the dragged order when reloading the apps fails', async () => {
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }, { name: 'B', uuid: 'b' }])
+    wrapper.vm.moveApp(0, 1)
+    apiFetch.mockResolvedValueOnce({ status: 500, json: async () => ({ error: 'apps.json unreadable' }) })
+
+    await wrapper.vm.loadApps()
+
+    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['B', 'A'])
+    expect(wrapper.vm.orderChanged).toBe(true)
+    expect(wrapper.vm.actionError).toContain('apps.json unreadable')
+
+    apiFetch.mockRejectedValueOnce(new Error('offline'))
+    await wrapper.vm.loadApps()
+    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['B', 'A'])
+    expect(wrapper.vm.actionError).toContain('offline')
     wrapper.unmount()
     apiFetch.mockReset()
   })

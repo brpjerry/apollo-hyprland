@@ -991,19 +991,30 @@
       /**
        * @brief Load the applications, the running application and the host identity.
        *
-       * @return {Promise<void>} Completion of the request.
+       * A failed request keeps the list shown (and an unsaved order) and reports the error above the list.
+       *
+       * @return {Promise<boolean>} Whether the list was loaded.
        */
-      loadApps() {
-        return apiFetch("./api/apps")
-          .then((r) => r.json())
-          .then((r) => {
-            this.apps = r.apps ?? [];
-            this.savedPositions = new Map(this.apps.map((app, i) => [app.uuid, i]).filter(([uuid]) => uuid));
-            this.currentApp = r.current_app ?? "";
-            this.hostName = r.host_name ?? "";
-            this.hostUUID = r.host_uuid ?? "";
-            this.orderChanged = false;
-          });
+      async loadApps() {
+        let body;
+        try {
+          const r = await apiFetch("./api/apps");
+          if (r.status !== 200) {
+            this.actionError = this.$t('apps.load_failed') + (await this.errorText(r));
+            return false;
+          }
+          body = await r.json();
+        } catch (e) {
+          this.actionError = this.$t('apps.load_failed') + e.message;
+          return false;
+        }
+        this.apps = body.apps ?? [];
+        this.savedPositions = new Map(this.apps.map((app, i) => [app.uuid, i]).filter(([uuid]) => uuid));
+        this.currentApp = body.current_app ?? "";
+        this.hostName = body.host_name ?? "";
+        this.hostUUID = body.host_uuid ?? "";
+        this.orderChanged = false;
+        return true;
       },
       /**
        * @brief Delete the application chosen in the delete dialog: by UUID, or by position for an application

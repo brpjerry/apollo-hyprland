@@ -135,6 +135,7 @@
     "launch_local_client": "Do you want to launch the app from local client on this device?",
     "launch_warning": "Are you sure you want to launch this app? This will terminate the currently running app.",
     "launch_failed": "App launch failed: ",
+    "load_failed": "Failed to load apps: ",
     "per_client_app_identity": "Per Client App Identity",
     "per_client_app_identity_desc": "Separate the app's identity per-client. Useful when you want different virtual display configurations on this specific app for different clients",
     "reorder_failed": "Failed to reorder apps: ",
