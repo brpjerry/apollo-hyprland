@@ -6,6 +6,7 @@
 #include "../tests_common.h"
 
 // standard includes
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
@@ -13,6 +14,7 @@
 #include <optional>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 // lib includes
 #include <boost/process/v1.hpp>
@@ -950,4 +952,35 @@ TEST(ProcessTest, CompatibleClientFpsIsAWholeNumber) {
   EXPECT_EQ(proc::compatible_client_fps(60000), "60");
   EXPECT_EQ(proc::compatible_client_fps(59940), "60");
   EXPECT_EQ(proc::compatible_client_fps(119880), "120");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ProcessRefreshTest, Refresh_FirstUnreadableFileStillOffersBuiltInApps) {
+  // Starting with a broken apps.json must not hide Remote Input and Terminate until the file is fixed.
+  config::input.enable_input_only_mode = true;
+  const fs::path apps_file = test_dir / "apps_broken_at_start.json";
+  {
+    std::ofstream file(apps_file);
+    file << R"({"apps": [)";
+  }
+  fs::last_write_time(apps_file, fs::file_time_type::clock::now() + std::chrono::hours(4));
+
+  auto saved = std::move(proc::proc);
+  proc::proc = proc::proc_t {};
+  proc::refresh(apps_file.string());
+  std::vector<std::string> uuids;
+  for (const auto &app : proc::proc.get_apps()) {
+    uuids.push_back(app.uuid);
+  }
+  EXPECT_NE(std::ranges::find(uuids, REMOTE_INPUT_UUID), uuids.end());
+  EXPECT_NE(std::ranges::find(uuids, TERMINATE_APP_UUID), uuids.end());
+
+  // The same file, repaired without a newer timestamp, is still read: nothing was recorded for it.
+  const auto stamp = fs::last_write_time(apps_file);
+  writeAppsJson(apps_file, {"Repaired"});
+  fs::last_write_time(apps_file, stamp);
+  proc::refresh(apps_file.string());
+  EXPECT_EQ(proc::proc.get_apps().front().name, "Repaired");
+
+  proc::proc = std::move(saved);
 }

@@ -1526,7 +1526,14 @@ namespace proc {
     }
   }
 
-  std::optional<proc::proc_t> parse(const std::string &file_name) {
+  /**
+   * @brief Build the app list from the apps file, followed by the built-in entries.
+   *
+   * @param file_name Path of the apps file.
+   * @param builtins_only Skip the file: only the built-in entries (Virtual Display, Remote Input, Terminate).
+   * @return The app list, or nullopt when the file couldn't be read (never with `builtins_only`).
+   */
+  static std::optional<proc::proc_t> parse_apps(const std::string &file_name, bool builtins_only) {
 
     // Prepare environment variables.
     auto this_env = boost::this_process::environment();
@@ -1537,6 +1544,9 @@ namespace proc {
 
     size_t fail_count = 0;
     do {
+      if (builtins_only) {
+        break;
+      }
       // Read the JSON file into a tree.
       nlohmann::json tree;
       try {
@@ -1861,6 +1871,10 @@ namespace proc {
     };
   }
 
+  std::optional<proc::proc_t> parse(const std::string &file_name) {
+    return parse_apps(file_name, false);
+  }
+
   /**
    * @brief Reload the application list and re-initialise the virtual display backend.
    *
@@ -1926,6 +1940,10 @@ namespace proc {
     if (proc_opt) {
       proc.update_apps_and_env(std::move(*proc_opt));
       last_apps_file_update = current_time;
+    } else if (proc.get_apps().empty()) {
+      // Nothing loaded yet (first start): offer the built-in entries meanwhile. The timestamp stays unrecorded, so the
+      // next refresh reads the file again.
+      proc.update_apps_and_env(std::move(*parse_apps(file_name, true)));
     }
   }
 }  // namespace proc

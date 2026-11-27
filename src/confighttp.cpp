@@ -1427,15 +1427,24 @@ namespace confighttp {
       if (!has_uuid && input_tree.contains("index")) {
         const auto &requested = input_tree["index"];
         auto &apps = file_tree["apps"];
-        const bool valid = requested.is_number_integer() &&
-                           (requested.get<std::int64_t>() == -1 ||
-                            (requested.get<std::int64_t>() >= 0 && apps.is_array() && requested.get<std::int64_t>() < static_cast<std::int64_t>(apps.size())));
-        if (!valid) {
+        // Read the sign from the JSON number itself: an unsigned value like 2^64 - 1 must not wrap around to -1.
+        bool create = false;
+        std::optional<std::size_t> index;
+        if (requested.is_number_unsigned()) {
+          index = requested.get<std::uint64_t>();
+        } else if (requested.is_number_integer()) {
+          if (const auto value = requested.get<std::int64_t>(); value == -1) {
+            create = true;
+          } else if (value >= 0) {
+            index = static_cast<std::size_t>(value);
+          }
+        }
+        if (!create && !(index && apps.is_array() && *index < apps.size())) {
           bad_request(response, "Invalid application index");
           return;
         }
-        if (const auto index = requested.get<std::int64_t>(); index >= 0) {
-          auto &app = apps[static_cast<std::size_t>(index)];
+        if (index) {
+          auto &app = apps[*index];
           if (!app.contains("uuid") || !app["uuid"].is_string() || app["uuid"].get<std::string>().empty()) {
             app["uuid"] = uuid_util::uuid_t::generate().string();
           }

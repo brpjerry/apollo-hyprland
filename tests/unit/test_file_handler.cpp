@@ -102,6 +102,7 @@ TEST(FileHandlerTests, ReadMissingFileTest) {
 
 #ifndef _WIN32
   #include <filesystem>
+  #include <sys/stat.h>
   #include <unistd.h>
 
 // Bugs caught: 0, False positives: 0
@@ -132,6 +133,49 @@ TEST(FileHandlerTests, WriteFileReplacesAtomicallyAndKeepsPermissionsAndSymlinks
     EXPECT_EQ(file_handler::read_file(target.c_str()), "through link");
     fs::permissions(dir, fs::perms::owner_all);
   }
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(FileHandlerTests, WriteFileOnlyReplacesWhatItCouldWriteInPlace) {
+  namespace fs = std::filesystem;
+  const auto dir = fs::path {SUNSHINE_TEST_BIN_DIR} / "write_file_refusals";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+
+  // A read-only file in a writable directory stays as it is (root may write it anyway).
+  const auto read_only = dir / "managed.conf";
+  ASSERT_EQ(file_handler::write_file(read_only.c_str(), "managed"), 0);
+  fs::permissions(read_only, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read);
+  if (::geteuid() != 0) {
+    EXPECT_NE(file_handler::write_file(read_only.c_str(), "overwritten"), 0);
+    EXPECT_EQ(file_handler::read_file(read_only.c_str()), "managed");
+  }
+
+  // A dangling symlink is not replaced by a regular file.
+  const auto dangling = dir / "dangling.json";
+  fs::create_symlink("missing-target.json", dangling);
+  EXPECT_NE(file_handler::write_file(dangling.c_str(), "data"), 0);
+  EXPECT_TRUE(fs::is_symlink(dangling));
+  EXPECT_FALSE(fs::exists(dir / "missing-target.json"));
+
+  // Nor is a FIFO.
+  const auto fifo = dir / "fifo";
+  ASSERT_EQ(::mkfifo(fifo.c_str(), 0600), 0);
+  EXPECT_NE(file_handler::write_file(fifo.c_str(), "data"), 0);
+  EXPECT_TRUE(fs::is_fifo(fifo));
+
+  // A private file stays private, even under umask 0.
+  const auto secret = dir / "secret.json";
+  ASSERT_EQ(file_handler::write_file(secret.c_str(), "old"), 0);
+  fs::permissions(secret, fs::perms::owner_read | fs::perms::owner_write);
+  const auto old_umask = ::umask(0);
+  EXPECT_EQ(file_handler::write_file(secret.c_str(), "new"), 0);
+  ::umask(old_umask);
+  EXPECT_EQ(fs::status(secret).permissions() & fs::perms::all, fs::perms::owner_read | fs::perms::owner_write);
+
+  fs::permissions(read_only, fs::perms::owner_all);
   std::error_code ec;
   fs::remove_all(dir, ec);
 }

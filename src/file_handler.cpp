@@ -69,30 +69,47 @@ namespace file_handler {
     namespace fs = std::filesystem;
 
     // Write a sibling file and rename it over the target, so a full disk, a read-only directory or a crash midway
-    // leaves the old file intact rather than truncated. Write through a symlink to the file it points at.
+    // leaves the old file intact rather than truncated. Write through a symlink to the file it points at; a dangling
+    // link is an error, since renaming over it would replace the link itself.
     std::error_code ec;
     fs::path target {path};
     if (fs::is_symlink(target, ec)) {
-      target = fs::weakly_canonical(target, ec);
+      target = fs::canonical(target, ec);
       if (ec) {
         BOOST_LOG(error) << "Couldn't resolve "sv << path << ": "sv << ec.message();
         return -1;
       }
     }
 
+    // Only replace what could be written in place: a read-only file stays read-only to us even though its directory
+    // would allow the rename, and a FIFO or device must not turn into a regular file.
+    struct stat existing {};
+    const bool replacing = ::stat(target.c_str(), &existing) == 0;
+    if (replacing) {
+      if (!S_ISREG(existing.st_mode) || ::faccessat(AT_FDCWD, target.c_str(), W_OK, AT_EACCESS) != 0) {
+        BOOST_LOG(error) << "Couldn't write "sv << path << ": not a writable regular file"sv;
+        return -1;
+      }
+    } else if (errno != ENOENT) {
+      BOOST_LOG(error) << "Couldn't inspect "sv << path << ": "sv << std::strerror(errno);
+      return -1;
+    }
+
     static std::atomic<unsigned> counter {0};
     auto temporary = target;
     temporary += std::format(".tmp-{}-{}", ::getpid(), counter++);
 
-    const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+    // A replacement starts private and gets the old file's permissions once it is ours (fchmod below), so nobody can
+    // open it in between with broader access than the file it replaces. A new file gets the usual umask-based mode.
+    const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, replacing ? 0600 : 0666);
     if (fd < 0) {
       BOOST_LOG(error) << "Couldn't write "sv << path << ": "sv << std::strerror(errno);
       return -1;
     }
 
     int failure = 0;
-    // Keep the permissions of the file being replaced (a new file gets the usual umask-based ones).
-    if (struct stat existing {}; ::stat(target.c_str(), &existing) == 0 && ::fchmod(fd, existing.st_mode & 07777) != 0) {
+    // Keep the permissions of the file being replaced.
+    if (replacing && ::fchmod(fd, existing.st_mode & 07777) != 0) {
       failure = errno;
     }
     for (std::size_t written = 0; !failure && written < contents.size();) {

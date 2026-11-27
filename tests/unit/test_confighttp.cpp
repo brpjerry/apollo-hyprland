@@ -18,6 +18,7 @@
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -2399,7 +2400,7 @@ TEST_F(ConfigHttpTest, SaveAppRejectsAStaleIndex) {
   }
   const auto headers = authenticated_json_headers();
 
-  for (const json &index : {json(2), json(-2), json("0")}) {
+  for (const json &index : {json(2), json(-2), json("0"), json(std::numeric_limits<std::uint64_t>::max())}) {
     SCOPED_TRACE(index.dump());
     const auto response = client->request("POST", "/api/apps", json {{"name", "Edited"}, {"index", index}}.dump(), headers);
     EXPECT_EQ(response->status_code, "400 Bad Request");
