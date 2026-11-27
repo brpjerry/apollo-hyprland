@@ -91,6 +91,22 @@ export function jsonRequest(body, method = 'POST') {
 }
 
 /**
+ * @brief End the login session on the server with `POST /api/logout`, which also expires the HttpOnly cookie.
+ *
+ * @return {Promise<boolean>} Whether the session is over: the server confirmed the logout, or answered 401 because
+ *   the session had already ended. False when the request failed or was refused, so the session may still be valid.
+ */
+export async function endServerSession() {
+  try {
+    const response = await fetch('./api/logout', { method: 'POST', credentials: 'include' })
+    return response.ok || response.status === 401
+  } catch (e) {
+    console.debug('logout: /api/logout failed', e)
+    return false
+  }
+}
+
+/**
  * @brief Drop Apollo's login session cookie in this browser.
  *
  * The server now sets `auth` with HttpOnly, so this only removes a cookie left by an older version; `POST /api/logout`

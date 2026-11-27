@@ -9,7 +9,7 @@ vi.mock('../../src_assets/common/assets/web/NavbarSimple.vue', () => ({
 }))
 
 import { notifyKey } from '../../src_assets/common/assets/web/Notification.vue'
-import { apiFetch, clearSessionCookie, loginUrl, redirectToLogin } from '../../src_assets/common/assets/web/fetch_utils'
+import { apiFetch, clearSessionCookie, endServerSession, loginUrl, redirectToLogin } from '../../src_assets/common/assets/web/fetch_utils'
 import Login, { loginTarget, SAVED_LOGIN_KEY } from '../../src_assets/common/assets/web/Login.vue'
 
 /**
@@ -82,6 +82,30 @@ describe('login redirect on 401', () => {
     clearSessionCookie(doc)
 
     expect(doc.cookie).toBe('auth=; Max-Age=0; Path=/; Secure; SameSite=Strict')
+  })
+})
+
+describe('server logout', () => {
+  // The session cookie is HttpOnly: only the server's answer to /api/logout ends the session and expires it, so the
+  // navbar must not report a logout the server did not confirm.
+  // Bugs caught: 0, False positives: 0
+  it.each([
+    ['confirms the logout', { ok: true, status: 200 }, true],
+    ['says the session is already gone', { ok: false, status: 401 }, true],
+    ['answers with an error', { ok: false, status: 500 }, false],
+    ['rejects the CSRF check', { ok: false, status: 400 }, false],
+  ])('reports the session ended only when the server %s', async (_name, response, ended) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
+
+    expect(await endServerSession()).toBe(ended)
+    expect(fetch).toHaveBeenCalledExactlyOnceWith('./api/logout', { method: 'POST', credentials: 'include' })
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('reports a logout that never reached the server as not ended', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+
+    expect(await endServerSession()).toBe(false)
   })
 })
 

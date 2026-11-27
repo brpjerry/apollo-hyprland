@@ -84,8 +84,8 @@
 <script>
 import { CircleUserRound, Home, Info, Layers, Lock, LogOut, Settings, Shield, Star } from '@lucide/vue'
 import ThemeToggle from './ThemeToggle.vue'
-import Notification from './Notification.vue'
-import { clearSessionCookie } from './fetch_utils'
+import Notification, { notifyKey } from './Notification.vue'
+import { clearSessionCookie, endServerSession } from './fetch_utils'
 
 export default {
   components: {
@@ -104,13 +104,14 @@ export default {
   methods: {
     /**
      * @brief End the Web UI session: drop the login cookie and the browser's cached Basic credentials.
+     *
+     * The cookie is HttpOnly, so only the server can end it. When the server does not confirm, the page stays open
+     * with an error instead of showing the logged-out page over a session that may still work.
      */
     async logout() {
-      // End the session on the server too; a failure (e.g. already expired) must not block the rest of the logout.
-      try {
-        await fetch('./api/logout', { method: 'POST', credentials: 'include' })
-      } catch (e) {
-        console.debug('logout: /api/logout failed', e)
+      if (!(await endServerSession())) {
+        notifyKey.error('logout.failed')
+        return
       }
       clearSessionCookie()
       const cacheBuster = Date.now().toString()

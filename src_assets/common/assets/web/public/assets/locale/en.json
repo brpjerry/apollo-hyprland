@@ -682,6 +682,7 @@
     "troubleshoot": "Troubleshooting"
   },
   "logout": {
+    "failed": "Apollo did not confirm the logout, so you may still be signed in. Try again.",
     "logged_out": "Logged Out",
     "logged_out_desc": "You have successfully logged out.",
     "login": "Log In"
