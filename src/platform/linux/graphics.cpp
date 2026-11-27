@@ -1194,28 +1194,35 @@ namespace egl {
     return 0;
   }
 
-  std::optional<sws_t> sws_t::make_nv12(int in_width, int in_height, int out_width, int out_height, gl::tex_t &&tex) {
-    sws_t sws;
-
-    sws.serial = std::numeric_limits<std::uint64_t>::max();
-
+  viewport_t fit_viewport(int in_width, int in_height, int out_width, int out_height) {
     // Ensure aspect ratio is maintained
     auto scalar = std::fminf(out_width / (float) in_width, out_height / (float) in_height);
     auto out_width_f = in_width * scalar;
     auto out_height_f = in_height * scalar;
 
     // result is always positive
-    auto offsetX_f = (out_width - out_width_f) / 2;
-    auto offsetY_f = (out_height - out_height_f) / 2;
+    return {
+      .width = static_cast<int>(out_width_f),
+      .height = static_cast<int>(out_height_f),
+      .offset_x = static_cast<int>((out_width - out_width_f) / 2),
+      .offset_y = static_cast<int>((out_height - out_height_f) / 2),
+    };
+  }
 
-    sws.out_width = out_width_f;
-    sws.out_height = out_height_f;
+  std::optional<sws_t> sws_t::make_nv12(int in_width, int in_height, int out_width, int out_height, gl::tex_t &&tex) {
+    sws_t sws;
+
+    sws.serial = std::numeric_limits<std::uint64_t>::max();
+
+    const auto viewport = fit_viewport(in_width, in_height, out_width, out_height);
+    sws.out_width = viewport.width;
+    sws.out_height = viewport.height;
 
     sws.in_width = in_width;
     sws.in_height = in_height;
 
-    sws.offsetX = offsetX_f;
-    sws.offsetY = offsetY_f;
+    sws.offsetX = viewport.offset_x;
+    sws.offsetY = viewport.offset_y;
 
     auto width_i = 1.0f / sws.out_width;
 
@@ -1305,23 +1312,16 @@ namespace egl {
 
     sws.serial = std::numeric_limits<std::uint64_t>::max();
 
-    // Ensure aspect ratio is maintained
-    auto scalar = std::fminf(out_width / (float) in_width, out_height / (float) in_height);
-    auto out_width_f = in_width * scalar;
-    auto out_height_f = in_height * scalar;
-
-    // result is always positive
-    auto offsetX_f = out_width - out_width_f;
-    auto offsetY_f = out_height - out_height_f;
-
-    sws.out_width = out_width_f;
-    sws.out_height = out_height_f;
+    const auto viewport = fit_viewport(in_width, in_height, out_width, out_height);
+    sws.out_width = viewport.width;
+    sws.out_height = viewport.height;
 
     sws.in_width = in_width;
     sws.in_height = in_height;
 
-    sws.offsetX = offsetX_f;
-    sws.offsetY = offsetY_f;
+    // Centered: 4:4:4 used to put the whole border on the left and top.
+    sws.offsetX = viewport.offset_x;
+    sws.offsetY = viewport.offset_y;
 
     {
       constexpr std::array<const char *, 5> sources {{

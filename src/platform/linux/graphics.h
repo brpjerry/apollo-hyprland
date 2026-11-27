@@ -663,6 +663,27 @@ namespace egl {
   };
 
   /**
+   * @brief Where a scaled image lands in the output frame.
+   */
+  struct viewport_t {
+    int width;  ///< Scaled image width.
+    int height;  ///< Scaled image height.
+    int offset_x;  ///< Left border.
+    int offset_y;  ///< Top border.
+  };
+
+  /**
+   * @brief Scale an image into a frame keeping its aspect ratio, centered with equal borders on both sides.
+   *
+   * @param in_width Image width.
+   * @param in_height Image height.
+   * @param out_width Frame width.
+   * @param out_height Frame height.
+   * @return Size and position of the scaled image.
+   */
+  viewport_t fit_viewport(int in_width, int in_height, int out_width, int out_height);
+
+  /**
    * @brief EGL/OpenGL scaler and colorspace conversion pipeline.
    */
   class sws_t {

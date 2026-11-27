@@ -2537,6 +2537,28 @@ TEST(NvencCudaSurfaceTest, AcceptsOnlyPlanesThatFollowEachOtherAtTheSamePitch) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(GlViewportTest, CentersAScaledImageWithEqualBorders) {
+  // A 4:3 desktop in a 16:9 stream: pillarboxed, 240 pixels on each side.
+  const auto pillarbox = egl::fit_viewport(1024, 768, 1920, 1080);
+  EXPECT_EQ(pillarbox.width, 1440);
+  EXPECT_EQ(pillarbox.height, 1080);
+  EXPECT_EQ(pillarbox.offset_x, 240);
+  EXPECT_EQ(pillarbox.offset_y, 0);
+
+  // A 21:9 desktop in a 16:9 stream: letterboxed, 135 rows above and below.
+  const auto letterbox = egl::fit_viewport(2560, 1080, 1920, 1080);
+  EXPECT_EQ(letterbox.width, 1920);
+  EXPECT_EQ(letterbox.height, 810);
+  EXPECT_EQ(letterbox.offset_x, 0);
+  EXPECT_EQ(letterbox.offset_y, 135);
+
+  const auto same = egl::fit_viewport(1920, 1080, 1920, 1080);
+  EXPECT_EQ(same.width, 1920);
+  EXPECT_EQ(same.offset_x, 0);
+  EXPECT_EQ(same.offset_y, 0);
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(CudaRamConverterTest, TenBitSystemMemoryFramesGoThroughTheGlConverter) {
   // The CUDA kernels only write 8-bit NV12 and YUV 4:4:4, and can't convert SDR frames to PQ.
   EXPECT_TRUE(cuda::ram_frames_need_gl(platf::pix_fmt_e::p010));
