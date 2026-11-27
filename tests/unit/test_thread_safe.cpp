@@ -7,7 +7,9 @@
 #include "../tests_common.h"
 
 // standard includes
+#include <atomic>
 #include <cstdint>
+#include <thread>
 #include <type_traits>
 
 // local includes
@@ -34,6 +36,37 @@ TEST(ThreadSafeEvent, ConstPeekPreservesPendingValuesAcrossStateChanges) {
   EXPECT_FALSE(view.peek());
   event.raise(9);
   EXPECT_TRUE(view.peek());
+}
+
+/**
+ * @brief Peeking from one thread while another raises and stops the event sees each change (a data race here is
+ * reported by ThreadSanitizer builds).
+ */
+// Bugs caught: 0, False positives: 0
+TEST(ThreadSafeEvent, PeekIsSynchronizedWithRaiseAndStop) {
+  safe::event_t<bool> event;
+  std::atomic_bool raised {false};
+  std::thread raiser {[&] {
+    for (int i = 0; i < 1000; ++i) {
+      event.raise(true);
+      event.try_pop();
+    }
+    event.raise(true);
+    raised = true;
+  }};
+  while (!raised) {
+    event.peek();
+  }
+  raiser.join();
+  EXPECT_TRUE(event.peek());
+  EXPECT_TRUE(event.running());
+
+  std::thread stopper {[&] {
+    event.stop();
+  }};
+  stopper.join();
+  EXPECT_FALSE(event.peek());
+  EXPECT_FALSE(event.running());
 }
 
 /**
