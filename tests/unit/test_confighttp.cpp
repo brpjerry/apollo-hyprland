@@ -347,6 +347,7 @@ protected:
     server->resource["^/pairing-test$"]["POST"] = confighttp::savePin;
     server->resource["^/portal-token-reset-test$"]["POST"] = confighttp::resetPortalToken;
     server->resource["^/api/apps$"]["POST"] = confighttp::saveApp;
+    server->resource["^/password-test$"]["POST"] = confighttp::savePassword;
     server->resource["^/login-test$"]["POST"] = confighttp::login;
     server->resource["^/logout-test$"]["POST"] = confighttp::logout;
     server->default_resource["GET"] = confighttp::getFallbackPage;
@@ -2276,6 +2277,39 @@ TEST_F(ConfigHttpTest, BrowserWithoutCredentialsIsSentToLogin) {
   // Wrong Basic credentials still get a 401, so a Basic-auth client sees the failure.
   headers.emplace("Authorization", create_auth_header("testuser", "wrong"));
   EXPECT_EQ(client->request("GET", "/page-test", "", headers)->status_code, "401 Unauthorized");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, FirstCredentialsAreRefusedOutsideTheAllowedOrigin) {
+  // In the build's test directory and named after this fixture's listening port, so concurrent runs never share it.
+  const auto credentials = std::filesystem::path(SUNSHINE_TEST_BIN_DIR) / std::format("first_credentials_{}.json", port);
+  std::filesystem::remove(credentials);
+  const auto saved_origin = http::origin_web_ui_allowed;
+  const auto saved_credentials_file = config::sunshine.credentials_file;
+  const auto restore = util::fail_guard([&]() {
+    http::origin_web_ui_allowed = saved_origin;
+    config::sunshine.credentials_file = saved_credentials_file;
+    std::filesystem::remove(credentials);
+  });
+  config::sunshine.username.clear();
+  config::sunshine.password.clear();
+  config::sunshine.credentials_file = credentials.string();
+  // No origin is below PC (this host), so this policy refuses even the loopback test client, as a policy refuses a
+  // LAN or WAN address in production.
+  http::origin_web_ui_allowed = static_cast<net::net_e>(net::PC - 1);
+
+  SimpleWeb::CaseInsensitiveMultimap json_headers;
+  json_headers.emplace("Content-Type", "application/json");
+  const auto response = client->request("POST", "/password-test", R"({"newUsername":"intruder","newPassword":"pw","confirmNewPassword":"pw"})", json_headers);
+  EXPECT_EQ(response->status_code, "403 Forbidden");
+  EXPECT_TRUE(config::sunshine.username.empty());
+  EXPECT_FALSE(std::filesystem::exists(credentials));
+
+  // From an allowed origin, the first credentials are still set without a login.
+  http::origin_web_ui_allowed = net::PC;
+  const auto allowed = client->request("POST", "/password-test", R"({"newUsername":"owner","newPassword":"pw","confirmNewPassword":"pw"})", json_headers);
+  EXPECT_EQ(allowed->status_code, "200 OK");
+  EXPECT_EQ(config::sunshine.username, "owner");
 }
 
 // Bugs caught: 0, False positives: 0

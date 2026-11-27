@@ -47,6 +47,18 @@ else()
     endif()
 endif()
 
+# Apollo: firewall definitions for the default ports, inert until the user enables them (see the Linux setup guide).
+# Only native Linux packages: FreeBSD shares this file, and the bundled formats can't install into the host's firewall
+# directories.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK}
+        AND NOT ${SUNSHINE_BUILD_HOMEBREW})
+    install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/firewall/apollo.xml"
+            DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/firewalld/services")
+    install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/firewall/apollo.ufw"
+            DESTINATION "${CMAKE_INSTALL_FULL_SYSCONFDIR}/ufw/applications.d"
+            RENAME "apollo")
+endif()
+
 # Elevated commands (HYP-23): the helper Apollo runs through pkexec or sudo, and the polkit action naming it.
 # Not for AppImage/Flatpak: polkit needs a fixed path, and pkexec cannot run from a sandbox.
 if(NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK})

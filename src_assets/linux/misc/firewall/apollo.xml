@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Apollo (Sunshine fork) game streaming host, at the default base port 47989.
+     For a different base port, copy this file to /etc/firewalld/services/, shift the numeric port entries,
+     keep the mdns service included, and reload firewalld. -->
+<service>
+  <short>Apollo</short>
+  <description>Apollo game streaming host for Moonlight and Artemis clients. Allows GameStream pairing, the web UI, RTSP, the video, control and audio streams, and mDNS discovery.</description>
+  <port protocol="tcp" port="47984"/>
+  <port protocol="tcp" port="47989"/>
+  <port protocol="tcp" port="47990"/>
+  <port protocol="tcp" port="48010"/>
+  <port protocol="udp" port="47998-48000"/>
+  <include service="mdns"/>
+</service>

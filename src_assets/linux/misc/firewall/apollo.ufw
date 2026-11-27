@@ -1,0 +1,7 @@
+# Apollo (Sunshine fork) game streaming host, at the default base port 47989.
+# Enable Apollo on the streaming interface. Discovery uses a separate UDP 5353 rule if needed.
+# For a different base port, copy this profile under a new file and section name before adjusting its ports.
+[Apollo]
+title=Apollo game streaming host
+description=GameStream pairing, web UI, RTSP and the video, control and audio streams for Moonlight and Artemis clients.
+ports=47984,47989,47990,48010/tcp|47998:48000/udp

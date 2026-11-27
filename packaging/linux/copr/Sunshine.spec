@@ -512,6 +512,10 @@ fi
 # Modules-load configuration
 %{_modulesloaddir}/*-sunshine.conf
 
+# Firewall definitions
+%{_prefix}/lib/firewalld/services/apollo.xml
+%config(noreplace) %{_sysconfdir}/ufw/applications.d/apollo
+
 # Desktop entries
 %{_datadir}/applications/*.desktop
 

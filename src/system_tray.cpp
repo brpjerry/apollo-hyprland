@@ -337,6 +337,8 @@ namespace system_tray {
 
   void reset_tray_data_for_testing() {
     const std::scoped_lock lock(tray_state_mutex());
+    tray.menu[0].text = "Open Apollo";
+    tray.menu[1].text = "-";
     tray.icon = tray.allIconPaths[0];
     tray.tooltip = PROJECT_NAME;
     tray.notification_icon = nullptr;
@@ -707,6 +709,26 @@ namespace system_tray {
   #endif
 
   /**
+   * @brief Apply Apollo's menu options: the instance title and the hidden app controls.
+   *
+   * The first entry names the instance and its web UI port, so several instances can be told apart.
+   * `hide_tray_controls` ends the menu after that entry. The caller must hold tray_state_mutex().
+   */
+  void apply_menu_options() {
+    static std::string title;
+    title = "Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")";
+    tray.menu[0].text = title.c_str();
+    tray.menu[1].text = config::sunshine.hide_tray_controls ? nullptr : "-";
+  }
+
+  #ifdef SUNSHINE_TESTS
+  void apply_menu_options_for_testing() {
+    const std::scoped_lock lock(tray_state_mutex());
+    apply_menu_options();
+  }
+  #endif
+
+  /**
    * @brief Initialize the tray, optionally observing an owning thread's stop request.
    *
    * @param stop_token Stop token supplied by the managed tray worker, or an empty token for direct initialization.
@@ -789,6 +811,7 @@ namespace system_tray {
       if (stop_token.stop_requested()) {
         return 1;
       }
+      apply_menu_options();
       if (tray_init(&tray) < 0) {
         BOOST_LOG(warning) << "Failed to create system tray"sv;
         return 1;
@@ -1041,17 +1064,6 @@ namespace system_tray {
   }
 
   int init_tray_threaded() {
-    {
-      // Apollo: show the instance name and Web UI port in the first menu entry.
-      static const std::string title_str = "Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")";
-      const std::scoped_lock lock(tray_state_mutex());
-      tray.menu[0].text = title_str.c_str();
-
-      if (config::sunshine.hide_tray_controls) {
-        tray.menu[1].text = nullptr;
-      }
-    }
-
     try {
       auto &worker = tray_worker_thread();
       if (worker.joinable()) {
