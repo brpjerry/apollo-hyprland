@@ -106,6 +106,24 @@ namespace nvhttp {
   make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t* named_cert_p);
 
   /**
+   * @brief Outcome of a change to the paired clients.
+   *
+   * A grant that can't be saved is undone (`applied` false). A revocation that can't be saved stays in effect
+   * (`applied` true, `saved` false) until a restart reloads the state file: an admin must be able to cut a client off.
+   */
+  struct client_change_t {
+    bool applied = false;  ///< The change is in effect (false also when the client wasn't found).
+    bool saved = true;  ///< The state file holds the change (true when nothing needed saving).
+
+    /**
+     * @brief Whether the change is in effect and saved.
+     */
+    explicit operator bool() const {
+      return applied && saved;
+    }
+  };
+
+  /**
    * @brief Whether a paired client may (still) stream: its certificate belongs to one enabled paired client.
    *
    * @param cert PEM certificate of the client.
@@ -438,18 +456,20 @@ namespace nvhttp {
    * nvhttp::unpair_client("4D7BB2DD-5704-A405-B41C-891A022932E1");
    * @examples_end
    *
-   * @return True when the client entry was found, removed and the change saved. A change that can't be saved is
-   * undone (memory and the state file agree) and returns false; the client's streams are then left running.
+   * @return Whether the client was found and removed (`applied`; its streams are stopped) and the change saved.
+   * A revocation stays in effect when it can't be saved.
    */
-  bool unpair_client(std::string_view uuid);
+  client_change_t unpair_client(std::string_view uuid);
 
   /**
    * @brief Enable or disable a client.
    * @param uuid The UUID of the client.
    * @param enabled Whether the client should be enabled.
-   * @return true if the client was found, updated and the change saved; a change that can't be saved is undone.
+   * Disabling a client stops its streams, and the running app when no stream is left.
+   * @return Whether the change is in effect and saved. Enabling that can't be saved is undone; disabling stays in
+   * effect.
    */
-  bool set_client_enabled(std::string_view uuid, bool enabled);
+  client_change_t set_client_enabled(std::string_view uuid, bool enabled);
   /**
    * @brief Get cert by UUID.
    *
@@ -469,12 +489,12 @@ namespace nvhttp {
 
   /**
    * @brief Remove all paired clients.
-   * @return Whether the change was saved; a change that can't be saved is undone.
+   * @return Whether the change was saved; it is in effect either way.
    * @examples
    * nvhttp::erase_all_clients();
    * @examples_end
    */
-  bool erase_all_clients();
+  client_change_t erase_all_clients();
 
   /**
    * @brief      Stops a session.
@@ -522,9 +542,10 @@ namespace nvhttp {
    * @param[in]  allow_client_commands  Allow client commands
    * @param[in]  always_use_virtual_display  Always use virtual display
    * 
-   * @return     Whether the client was found, updated and the change saved; a change that can't be saved is undone.
+   * @return     Whether the change is in effect and saved. An edit that only takes permissions or client commands
+   *             away stays in effect when it can't be saved; any other edit is then undone.
    */
-  bool update_device_info(
+  client_change_t update_device_info(
     const std::string& uuid,
     const std::string& name,
     const std::string& display_mode,

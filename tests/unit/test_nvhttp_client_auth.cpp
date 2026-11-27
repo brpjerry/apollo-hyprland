@@ -23,6 +23,9 @@
 #include <src/process.h>
 #include <src/uuid.h>
 
+// lib includes
+#include <boost/process/v1.hpp>
+
 namespace fs = std::filesystem;
 
 static_assert(std::is_same_v<decltype(&nvhttp::pin), bool (*)(std::string_view, const std::string &, std::string)>);
@@ -409,32 +412,143 @@ TEST_F(ClientAuthorizationTest, StreamAdmissionSeesRevocation) {
   EXPECT_FALSE(nvhttp::client_may_stream(""));
 }
 
-// Bugs caught: 0, False positives: 0
-TEST_F(ClientAuthorizationTest, ChangesThatCantBeSavedAreUndoneAndReported) {
-  // A revocation that only lived in memory would come back on restart while the Web UI reported success.
-  const auto credentials = test_utils::certificates::generate_ca_credentials();
-  const auto other_credentials = test_utils::certificates::generate_ca_credentials("Sunshine Other Client");
-  const auto uuid = nvhttp::test_support::add_client("kept", credentials.x509, true);
-  ASSERT_FALSE(uuid.empty());
+/**
+ * @brief Paired-client tests whose state file can't be saved to, with an app running as if a client streamed it.
+ */
+class UnsavableClientStateTest: public ClientAuthorizationTest {
+protected:
+  void SetUp() override {
+    ClientAuthorizationTest::SetUp();
+    saved_proc = std::move(proc::proc);
+    saved_input_only_mode = config::input.enable_input_only_mode;
+    saved_ignore_probe = config::video.ignore_encoder_probe_failure;
+    config::input.enable_input_only_mode = false;
+    // No display here: the launch's encoder probe fails.
+    config::video.ignore_encoder_probe_failure = true;
 
-  // A state file that isn't a JSON object can't be saved to (it also holds other settings, so it is left alone).
-  {
+    credentials = test_utils::certificates::generate_ca_credentials();
+    other_credentials = test_utils::certificates::generate_ca_credentials("Sunshine Other Client");
+    // The first client paired gets every permission; the client under test should have the default ones.
+    first_uuid = nvhttp::test_support::add_client("first", test_utils::certificates::generate_ca_credentials("Sunshine First Client").x509, true);
+    ASSERT_FALSE(first_uuid.empty());
+    uuid = nvhttp::test_support::add_client("kept", credentials.x509, true);
+    ASSERT_FALSE(uuid.empty());
+
+    // A state file that isn't a JSON object can't be saved to (it may hold other settings, so it is left alone).
     std::ofstream out(state_file);
     out << "[1]";
   }
-  EXPECT_FALSE(nvhttp::set_client_enabled(uuid, false));
-  EXPECT_TRUE(nvhttp::test_support::authorize_client_certificate(credentials.x509));
-  EXPECT_FALSE(nvhttp::unpair_client(uuid));
-  EXPECT_TRUE(nvhttp::test_support::authorize_client_certificate(credentials.x509));
-  EXPECT_FALSE(nvhttp::erase_all_clients());
+
+  void TearDown() override {
+    proc::proc.terminate();
+    proc::proc = std::move(saved_proc);
+    config::input.enable_input_only_mode = saved_input_only_mode;
+    config::video.ignore_encoder_probe_failure = saved_ignore_probe;
+    ClientAuthorizationTest::TearDown();
+  }
+
+  /**
+   * @brief Start an app, as a client's launch does; revoking the last streaming client terminates it.
+   */
+  void run_app() {
+    std::vector<proc::ctx_t> apps;
+    proc::ctx_t app;
+    app.name = "Desktop";
+    app.id = "42";
+    apps.push_back(std::move(app));
+    proc::proc = proc::proc_t {boost::this_process::environment(), std::move(apps)};
+    auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
+    launch_session->width = 1920;
+    launch_session->height = 1080;
+    launch_session->fps = 60000;
+    ASSERT_EQ(proc::proc.execute(42, launch_session), 0);
+    ASSERT_EQ(proc::proc.running(), 42);
+  }
+
+  /**
+   * @brief The state file still holds what the test wrote.
+   */
+  void expect_state_file_untouched() {
+    std::ifstream in(state_file);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "[1]");
+  }
+
+  crypto::creds_t credentials;  ///< The paired client.
+  crypto::creds_t other_credentials;  ///< A client pairing during the test.
+  std::string uuid;  ///< UUID of the paired client.
+  std::string first_uuid;  ///< UUID of the first paired client, which has every permission.
+
+private:
+  proc::proc_t saved_proc;
+  bool saved_input_only_mode = false;
+  bool saved_ignore_probe = false;
+};
+
+// Bugs caught: 0, False positives: 0
+TEST_F(UnsavableClientStateTest, UnpairCutsTheClientOffAndReportsTheFailedSave) {
+  // An admin who can't write the disk must still be able to cut a client off.
+  run_app();
+  const auto change = nvhttp::unpair_client(uuid);
+  EXPECT_FALSE(change);
+  EXPECT_TRUE(change.applied);
+  EXPECT_FALSE(change.saved);
+  EXPECT_FALSE(nvhttp::test_support::authorize_client_certificate(credentials.x509));
   EXPECT_EQ(nvhttp::get_all_clients().size(), 1);
-  EXPECT_FALSE(nvhttp::update_device_info(uuid, "renamed", "", {}, {}, crypto::PERM::_all, true, true, false));
-  EXPECT_EQ(nvhttp::get_all_clients().at(0).at("name"), "kept");
+  EXPECT_EQ(proc::proc.running(), 42);
+
+  // Unpairing the last client stops the streams and, with nobody paired, the app.
+  EXPECT_TRUE(nvhttp::unpair_client(first_uuid).applied);
+  EXPECT_EQ(nvhttp::get_all_clients().size(), 0);
+  EXPECT_EQ(proc::proc.running(), 0);
+  expect_state_file_untouched();
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(UnsavableClientStateTest, DisableCutsTheClientOffAndReportsTheFailedSave) {
+  run_app();
+  const auto change = nvhttp::set_client_enabled(uuid, false);
+  EXPECT_FALSE(change);
+  EXPECT_TRUE(change.applied);
+  EXPECT_FALSE(change.saved);
+  EXPECT_FALSE(nvhttp::test_support::authorize_client_certificate(credentials.x509));
+  EXPECT_FALSE(nvhttp::client_may_stream(credentials.x509));
+  EXPECT_EQ(proc::proc.running(), 0);
+
+  // Taking permissions away is a revocation too; unpairing everyone is one.
+  EXPECT_FALSE(nvhttp::set_client_enabled(uuid, true).applied);
+  const auto removed = nvhttp::update_device_info(uuid, "kept", "", {}, {}, crypto::PERM::list, true, true, false);
+  EXPECT_TRUE(removed.applied);
+  EXPECT_FALSE(removed.saved);
+  EXPECT_EQ(nvhttp::get_all_clients().at(1).at("perm"), static_cast<std::uint32_t>(crypto::PERM::list));
+  const auto erased = nvhttp::erase_all_clients();
+  EXPECT_TRUE(erased.applied);
+  EXPECT_FALSE(erased.saved);
+  EXPECT_EQ(nvhttp::get_all_clients().size(), 0);
+  expect_state_file_untouched();
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(UnsavableClientStateTest, GrantsThatCantBeSavedAreUndone) {
+  // A grant that only lived in memory would vanish on restart while the Web UI reported success.
+  ASSERT_TRUE(nvhttp::set_client_enabled(uuid, false).applied);  // in effect, not saved
+
+  const auto enabled = nvhttp::set_client_enabled(uuid, true);
+  EXPECT_FALSE(enabled.applied);
+  EXPECT_FALSE(enabled.saved);
+  EXPECT_FALSE(nvhttp::test_support::authorize_client_certificate(credentials.x509));
+
+  // Adding a permission, or a mixed edit (rename while removing one), is undone.
+  const auto granted = nvhttp::update_device_info(uuid, "kept", "", {}, {}, crypto::PERM::_all, true, true, false);
+  EXPECT_FALSE(granted.applied);
+  const auto mixed = nvhttp::update_device_info(uuid, "renamed", "", {}, {}, crypto::PERM::list, true, true, false);
+  EXPECT_FALSE(mixed.applied);
+  EXPECT_EQ(nvhttp::get_all_clients().at(1).at("name"), "kept");
+  EXPECT_EQ(nvhttp::get_all_clients().at(1).at("perm"), static_cast<std::uint32_t>(crypto::PERM::_default));
+
+  // A new pairing is undone.
   EXPECT_TRUE(nvhttp::test_support::add_client("new", other_credentials.x509, true).empty());
   EXPECT_FALSE(nvhttp::test_support::authorize_client_certificate(other_credentials.x509));
-
-  std::ifstream in(state_file);
-  EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "[1]");
+  expect_state_file_untouched();
 }
 
 // Bugs caught: 0, False positives: 0

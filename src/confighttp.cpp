@@ -634,6 +634,26 @@ namespace confighttp {
   }
 
   /**
+   * @brief Describe the outcome of a paired-client change in a Web UI response.
+   *
+   * `status` is true only when the change is in effect and saved. When it couldn't be saved, `applied` says whether
+   * it is in effect anyway (a revocation, until the next restart) or was undone (a grant), and `error` explains it.
+   *
+   * @param output_tree Response body to fill.
+   * @param change Outcome of the change.
+   */
+  void report_client_change(nlohmann::json &output_tree, const nvhttp::client_change_t &change) {
+    output_tree["status"] = static_cast<bool>(change);
+    if (change.saved) {
+      return;
+    }
+    output_tree["applied"] = change.applied;
+    output_tree["error"] = change.applied ?
+                             "The change is in effect but could not be saved, and will be undone on restart" :
+                             "The change could not be saved, so it was not made";
+  }
+
+  /**
    * @brief Send a 401 Unauthorized response.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
@@ -1805,7 +1825,7 @@ namespace confighttp {
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
       nlohmann::json output_tree;
       std::string uuid = input_tree.value("uuid", "");
-      bool status = true;
+      nvhttp::client_change_t change {.applied = true};
 
       if (input_tree.contains("name")) {
         std::string name = input_tree.value("name", "");
@@ -1816,7 +1836,7 @@ namespace confighttp {
         auto do_cmds = nvhttp::extract_command_entries(input_tree, "do");
         auto undo_cmds = nvhttp::extract_command_entries(input_tree, "undo");
         auto perm = static_cast<crypto::PERM>(input_tree.value("perm", static_cast<uint32_t>(crypto::PERM::_no)) & static_cast<uint32_t>(crypto::PERM::_all));
-        status = nvhttp::update_device_info(
+        change = nvhttp::update_device_info(
           uuid,
           name,
           display_mode,
@@ -1829,22 +1849,17 @@ namespace confighttp {
         );
       }
 
-      if (status && input_tree.contains("enabled")) {
+      // A disable is applied even when an edit in the same request had to be undone: it cuts the client off.
+      if (input_tree.contains("enabled") && (change.applied || !input_tree.value("enabled", true))) {
         const bool enabled = input_tree.value("enabled", true);
-        status = nvhttp::set_client_enabled(uuid, enabled);
+        const auto enable_change = nvhttp::set_client_enabled(uuid, enabled);
+        // A disable that took effect is what the response reports as applied, even when a grant beside it was undone.
+        change = {.applied = (change.applied || !enabled) && enable_change.applied, .saved = change.saved && enable_change.saved};
 
-        if (!enabled && status) {
-          if (auto cert = nvhttp::get_cert_by_uuid(uuid); !cert.empty()) {
-            rtsp_stream::terminate_sessions_by_cert(cert);
-          }
-
-          if (rtsp_stream::session_count() == 0 && proc::proc.running() > 0) {
-            proc::proc.terminate();
-          }
-        }
+        // set_client_enabled() stops a disabled client's streams, also when the change couldn't be saved.
       }
 
-      output_tree["status"] = status;
+      report_client_change(output_tree, change);
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "Update Client: "sv << e.what();
@@ -1889,7 +1904,7 @@ namespace confighttp {
       const nlohmann::json input_tree = nlohmann::json::parse(ss);
       const std::string uuid = input_tree.value("uuid", "");
       // Also stops the client's stream, and the running app when no paired client is left.
-      output_tree["status"] = nvhttp::unpair_client(uuid);
+      report_client_change(output_tree, nvhttp::unpair_client(uuid));
 
       send_response(response, output_tree);
     } catch (std::exception &e) {
@@ -1918,18 +1933,12 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json output_tree;
-    // An unpairing that can't be saved is undone (it would come back on restart): report it and keep the streams.
-    if (!nvhttp::erase_all_clients()) {
-      output_tree["status"] = false;
-      output_tree["error"] = "Couldn't save the paired clients; nothing was changed";
-      send_response(response, output_tree);
-      return;
-    }
-    // Stop every stream and drop the input devices clients kept for a resume; none of them is paired any more.
+    // In effect even when it can't be saved: stop every stream and drop the input devices clients kept for a resume;
+    // none of them is paired any more.
+    report_client_change(output_tree, nvhttp::erase_all_clients());
     rtsp_stream::terminate_sessions();
     proc::proc.terminate();
 
-    output_tree["status"] = true;
     send_response(response, output_tree);
   }
 

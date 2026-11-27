@@ -2408,18 +2408,12 @@ namespace nvhttp {
     return one_time_pin;
   }
 
-  bool erase_all_clients() {
+  client_change_t erase_all_clients() {
     std::lock_guard lock {client_auth_mutex()};
-    auto previous = std::move(client_root);
     client_root = {};
     rebuild_client_cert_chain();
-    // Memory and disk must agree: a change that can't be saved is undone and reported, rather than lost on restart.
-    if (!save_state()) {
-      client_root = std::move(previous);
-      rebuild_client_cert_chain();
-      return false;
-    }
-    return true;
+    // A revocation stays in effect even when it can't be saved: an admin must be able to cut clients off.
+    return {.applied = true, .saved = save_state()};
   }
 
   void stop_session(stream::session_t& session, bool graceful) {
@@ -2451,7 +2445,29 @@ namespace nvhttp {
     return !sessions.empty();
   }
 
-  bool update_device_info(
+  /**
+   * @brief Whether an edit of a client record only takes something away (permissions, client commands).
+   *
+   * @param before Record before the edit.
+   * @param after Record after the edit.
+   */
+  bool only_revokes(const crypto::named_cert_t &before, const crypto::named_cert_t &after) {
+    const auto same_commands = [](const cmd_list_t &a, const cmd_list_t &b) {
+      return std::ranges::equal(a, b, [](const auto &x, const auto &y) {
+        return x.cmd == y.cmd && x.elevated == y.elevated;
+      });
+    };
+    const auto before_perm = static_cast<std::uint32_t>(before.perm);
+    const auto after_perm = static_cast<std::uint32_t>(after.perm);
+    return (after_perm & ~before_perm) == 0 &&
+           (!after.allow_client_commands || before.allow_client_commands) &&
+           after.name == before.name && after.display_mode == before.display_mode &&
+           same_commands(after.do_cmds, before.do_cmds) && same_commands(after.undo_cmds, before.undo_cmds) &&
+           after.enable_legacy_ordering == before.enable_legacy_ordering &&
+           after.always_use_virtual_display == before.always_use_virtual_display;
+  }
+
+  client_change_t update_device_info(
     const std::string& uuid,
     const std::string& name,
     const std::string& display_mode,
@@ -2462,7 +2478,7 @@ namespace nvhttp {
     const bool allow_client_commands,
     const bool always_use_virtual_display
   ) {
-    bool found = false;
+    client_change_t change;
     {
       std::lock_guard lock {client_auth_mutex()};
       for (const auto &named_cert_p : client_root.named_devices) {
@@ -2476,30 +2492,30 @@ namespace nvhttp {
           named_cert_p->enable_legacy_ordering = enable_legacy_ordering;
           named_cert_p->allow_client_commands = allow_client_commands;
           named_cert_p->always_use_virtual_display = always_use_virtual_display;
-          if (!save_state()) {
-            // Undone, so memory and disk agree; the caller reports the failure.
+          change = {.applied = true, .saved = save_state()};
+          // An edit that grants anything is undone when it can't be saved; one that only revokes stays in effect.
+          if (!change.saved && !only_revokes(previous, *named_cert_p)) {
             *named_cert_p = previous;
-            return false;
+            change.applied = false;
           }
-          found = true;
           break;
         }
       }
     }
 
     // After the record: a request that starts now already sees the new permissions.
-    if (found) {
+    if (change.applied) {
       find_and_udpate_session_info(uuid, name, newPerm);
     }
-    return found;
+    return change;
   }
 
-  bool unpair_client(const std::string_view uuid) {
+  client_change_t unpair_client(const std::string_view uuid) {
     bool no_clients_left = false;
+    bool saved = true;
     std::vector<std::string> removed_certs;
     {
       std::lock_guard lock {client_auth_mutex()};
-      const auto previous = client_root.named_devices;
       for (auto it = client_root.named_devices.begin(); it != client_root.named_devices.end();) {
         if ((*it)->uuid == uuid) {
           removed_certs.push_back((*it)->cert);
@@ -2510,11 +2526,10 @@ namespace nvhttp {
       }
 
       rebuild_client_cert_chain();
-      if (!removed_certs.empty() && !save_state()) {
-        // An unpairing that can't be saved would come back on restart: undo it and report the failure.
-        client_root.named_devices = previous;
-        rebuild_client_cert_chain();
-        return false;
+      // A revocation stays in effect even when it can't be saved (the caller reports that it will be undone on
+      // restart): an admin must be able to cut a client off.
+      if (!removed_certs.empty()) {
+        saved = save_state();
       }
       no_clients_left = client_root.named_devices.empty();
     }
@@ -2531,26 +2546,40 @@ namespace nvhttp {
       }
     }
 
-    return removed;
+    return {.applied = removed, .saved = saved};
   }
 
-  bool set_client_enabled(const std::string_view uuid, bool enabled) {
-    std::lock_guard lock {client_auth_mutex()};
-    for (auto &named_cert_p : client_root.named_devices) {
-      if (named_cert_p->uuid == uuid) {
-        const bool was_enabled = named_cert_p->enabled;
-        named_cert_p->enabled = enabled;
-        rebuild_client_cert_chain();
-        if (!save_state()) {
-          // Undone, so memory and disk agree; the caller reports the failure.
-          named_cert_p->enabled = was_enabled;
+  client_change_t set_client_enabled(const std::string_view uuid, bool enabled) {
+    client_change_t change;
+    std::string cert;
+    {
+      std::lock_guard lock {client_auth_mutex()};
+      for (auto &named_cert_p : client_root.named_devices) {
+        if (named_cert_p->uuid == uuid) {
+          const bool was_enabled = named_cert_p->enabled;
+          named_cert_p->enabled = enabled;
           rebuild_client_cert_chain();
-          return false;
+          change = {.applied = true, .saved = save_state()};
+          // Enabling is undone when it can't be saved; disabling stays in effect so a client can always be cut off.
+          if (!change.saved && enabled && !was_enabled) {
+            named_cert_p->enabled = was_enabled;
+            rebuild_client_cert_chain();
+            change.applied = false;
+          }
+          cert = named_cert_p->cert;
+          break;
         }
-        return true;
       }
     }
-    return false;
+
+    // A disabled client loses its streams, and the app when nobody else streams it.
+    if (change.applied && !enabled) {
+      rtsp_stream::terminate_sessions_by_cert(cert);
+      if (rtsp_stream::session_count() == 0 && proc::proc.running() > 0) {
+        proc::proc.terminate();
+      }
+    }
+    return change;
   }
 
   std::string get_cert_by_uuid(const std::string_view uuid) {
