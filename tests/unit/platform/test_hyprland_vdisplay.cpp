@@ -145,6 +145,11 @@ namespace {
       ASSERT_TRUE(events_.wait_for_connections(1));
     }
 
+    /// Send raw event lines (`NAME>>DATA\n`) to the event socket's listeners.
+    void send_event(const std::string &lines) {
+      events_.send(lines);
+    }
+
     std::atomic<bool> emit_events {true};  ///< Send monitoraddedv2/monitorremovedv2.
     std::atomic<bool> apply_rules {true};  ///< Apply hl.monitor() rules to the monitor list.
     std::atomic<int> fail_removes {0};  ///< Refuse this many `output remove` requests.
@@ -810,6 +815,67 @@ TEST(HyprlandVdisplayTest, FailedCleanupKeepsTheOutputForTheNextRemove) {
   EXPECT_FALSE(hypr.monitor(client_output));
   EXPECT_TRUE(vd.owned_outputs().empty());
   EXPECT_FALSE(fs::exists(hypr.state_dir() / client_output));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, RemoveStopsWindowTrackingEvenWhenTheMonitorListFails) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  vd.activate(client_output);
+  vd.track_process_group(client_output, ::getpgrp());
+  ASSERT_GT(hypr.count_requests("j/clients"), 0u) << "tracking looks for windows the app already opened";
+
+  hypr.monitors_fail = true;
+  EXPECT_FALSE(vd.remove(client_identity()));
+  // A window opened after the session ended is not matched against the app's process group any more. The config
+  // reload after it shows when the event has been handled.
+  const auto clients = hypr.count_requests("j/clients");
+  const auto evals = hypr.count_requests("/eval hl.monitor(");
+  hypr.send_event("openwindow>>abc123,1,foot,foot\nconfigreloaded>>\n");
+  ASSERT_TRUE(eventually([&]() {
+    return hypr.count_requests("/eval hl.monitor(") > evals;
+  }));
+  EXPECT_EQ(hypr.count_requests("j/clients"), clients);
+  hypr.monitors_fail = false;
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, OutputOfAnEndedSessionGoesAtTheNextCleanup) {
+  // terminate() calls remove() once and then forgets the session; Hyprland refused the removal.
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  hypr.fail_removes = 1;
+  EXPECT_FALSE(vd.remove(client_identity()));
+  ASSERT_TRUE(hypr.monitor(client_output));
+
+  // proc::refresh() runs the cleanup on every app list reload.
+  vd.cleanup_stale();
+  EXPECT_FALSE(hypr.monitor(client_output));
+  EXPECT_TRUE(vd.owned_outputs().empty());
+  EXPECT_FALSE(fs::exists(hypr.state_dir() / client_output));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, NewSessionKeepsAnOutputItReuses) {
+  fake_hyprland_t hypr;
+  hyprland::vdisplay_t vd {hypr.options()};
+  ASSERT_EQ(vd.init(), status_e::ok);
+  hypr.wait_for_listener();
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  hypr.fail_removes = 1;
+  EXPECT_FALSE(vd.remove(client_identity()));
+
+  // The client streams again before any cleanup: its output is reused and is no longer an ended session's.
+  ASSERT_EQ(vd.create(client_identity(), "Living Room", {1280, 720, 60000}), client_output);
+  vd.cleanup_stale();
+  EXPECT_TRUE(hypr.monitor(client_output));
+  EXPECT_TRUE(vd.remove(client_identity()));
 }
 
 // Bugs caught: 0, False positives: 0

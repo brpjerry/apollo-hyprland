@@ -152,7 +152,7 @@ namespace hyprland {
 
     /**
      * @brief Remove `APOLLO-xxxxxxxx` outputs that this process does not own and whose recorded owner process
-     * is no longer running.
+     * is no longer running, and outputs of ended sessions that remove() could not take away.
      */
     void cleanup_stale();
 
@@ -214,6 +214,8 @@ namespace hyprland {
      * Before removing it, what the user changed on the output during the session (scale, transform, bit depth,
      * position unless isolated, workspace) is saved for the next session (learn_settings()). If the display had focus
      * and was activated, focus goes back to the workspace that had it before activate().
+     * Windows of the session's app stop going to the output at once. If the output cannot be removed (Hyprland not
+     * answering), a later remove() or cleanup_stale() takes it away, unless create() reuses it first.
      * @return true if it existed and is gone.
      */
     bool remove(const uuid_util::uuid_t &identity);
@@ -247,6 +249,7 @@ namespace hyprland {
       int pgid = 0;  ///< Process group whose windows go to `workspace`; 0: none.
       platf::vdisplay::mode_t mode {};  ///< The mode of the rule last applied.
       std::optional<bool> hdr;  ///< HDR state set by set_hdr(); nullopt: never set, the rule leaves it alone.
+      bool ended = false;  ///< remove() was called; if the output is still there, stale cleanup removes it.
     };
 
     void on_event(std::string_view event, std::string_view data);

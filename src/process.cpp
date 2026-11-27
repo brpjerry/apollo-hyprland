@@ -974,7 +974,14 @@ namespace proc {
     }
 #endif
 
-    if (used_virtual_display) {
+#ifdef _WIN32
+    const bool remove_virtual_display = used_virtual_display;
+#else
+    // Also when the backend is not OK now: remove() reconnects, and if it still fails the backend removes the output
+    // on its next stale cleanup. Without the call it would keep the output for a session that is gone.
+    const bool remove_virtual_display = _launch_session && _launch_session->virtual_display;
+#endif
+    if (remove_virtual_display) {
       if (platf::vdisplay::remove(_launch_session->display_guid)) {
         BOOST_LOG(info) << "Virtual Display removed successfully";
       } else if (this->virtual_display) {

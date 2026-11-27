@@ -316,6 +316,7 @@ namespace hyprland {
       entry.settings.client_name = client_name;
       entry.scale_percent = mode.scale_percent > 0 ? mode.scale_percent : 100;
       entry.isolated = false;
+      entry.ended = false;
       entry.baseline.reset();
       if (!entry.settings.empty()) {
         BOOST_LOG(info) << "Hyprland virtual display: remembered settings for "sv << name << ": "sv << settings_to_json(entry.settings).dump();
@@ -505,7 +506,15 @@ namespace hyprland {
 
     std::lock_guard lock {mutex_};
     // Only what this backend created: after a failed create() the output may belong to another instance.
-    if (!owned_.contains(name) || !ensure_connected_locked()) {
+    const auto entry = owned_.find(name);
+    if (entry == owned_.end()) {
+      return false;
+    }
+    // The session is over whatever happens below: its app's new windows no longer go to the output, and an output
+    // that cannot be removed now is removed by the next stale cleanup (the caller may not try again).
+    entry->second.pgid = 0;
+    entry->second.ended = true;
+    if (!ensure_connected_locked()) {
       return false;
     }
 
@@ -518,13 +527,10 @@ namespace hyprland {
     const auto found = std::ranges::find(*monitors, name, &monitor_info_t::name);
     const auto current = found == monitors->end() ? std::nullopt : std::make_optional(*found);
     std::optional<focus_t> restore_focus;
-    if (auto it = owned_.find(name); it != owned_.end()) {
-      it->second.pgid = 0;
-      if (current) {
-        learn_locked(name, it->second, *current);
-        if (current->focused) {
-          restore_focus = it->second.previous_focus;
-        }
+    if (current) {
+      learn_locked(name, entry->second, *current);
+      if (current->focused) {
+        restore_focus = entry->second.previous_focus;
       }
     }
 
@@ -964,6 +970,23 @@ namespace hyprland {
     auto monitors = monitors_locked();
     if (!monitors) {
       return;
+    }
+    // Outputs of ended sessions that remove() could not take away.
+    for (auto it = owned_.begin(); it != owned_.end();) {
+      const auto &name = it->first;
+      if (!it->second.ended) {
+        ++it;
+        continue;
+      }
+      const bool listed = std::ranges::contains(*monitors, name, &monitor_info_t::name);
+      if (listed && !remove_output_locked(name)) {
+        BOOST_LOG(warning) << "Hyprland virtual display: removing "sv << name << " of an ended session failed again"sv;
+        ++it;
+        continue;
+      }
+      BOOST_LOG(info) << "Hyprland virtual display: removed "sv << name << " of an ended session"sv;
+      release_owner_file(name);
+      it = owned_.erase(it);
     }
     for (const auto &m : *monitors) {
       if (!is_vdisplay_output_name(m.name) || owned_.contains(m.name)) {
