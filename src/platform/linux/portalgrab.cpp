@@ -1163,6 +1163,8 @@ namespace portal {
       out_pipewire_object_serial = stream.pipewire_object_serial;
       // Set/update basic stream parameters on display_t
       this->output_name = stream.monitor_name;
+      // The portal reports no connector: the name was matched by position and size, which mirrored outputs share.
+      this->output_name_inferred = true;
       this->offset_x = stream.pos_x;
       this->offset_y = stream.pos_y;
       this->width = stream.width;

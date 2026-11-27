@@ -984,3 +984,33 @@ TEST_F(ProcessRefreshTest, Refresh_FirstUnreadableFileStillOffersBuiltInApps) {
 
   proc::proc = std::move(saved);
 }
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ProcessRefreshTest, HandEditedElevatedStringsDoNotFailTheList) {
+  // A version 2 file is not migrated again, so its readers take "true"/"false" and "1"/"0" strings themselves.
+  const fs::path apps_file = test_dir / "apps_hand_edited.json";
+  {
+    std::ofstream file(apps_file);
+    file << nlohmann::json {
+      {"version", 2},
+      {"env", nlohmann::json::object()},
+      {"apps", nlohmann::json::array({{
+                 {"name", "Edited"},
+                 {"uuid", "0123abcd-0000-4000-8000-000000000011"},
+                 {"exclude-global-prep-cmd", true},
+                 {"prep-cmd", nlohmann::json::array({{{"do", "a"}, {"elevated", "1"}}, {{"do", "b"}, {"elevated", "0"}}})},
+                 {"state-cmd", nlohmann::json::array({{{"do", "c"}, {"elevated", "true"}}})},
+               }})},
+    }.dump();
+  }
+  auto parsed = proc::parse(apps_file.string());
+  ASSERT_TRUE(parsed);
+  const auto &apps = parsed->get_apps();
+  ASSERT_FALSE(apps.empty());
+  EXPECT_EQ(apps[0].name, "Edited");
+  ASSERT_EQ(apps[0].prep_cmds.size(), 2U);
+  EXPECT_TRUE(apps[0].prep_cmds[0].elevated);
+  EXPECT_FALSE(apps[0].prep_cmds[1].elevated);
+  ASSERT_FALSE(apps[0].state_cmds.empty());
+  EXPECT_TRUE(apps[0].state_cmds.back().elevated);
+}

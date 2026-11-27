@@ -167,10 +167,12 @@ static void append_netlink_message(std::vector<char> &datagram, std::uint16_t ty
  *
  * @param gateway Gateway address, or nullptr for none.
  * @param local Preferred source address.
+ * @param destination_prefix Prefix length of the destination, 0 for the default route.
  */
-static std::vector<char> route_payload(const char *gateway, const char *local) {
+static std::vector<char> route_payload(const char *gateway, const char *local, std::uint8_t destination_prefix = 0) {
   std::vector<char> payload(NLMSG_ALIGN(sizeof(rtmsg)));
   rtmsg route {};
+  route.rtm_dst_len = destination_prefix;
   route.rtm_family = AF_INET;
   route.rtm_table = RT_TABLE_MAIN;
   std::memcpy(payload.data(), &route, sizeof(route));
@@ -223,6 +225,17 @@ TEST(GatewayRouteTest, ScansEachDatagramOnItsOwn) {
   datagram.clear();
   append_netlink_message(datagram, RTM_NEWROUTE, route_payload("192.168.1.1", "192.168.1.50"));
   EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), NLMSG_HDRLEN + 4, local_ip), platf::route_scan_e::more);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(GatewayRouteTest, OnlyTheDefaultRouteCounts) {
+  // A more specific route with its own gateway, listed first, is not the default gateway's interface.
+  std::string local_ip;
+  std::vector<char> datagram;
+  append_netlink_message(datagram, RTM_NEWROUTE, route_payload("10.8.0.1", "10.8.0.5", 24));
+  append_netlink_message(datagram, RTM_NEWROUTE, route_payload("192.168.1.1", "192.168.1.50"));
+  EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), datagram.size(), local_ip), platf::route_scan_e::found);
+  EXPECT_EQ(local_ip, "192.168.1.50");
 }
 
 #endif  // __linux__

@@ -523,7 +523,9 @@ namespace platf {
       }
 
       auto *route = static_cast<rtmsg *>(NLMSG_DATA(message));
-      if (route->rtm_family != AF_INET || route->rtm_table != RT_TABLE_MAIN) {
+      // Only the default route (prefix length 0): a route to some other subnet through its own gateway would hand the
+      // pairing link the wrong interface.
+      if (route->rtm_family != AF_INET || route->rtm_table != RT_TABLE_MAIN || route->rtm_dst_len != 0) {
         continue;
       }
 

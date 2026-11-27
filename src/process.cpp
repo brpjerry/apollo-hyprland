@@ -1527,6 +1527,38 @@ namespace proc {
   }
 
   /**
+   * @brief The "elevated" flag of a prep-cmd or state-cmd entry.
+   *
+   * The migration turns old string values into booleans, but a hand-edited file at version 2 can still hold one; like
+   * the config parser, accept "true"/"false" and "1"/"0" rather than fail the whole app list. Anything else is not
+   * elevated.
+   *
+   * @param command Command entry.
+   */
+  static bool command_elevated(const nlohmann::json &command) {
+    if (!command.is_object() || !command.contains("elevated")) {
+      return false;
+    }
+    const auto &value = command["elevated"];
+    if (value.is_boolean()) {
+      return value.get<bool>();
+    }
+    if (value.is_number()) {
+      return value.get<double>() != 0;
+    }
+    if (value.is_string()) {
+      const auto text = value.get<std::string>();
+      if (text == "true" || text == "1") {
+        return true;
+      }
+      if (text != "false" && text != "0") {
+        BOOST_LOG(warning) << "Ignoring the \"elevated\" value ["sv << text << "] of a command in the app list"sv;
+      }
+    }
+    return false;
+  }
+
+  /**
    * @brief Build the app list from the apps file, followed by the built-in entries.
    *
    * @param file_name Path of the apps file.
@@ -1599,7 +1631,7 @@ namespace proc {
             for (auto &prep_node : app_node["prep-cmd"]) {
               std::string do_cmd = parse_env_val(this_env, prep_node.value("do", ""));
               std::string undo_cmd = parse_env_val(this_env, prep_node.value("undo", ""));
-              bool elevated = prep_node.value("elevated", false);
+              bool elevated = command_elevated(prep_node);
               prep_cmds.emplace_back(
                 std::move(do_cmd),
                 std::move(undo_cmd),
@@ -1627,7 +1659,7 @@ namespace proc {
             for (auto &prep_node : app_node["state-cmd"]) {
               std::string do_cmd = parse_env_val(this_env, prep_node.value("do", ""));
               std::string undo_cmd = parse_env_val(this_env, prep_node.value("undo", ""));
-              bool elevated = prep_node.value("elevated", false);
+              bool elevated = command_elevated(prep_node);
               state_cmds.emplace_back(
                 std::move(do_cmd),
                 std::move(undo_cmd),
