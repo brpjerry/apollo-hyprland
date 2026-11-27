@@ -25,6 +25,7 @@
 namespace stream {
   std::vector<uint8_t> concat_and_insert(uint64_t insert_size, uint64_t slice_size, const std::string_view &data1, const std::string_view &data2);
   std::optional<std::pair<std::uint16_t, std::string_view>> parse_control_packet(const ENetPacket &packet);
+  std::optional<std::uint8_t> server_cmd_index(std::string_view payload);
   bool test_receive_ping_endpoints(bool session_id_pings);
 
   namespace fec {
@@ -137,4 +138,15 @@ TEST(ControlPacketTests, AcceptsTypeAndPayload) {
   ASSERT_TRUE(message);
   EXPECT_EQ(message->first, 0x0206);
   EXPECT_EQ(message->second, "abc");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ControlPacketTests, ServerCommandIndexMatchesApollosClient) {
+  // LiSendExecServerCmd() in patches/moonlight-common-c-0001 sends {cmdId, 0, 0, 0}.
+  const std::array<char, 4> padded {2, 0, 0, 0};
+  EXPECT_EQ(stream::server_cmd_index({padded.data(), padded.size()}), std::optional<std::uint8_t> {2});
+  const char bare = 3;
+  EXPECT_EQ(stream::server_cmd_index({&bare, 1}), std::optional<std::uint8_t> {3});
+  EXPECT_EQ(stream::server_cmd_index({}), std::nullopt);
+  EXPECT_EQ(stream::server_cmd_index({padded.data(), 2}), std::nullopt);
 }

@@ -106,6 +106,14 @@ namespace nvhttp {
   make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t* named_cert_p);
 
   /**
+   * @brief Whether a paired client may (still) stream: its certificate belongs to one enabled paired client.
+   *
+   * @param cert PEM certificate of the client.
+   * @return `true` when the client is paired and enabled.
+   */
+  bool client_may_stream(std::string_view cert);
+
+  /**
    * @brief Whether a launch request names the app that is already running.
    *
    * An omitted appid reads as 0, which is also what an idle host reports as running, so a numeric id only counts

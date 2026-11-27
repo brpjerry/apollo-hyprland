@@ -20,6 +20,7 @@
 #include <utility>
 
 // lib includes
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -342,12 +343,10 @@ namespace nvhttp {
 
     root["root"]["named_devices"] = named_cert_nodes;
 
-    try {
-      std::ofstream out(config::nvhttp.file_state);
-      out << root.dump(4);  // Pretty-print with an indent of 4 spaces.
-    } catch (std::exception &e) {
-      BOOST_LOG(error) << "Couldn't write "sv << config::nvhttp.file_state << ": "sv << e.what();
-      return;
+    // Replaced as a whole (write_file()): the file also holds the Web UI credentials, so a failed write must not
+    // truncate it.
+    if (file_handler::write_file(config::nvhttp.file_state.c_str(), root.dump(4)) != 0) {
+      BOOST_LOG(error) << "Couldn't save "sv << config::nvhttp.file_state;
     }
   }
 
@@ -444,29 +443,24 @@ namespace nvhttp {
       return;
     }
 
-    // Check that the file contains a "root.uniqueid" value.
-    if (!tree.contains("root") || !tree["root"].contains("uniqueid")) {
-      http::uuid = uuid_util::uuid_t::generate();
-      http::unique_id = http::uuid.string();
-      return;
-    }
-
-    const auto &stored_id = tree["root"]["uniqueid"];
-    const auto uid = stored_id.is_string() ? stored_id.get<std::string>() : std::string {};
+    // A missing, malformed or non-string root.uniqueid gets a new host id, which is saved below so the host keeps that
+    // identity across restarts. The paired clients are loaded either way.
+    const bool has_root = tree.contains("root") && tree["root"].is_object();
+    nlohmann::json root = has_root ? tree["root"] : nlohmann::json::object();
+    const auto uid = root.contains("uniqueid") && root["uniqueid"].is_string() ? root["uniqueid"].get<std::string>() : std::string {};
     bool repaired_id = false;
     try {
       http::uuid = uuid_util::uuid_t::parse(uid);
       http::unique_id = uid;
     } catch (const std::invalid_argument &) {
-      // Keep the paired clients below; only the host id is unusable, so give the host a new one and save it, so the
-      // host keeps that identity across restarts.
-      BOOST_LOG(warning) << "Invalid host uniqueid in "sv << config::nvhttp.file_state << ", generating a new one"sv;
+      if (!uid.empty() || root.contains("uniqueid")) {
+        BOOST_LOG(warning) << "Invalid host uniqueid in "sv << config::nvhttp.file_state << ", generating a new one"sv;
+      }
       http::uuid = uuid_util::uuid_t::generate();
       http::unique_id = http::uuid.string();
       repaired_id = true;
     }
 
-    nlohmann::json root = tree["root"];
     client_t client;  // Local client to load into
 
     // Import from the old format if available.
@@ -524,7 +518,7 @@ namespace nvhttp {
     std::lock_guard lock {client_auth_mutex()};
     client_root = std::move(client);
     rebuild_client_cert_chain();
-    if (repaired_id) {
+    if (repaired_id && !config::sunshine.flags[config::flag::FRESH_STATE]) {
       save_state();
     }
   }
@@ -1138,6 +1132,11 @@ namespace nvhttp {
    * @param response Response to write.
    * @param request Request that failed authorization.
    */
+  bool client_may_stream(const std::string_view cert) {
+    auto certificate = crypto::x509(cert);
+    return current_client_record(certificate.get()) != nullptr;
+  }
+
   void respond_client_not_authorized(resp_https_t response, req_https_t request) {
     pt::ptree tree;
     tree.put("root.<xmlattr>.status_code"s, 401);
@@ -1175,14 +1174,16 @@ namespace nvhttp {
     BOOST_LOG(debug) << "METHOD :: "sv << request->method;
     BOOST_LOG(debug) << "DESTINATION :: "sv << request->path;
 
+    // A browser sends the Web UI's login cookie to this host's other ports too, and rikey is the stream's AES key.
     for (auto &[name, val] : request->header) {
-      BOOST_LOG(debug) << name << " -- " << val;
+      const bool credentials = boost::iequals(name, "Cookie") || boost::iequals(name, "Authorization");
+      BOOST_LOG(debug) << name << " -- " << (credentials ? "CREDENTIALS REDACTED" : val);
     }
 
     BOOST_LOG(debug) << " [--] "sv;
 
     for (auto &[name, val] : request->parse_query_string()) {
-      BOOST_LOG(debug) << name << " -- " << val;
+      BOOST_LOG(debug) << name << " -- " << (boost::iequals(name, "rikey") ? "REDACTED" : val);
     }
 
     BOOST_LOG(debug) << " [--] "sv;

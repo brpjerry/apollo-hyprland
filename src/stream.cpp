@@ -661,6 +661,22 @@ namespace stream {
   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
 
   /**
+   * @brief Read the command index of an IDX_EXEC_SERVER_CMD payload.
+   *
+   * Apollo's LiSendExecServerCmd() (patches/moonlight-common-c-0001) sends four bytes, the index first and three zero
+   * bytes of padding; a bare one-byte index is accepted too.
+   *
+   * @param payload Decrypted payload after the control header.
+   * @return The index, or `std::nullopt` for any other payload size.
+   */
+  std::optional<std::uint8_t> server_cmd_index(const std::string_view payload) {
+    if (payload.size() != 1 && payload.size() != 4) {
+      return std::nullopt;
+    }
+    return static_cast<std::uint8_t>(payload.front());
+  }
+
+  /**
    * @brief Parse a control message from an ENet packet.
    *
    * @param packet ENet packet containing the control message type and payload.
@@ -1313,12 +1329,12 @@ namespace stream {
         return;
       }
 
-      // The payload is the one-byte command index (Apollo's moonlight-common-c patch).
-      if (payload.size() != 1) {
+      const auto index = server_cmd_index(payload);
+      if (!index) {
         BOOST_LOG(warning) << "Ignoring a server command with a "sv << payload.size() << "-byte payload"sv;
         return;
       }
-      const auto cmdIndex = static_cast<std::uint8_t>(payload.front());
+      const auto cmdIndex = *index;
 
       if (cmdIndex < config::sunshine.server_cmds.size()) {
         const auto& cmd = config::sunshine.server_cmds[cmdIndex];
@@ -2496,11 +2512,16 @@ namespace stream {
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {
+        // Never started: stop() and the revocation sweeps leave a STOPPED session alone.
+        session.state.store(state_e::STOPPED, std::memory_order_release);
         return -1;
       }
 
       session.control.expected_peer_address = addr_string;
       BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
+
+      // Before the control thread can see the session: it stops sessions whose ping timeout has passed.
+      session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
 
       // Insert this session into the session list
       {
@@ -2515,12 +2536,10 @@ namespace stream {
       session.audio.peer.address(addr);
       session.audio.peer.port(0);
 
-      session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
-
       session.audioThread = std::jthread {audioThread, &session};
       session.videoThread = std::jthread {videoThread, &session};
 
-      session.state.store(state_e::RUNNING, std::memory_order_relaxed);
+      session.state.store(state_e::RUNNING, std::memory_order_release);
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
@@ -2626,7 +2645,9 @@ namespace stream {
       session->audio.timestamp = 0;
 
       session->control.peer = nullptr;
-      session->state.store(state_e::STOPPED, std::memory_order_relaxed);
+      // STARTING until start() has run: rtsp inserts the session before starting it, and a revocation sweep that finds
+      // it in between must wait for the workers (stop() does) instead of joining threads that don't exist yet.
+      session->state.store(state_e::STARTING, std::memory_order_relaxed);
 
       session->mail = std::move(mail);
 

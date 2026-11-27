@@ -365,3 +365,45 @@ TEST(LaunchRequestTest, ModeWithoutARateGetsTheDefaultRate) {
   }
   EXPECT_EQ(nvhttp::make_launch_session(false, false, launch_args("1920x1080x120"), &client)->fps, 120000);
 }
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ClientAuthorizationTest, MissingHostIdKeepsClientsAndTheRestOfTheFile) {
+  // The state file also holds the Web UI credentials: repairing the host id must keep them and the paired clients.
+  const auto credentials = test_utils::certificates::generate_ca_credentials();
+  {
+    std::ofstream out(state_file);
+    out << nlohmann::json {
+      {"username", "admin"},
+      {"root", {{"named_devices", nlohmann::json::array({{{"name", "phone"}, {"cert", credentials.x509}, {"uuid", "0123abcd-0000-4000-8000-000000000005"}}})}}},
+    }.dump();
+  }
+  nvhttp::test_support::reload_client_state();
+  EXPECT_EQ(nvhttp::get_all_clients().size(), 1);
+  EXPECT_TRUE(nvhttp::test_support::authorize_client_certificate(credentials.x509));
+  const auto repaired = http::unique_id;
+  ASSERT_TRUE(uuid_util::uuid_t::valid_text(repaired));
+
+  std::ifstream in(state_file);
+  const auto saved = nlohmann::json::parse(in);
+  EXPECT_EQ(saved.at("username"), "admin");
+  EXPECT_EQ(saved.at("root").at("uniqueid"), repaired);
+  EXPECT_EQ(saved.at("root").at("named_devices").size(), 1U);
+
+  nvhttp::test_support::reload_client_state();
+  EXPECT_EQ(http::unique_id, repaired);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ClientAuthorizationTest, StreamAdmissionSeesRevocation) {
+  // RTSP checks the client again once its stream session is registered (cmd_announce()).
+  const auto credentials = test_utils::certificates::generate_ca_credentials();
+  const auto uuid = nvhttp::test_support::add_client("streamer", credentials.x509, true);
+  ASSERT_FALSE(uuid.empty());
+  EXPECT_TRUE(nvhttp::client_may_stream(credentials.x509));
+  ASSERT_TRUE(nvhttp::set_client_enabled(uuid, false));
+  EXPECT_FALSE(nvhttp::client_may_stream(credentials.x509));
+  ASSERT_TRUE(nvhttp::set_client_enabled(uuid, true));
+  ASSERT_TRUE(nvhttp::unpair_client(uuid));
+  EXPECT_FALSE(nvhttp::client_may_stream(credentials.x509));
+  EXPECT_FALSE(nvhttp::client_may_stream(""));
+}

@@ -625,7 +625,10 @@ namespace rtsp_stream {
         auto &slot = *(*i);
         if (all || stream::session::state(slot) == stream::session::state_e::STOPPING) {
           stream::session::stop(slot);
-          stream::session::join(slot);
+          // STOPPED: start() failed and its caller removes the session; there are no workers to join.
+          if (stream::session::state(slot) != stream::session::state_e::STOPPED) {
+            stream::session::join(slot);
+          }
 
           i = _session_slots->erase(i);
         } else {
@@ -644,8 +647,11 @@ namespace rtsp_stream {
       for (auto i = _session_slots->begin(); i != _session_slots->end();) {
         auto &slot = *(*i);
         if (stream::session::client_cert(slot) == cert) {
+          // stop() waits for a session that is still starting.
           stream::session::stop(slot);
-          stream::session::join(slot);
+          if (stream::session::state(slot) != stream::session::state_e::STOPPED) {
+            stream::session::join(slot);
+          }
           i = _session_slots->erase(i);
         } else {
           i++;
@@ -1391,6 +1397,16 @@ namespace rtsp_stream {
 
       rtsp_server->remove(stream_session);
       respond(sock, session, &option, 500, "Internal Server Error", req->sequenceNumber, {});
+      return;
+    }
+
+    // The client may have been unpaired or disabled since its launch request. Check once the session is registered:
+    // a revocation from then on finds and stops it, and one before it is seen here. The stopped session is reaped
+    // like any other (rtsp_server_t::clear()).
+    if (!nvhttp::client_may_stream(session.client_cert)) {
+      BOOST_LOG(warning) << "Rejecting a stream of a client that is no longer authorized"sv;
+      stream::session::stop(*stream_session);
+      respond(sock, session, &option, 403, "Forbidden", req->sequenceNumber, {});
       return;
     }
 
