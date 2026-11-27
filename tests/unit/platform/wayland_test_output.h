@@ -11,6 +11,7 @@
   #include <algorithm>
   #include <atomic>
   #include <chrono>
+  #include <cstdlib>
   #include <cstring>
   #include <memory>
   #include <optional>
@@ -34,6 +35,17 @@
 
 namespace test_wl {
   using namespace std::chrono_literals;
+
+  /**
+   * @brief Whether the tests run in the private headless Hyprland of scripts/hyprland/test-live.sh, which gives it its
+   *        own XDG_RUNTIME_DIR. Tests that create or reconfigure outputs must skip otherwise: in a desktop session they
+   *        would change the user's compositor.
+   */
+  inline bool in_private_hyprland() {
+    const char *private_dir = std::getenv("APOLLO_HEADLESS_HYPRLAND_DIR");
+    const char *runtime_dir = std::getenv("XDG_RUNTIME_DIR");
+    return private_dir && runtime_dir && std::string {private_dir} == runtime_dir && std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
+  }
 
   /**
    * @brief The first DRM render node, or "" without one: no GPU, e.g. CI's vkms, which has only a primary node.

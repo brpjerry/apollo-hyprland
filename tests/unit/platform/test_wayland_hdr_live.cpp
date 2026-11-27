@@ -3,8 +3,8 @@
  * @brief HDR streaming from a Hyprland HDR output: the video memory path converts captured frames to PQ.
  * @details Captures a headless output in HDR mode through ext-image-copy-capture into dma-bufs, runs the frame
  *          through the same GL converter the NVENC (CUDA) and VAAPI paths use, and checks the Y plane against a
- *          reference computation. Skipped without a compositor, without ext-image-copy-capture or wp-color-management,
- *          or with APOLLO_SKIP_LIVE_HYPRLAND set.
+ *          reference computation. Only runs in the private headless Hyprland of scripts/hyprland/test-live.sh.
+ *          Skipped without ext-image-copy-capture or wp-color-management, or with APOLLO_SKIP_LIVE_HYPRLAND set.
  */
 #include "../../tests_common.h"
 
@@ -39,8 +39,9 @@ namespace {
 
   struct WaylandHdrLiveTest: PlatformTestSuite {
     void SetUp() override {
-      if (!std::getenv("WAYLAND_DISPLAY")) {
-        GTEST_SKIP() << "WAYLAND_DISPLAY is not set";
+      // The test creates an output and switches it to HDR: never on the desktop session.
+      if (!test_wl::in_private_hyprland()) {
+        GTEST_SKIP() << "Needs the private headless Hyprland of scripts/hyprland/test-live.sh";
       }
       if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
         GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";

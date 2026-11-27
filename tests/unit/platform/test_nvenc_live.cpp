@@ -4,8 +4,8 @@
  * @details Captures through ext-image-copy-capture (dma-bufs, and the system memory bridge), encodes with the native
  *          encoder and decodes the result with FFmpeg. Checks 4:4:4, 10-bit, that a lost frame is recovered by reference
  *          frame invalidation rather than an IDR frame, and that system memory frames of an HDR output stream as HDR10.
- *          Skipped without a compositor with ext-image-copy-capture, without a CUDA device, or with
- *          APOLLO_SKIP_LIVE_HYPRLAND set.
+ *          Only runs in the private headless Hyprland of scripts/hyprland/test-live.sh. Skipped without
+ *          ext-image-copy-capture, without a CUDA device, or with APOLLO_SKIP_LIVE_HYPRLAND set.
  */
 #include "../../tests_common.h"
 
@@ -134,8 +134,9 @@ namespace {
    */
   struct NvencLiveBase: PlatformTestSuite {
     void SetUp() override {
-      if (!std::getenv("WAYLAND_DISPLAY")) {
-        GTEST_SKIP() << "WAYLAND_DISPLAY is not set";
+      // These tests create and reconfigure outputs: never on the desktop session.
+      if (!test_wl::in_private_hyprland()) {
+        GTEST_SKIP() << "Needs the private headless Hyprland of scripts/hyprland/test-live.sh";
       }
       if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
         GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";
