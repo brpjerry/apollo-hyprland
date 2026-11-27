@@ -85,6 +85,33 @@ TEST(HyprlandSessionTest, WakeOutputOnlyTouchesTheStreamedOutput) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(HyprlandSessionTest, WakeOutputResolvesTheLegacyIndexLikeCapture) {
+  temp_dir_t tmp;
+  fs::create_directories(tmp.path() / "sig_1_1");
+  fake_request_socket_t server {tmp.path() / "sig_1_1" / ".socket.sock", fake_hyprland(lua_status)};
+  auto ipc = hyprland::ipc_t::connect(tmp.path(), "sig_1_1");
+  ASSERT_NE(ipc, nullptr);
+
+  // Capture indexes the Wayland outputs, in Wayland's order.
+  int enumerated = 0;
+  const auto wayland_names = [&]() {
+    ++enumerated;
+    return std::vector<std::string> {"APOLLO-99999999", "APOLLO-1a2b3c4d", "DP-3"};
+  };
+  EXPECT_EQ(hyprland::wake_output(*ipc, "0", wayland_names), hyprland::wake_result_e::already_on);
+  EXPECT_EQ(hyprland::wake_output(*ipc, "1", wayland_names), hyprland::wake_result_e::woken);
+  EXPECT_EQ(hyprland::wake_output(*ipc, "3", wayland_names), hyprland::wake_result_e::not_found);
+  EXPECT_EQ(enumerated, 3);
+  // Names are not looked up in Wayland.
+  EXPECT_EQ(hyprland::wake_output(*ipc, "APOLLO-99999999", wayland_names), hyprland::wake_result_e::already_on);
+  EXPECT_EQ(hyprland::wake_output(*ipc, "DP-", wayland_names), hyprland::wake_result_e::not_found);
+  EXPECT_EQ(enumerated, 3);
+
+  std::vector<std::string> expected {R"(/dispatch hl.dsp.dpms({ action = "on", monitor = "APOLLO-1a2b3c4d" }))"};
+  EXPECT_EQ(dispatches(server), expected);
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(HyprlandSessionTest, WakeOutputOnHyprlang) {
   temp_dir_t tmp;
   fs::create_directories(tmp.path() / "sig_1_1");

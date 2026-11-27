@@ -6,29 +6,42 @@
 #include "session.h"
 
 // standard includes
+#include <algorithm>
 #include <format>
 
+// local includes
 #include "src/logging.h"
+#include "src/platform/display_selection.h"
 
 using namespace std::literals;
 
 namespace hyprland {
-  wake_result_e wake_output(const ipc_t &ipc, const std::string &output) {
+  wake_result_e wake_output(const ipc_t &ipc, const std::string &output, const std::function<std::vector<std::string>()> &capture_names) {
     if (output.empty()) {
       return wake_result_e::not_found;
     }
-    for (const auto &monitor : ipc.monitors(true)) {
-      if (monitor.name != output) {
+    const auto monitors = ipc.monitors(true);
+    std::string name = output;
+    // Capture takes a number that is no output's name for an index into the Wayland outputs (Wayland's order,
+    // which need not be Hyprland's).
+    if (capture_names && platf::parse_display_index(output) && !std::ranges::contains(monitors, output, &monitor_info_t::name)) {
+      const auto names = capture_names();
+      if (const auto index = platf::find_display(names, output, true)) {
+        name = names[*index];
+      }
+    }
+    for (const auto &monitor : monitors) {
+      if (monitor.name != name) {
         continue;
       }
       if (monitor.dpms_on) {
         return wake_result_e::already_on;
       }
-      if (!ipc.set_dpms(output, true)) {
-        BOOST_LOG(warning) << "Hyprland: could not switch on output "sv << output;
+      if (!ipc.set_dpms(name, true)) {
+        BOOST_LOG(warning) << "Hyprland: could not switch on output "sv << name;
         return wake_result_e::failed;
       }
-      BOOST_LOG(info) << "Hyprland: switched on output "sv << output << " (DPMS was off)"sv;
+      BOOST_LOG(info) << "Hyprland: switched on output "sv << name << " (DPMS was off)"sv;
       return wake_result_e::woken;
     }
     return wake_result_e::not_found;

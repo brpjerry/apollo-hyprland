@@ -77,6 +77,7 @@
   #include "hyprland/ipc.h"
   #include "hyprland/session.h"
   #include "hyprland/vdisplay.h"
+  #include "wayland.h"
 #endif
 
 #ifdef SUNSHINE_BUILD_GIO
@@ -834,7 +835,14 @@ namespace platf {
       if (!ipc) {
         return;
       }
-      hyprland::wake_output(*ipc, output);
+      hyprland::wake_output(*ipc, output, []() {
+        wl::display_t display;
+        wl::interface_t interface;
+        if (display.init() || !wl::enumerate_outputs(display, interface)) {
+          return std::vector<std::string> {};
+        }
+        return wl::output_names(interface);
+      });
 #endif
     }
   }  // namespace
