@@ -16,6 +16,8 @@
   #include <regex>
 
   // platform includes
+  #include <signal.h>
+  #include <sys/prctl.h>
   #include <sys/wait.h>
   #include <unistd.h>
 
@@ -312,6 +314,63 @@ namespace {
     return pid;
   }
 
+  /**
+   * @brief A child process that waits until destroyed. It runs as this program (another Apollo, as far as owner
+   * files go) unless given another name for /proc/PID/comm.
+   */
+  class child_process_t {
+  public:
+    explicit child_process_t(const char *name = nullptr) {
+      int fds[2];
+      if (::pipe(fds) != 0) {
+        return;
+      }
+      pid_ = ::fork();
+      if (pid_ == 0) {
+        ::close(fds[0]);
+        if (name) {
+          ::prctl(PR_SET_NAME, name, 0, 0, 0);
+        }
+        char ready = 1;
+        (void) !::write(fds[1], &ready, 1);
+        while (true) {
+          ::pause();
+        }
+      }
+      ::close(fds[1]);
+      char ready = 0;
+      if (pid_ > 0 && ::read(fds[0], &ready, 1) != 1) {
+        stop();
+      }
+      ::close(fds[0]);
+    }
+
+    ~child_process_t() {
+      stop();
+    }
+
+    child_process_t(const child_process_t &) = delete;
+    child_process_t &operator=(const child_process_t &) = delete;
+
+    /**
+     * @brief The PID, or a value <= 0 if it could not be started.
+     */
+    pid_t pid() const {
+      return pid_;
+    }
+
+  private:
+    void stop() {
+      if (pid_ > 0) {
+        ::kill(pid_, SIGKILL);
+        ::waitpid(pid_, nullptr, 0);
+        pid_ = -1;
+      }
+    }
+
+    pid_t pid_ = -1;
+  };
+
   void write_owner(const fs::path &dir, const std::string &name, int pid) {
     fs::create_directories(dir);
     std::ofstream {dir / name} << pid << '\n';
@@ -482,7 +541,8 @@ namespace {
     return status;
   }
 
-  constexpr auto silent_signature = "0000000000000000000000000000000000000000_1_1";
+  // Short, so the socket path fits in sun_path even under a long TMPDIR.
+  constexpr auto silent_signature = fake_hyprland_t::signature;
 
   /**
    * @brief An instance directory whose socket accepts but never answers, with a lock file naming `pid`.
@@ -500,7 +560,9 @@ namespace {
 TEST(HyprlandVdisplayTest, SilentSocketOfANamedInstanceIsAFailureNotAbsence) {
   // The empty runtime dir also hides the desktop's own Hyprland from discovery.
   hyprland_fakes::temp_dir_t runtime;
-  const int fd = make_silent_instance(runtime.path(), getpid());
+  child_process_t hyprland {"Hyprland"};
+  ASSERT_GT(hyprland.pid(), 0);
+  const int fd = make_silent_instance(runtime.path(), hyprland.pid());
   const auto status = init_with_silent_connect(runtime.path(), silent_signature);
   ::close(fd);
   // unavailable would let a launch fall back to capturing the physical desktop.
@@ -510,7 +572,9 @@ TEST(HyprlandVdisplayTest, SilentSocketOfANamedInstanceIsAFailureNotAbsence) {
 // Bugs caught: 0, False positives: 0
 TEST(HyprlandVdisplayTest, SilentSocketFoundByDiscoveryIsAFailureNotAbsence) {
   hyprland_fakes::temp_dir_t runtime;
-  const int fd = make_silent_instance(runtime.path(), getpid());
+  child_process_t hyprland {"Hyprland"};
+  ASSERT_GT(hyprland.pid(), 0);
+  const int fd = make_silent_instance(runtime.path(), hyprland.pid());
   const auto status = init_with_silent_connect(runtime.path(), nullptr);
   ::close(fd);
   EXPECT_EQ(status, status_e::failed);
@@ -537,6 +601,18 @@ TEST(HyprlandVdisplayTest, CrashedInstanceIsAbsence) {
   waitpid(child, nullptr, 0);
   ::close(make_silent_instance(runtime.path(), child));
   EXPECT_EQ(init_with_silent_connect(runtime.path(), silent_signature), status_e::unavailable);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandVdisplayTest, CrashedInstanceWhosePidWasReusedIsAbsence) {
+  // After a crash the kernel can give the lock file's PID to another program (here, this test).
+  hyprland_fakes::temp_dir_t runtime;
+  const int fd = make_silent_instance(runtime.path(), getpid());
+  const auto named = init_with_silent_connect(runtime.path(), silent_signature);
+  const auto discovered = init_with_silent_connect(runtime.path(), nullptr);
+  ::close(fd);
+  EXPECT_EQ(named, status_e::unavailable);
+  EXPECT_EQ(discovered, status_e::unavailable);
 }
 
 // Bugs caught: 0, False positives: 0

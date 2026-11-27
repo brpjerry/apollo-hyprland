@@ -220,7 +220,9 @@ namespace hyprland {
      * @brief Whether an instance directory belongs to a running compositor, answering or not.
      *
      * Hyprland removes `.socket.sock` and `hyprland.lock` when it exits; a crash leaves the socket file but the
-     * PID on line 1 of the lock file is then dead.
+     * PID on line 1 of the lock file is then dead, or reused by another program (`/proc/PID/comm` tells which).
+     * If the name cannot be read the instance counts as running, so an ambiguous case refuses to fall back to
+     * capturing the desktop; the warning names the lock file and PID to check.
      */
     bool instance_dir_running(const std::filesystem::path &instance_dir) {
       std::error_code ec;
@@ -237,7 +239,27 @@ namespace hyprland {
       if (err != std::errc {} || pid <= 0) {
         return false;
       }
-      return ::kill(pid, 0) == 0 || errno == EPERM;
+      if (::kill(pid, 0) != 0 && errno != EPERM) {
+        return false;
+      }
+      const auto lock = (instance_dir / "hyprland.lock").string();
+      std::string comm;
+      if (std::ifstream comm_in {"/proc/"s + std::to_string(pid) + "/comm"}; comm_in && std::getline(comm_in, comm)) {
+        // `Hyprland`, or `hyprland` when started through that name.
+        auto name = comm;
+        std::ranges::transform(name, name.begin(), [](unsigned char c) {
+          return static_cast<char>(std::tolower(c));
+        });
+        if (name != "hyprland"sv) {
+          BOOST_LOG(debug) << "Hyprland: "sv << lock << " names PID "sv << pid << ", now "sv << comm << "; a stale instance"sv;
+          return false;
+        }
+        BOOST_LOG(warning) << "Hyprland: "sv << lock << " names running Hyprland PID "sv << pid;
+      } else {
+        BOOST_LOG(warning) << "Hyprland: "sv << lock << " names live PID "sv << pid << ", which may be Hyprland. After a compositor crash, "sv
+                           << "check which program has that PID before removing a stale instance directory."sv;
+      }
+      return true;
     }
 
     bool is_ok(const std::optional<std::string> &reply) {

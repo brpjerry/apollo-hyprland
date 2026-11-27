@@ -763,7 +763,7 @@ namespace hyprland {
       const bool exists = options_.instance_exists && options_.instance_exists();
       status_ = exists ? status_e::failed : status_e::unavailable;
       if (exists) {
-        BOOST_LOG(warning) << "Hyprland virtual display: a running Hyprland instance does not answer on its control socket"sv;
+        BOOST_LOG(warning) << "Hyprland virtual display: a Hyprland instance was detected, but its control socket did not answer"sv;
       } else {
         BOOST_LOG(debug) << "Hyprland virtual display: not running under Hyprland"sv;
       }
