@@ -709,12 +709,6 @@ namespace system_tray {
   #endif
 
   /**
-   * @brief Initialize the tray, optionally observing an owning thread's stop request.
-   *
-   * @param stop_token Stop token supplied by the managed tray worker, or an empty token for direct initialization.
-   * @return Zero when initialization succeeds; otherwise, a non-zero error code.
-   */
-  /**
    * @brief Apply Apollo's menu options: the instance title and the hidden app controls.
    *
    * The first entry names the instance and its web UI port, so several instances can be told apart.
@@ -734,6 +728,12 @@ namespace system_tray {
   }
   #endif
 
+  /**
+   * @brief Initialize the tray, optionally observing an owning thread's stop request.
+   *
+   * @param stop_token Stop token supplied by the managed tray worker, or an empty token for direct initialization.
+   * @return Zero when initialization succeeds; otherwise, a non-zero error code.
+   */
   int init_tray_with_stop_token(const std::stop_token stop_token) {
   #ifdef _WIN32
     // If we're running as SYSTEM, Explorer.exe will not have permission to open our thread handle

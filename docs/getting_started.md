@@ -616,18 +616,36 @@ After logging in, `journalctl --user -u sunshine` should show `Screencasting wit
 out, the service stops: Sunshine receives `SIGTERM` (or `SIGHUP`), ends the running app and cleans up before exiting.
 
 ##### Firewall
-The packages install a firewalld service and a ufw application profile for the default ports (base port 47989), but
-leave them disabled. Open them on the network you stream over:
+Native packages built with `-DCMAKE_INSTALL_PREFIX=/usr` (such as the Arch package) install a firewalld service and a
+ufw application profile for the default base port 47989, but leave them disabled. Apollo uses TCP 47984, 47989, 47990
+and 48010 and UDP 47998-48000; discovery uses mDNS on UDP 5353.
+
+Open them only on the network you stream over. Replace `home` with that network's zone from
+`firewall-cmd --get-active-zones`, or `enp3s0` with its network interface:
 
 ```bash
-sudo firewall-cmd --permanent --add-service=apollo && sudo firewall-cmd --reload   # firewalld
-sudo ufw allow Apollo && sudo ufw allow mDNS                                        # ufw
+# firewalld (the service includes mDNS)
+sudo firewall-cmd --permanent --zone=home --add-service=apollo && sudo firewall-cmd --reload
+
+# ufw
+sudo ufw allow in on enp3s0 to any app Apollo
+# If your ufw rules block multicast DNS discovery
+sudo ufw allow in on enp3s0 to any port 5353 proto udp
 ```
 
-They cover TCP 47984, 47989, 47990 and 48010, UDP 47998-48000, 48002 and 48010, and mDNS (UDP 5353) for discovery.
-With a different `port` in `sunshine.conf`, every port moves by the same amount: copy
-`/usr/lib/firewalld/services/apollo.xml` to `/etc/firewalld/services/` (or edit `/etc/ufw/applications.d/apollo`) and
-shift the ports.
+For a different `port` in `sunshine.conf`, add `port - 47989` to each Apollo TCP and UDP port, and keep mDNS on
+UDP 5353:
+
+- With firewalld, copy `/usr/lib/firewalld/services/apollo.xml` to `/etc/firewalld/services/apollo.xml`, edit its
+  numeric port entries, and run `sudo firewall-cmd --reload`.
+- With ufw, copy `/etc/ufw/applications.d/apollo` to `/etc/ufw/applications.d/apollo-local`, rename its section to
+  `[Apollo Local]`, edit the ports, and enable `'Apollo Local'` as above. If you enabled `Apollo` before, remove its
+  rules with `sudo ufw status numbered` and `sudo ufw delete NUMBER`, checking the numbers again after each deletion.
+  After later port edits, run `sudo ufw app update 'Apollo Local'`.
+
+AppImage, Flatpak, Homebrew and `/usr/local` builds don't install the definitions where firewalld and ufw look. Copy
+them from `src_assets/linux/misc/firewall/` in the matching source tree: `apollo.xml` to
+`/etc/firewalld/services/apollo.xml`, or `apollo.ufw` to `/etc/ufw/applications.d/apollo`.
 
 ##### Tray icon
 The tray icon is a StatusNotifierItem, so it only shows up when something in your session hosts one, such as

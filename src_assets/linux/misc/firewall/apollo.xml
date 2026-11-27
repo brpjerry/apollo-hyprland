@@ -1,17 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Apollo (Sunshine fork) game streaming host, at the default base port 47989.
-     With a different `port` in sunshine.conf, copy this file to /etc/firewalld/services/ and shift every port by the
-     same amount. To enable it, add the "apollo" service to your zone permanently with firewall-cmd and reload.
-     (XML comments cannot contain double hyphens, so the command is spelled out in the Linux setup docs.) -->
+     For a different base port, copy this file to /etc/firewalld/services/, shift the numeric port entries,
+     keep the mdns service included, and reload firewalld. -->
 <service>
   <short>Apollo</short>
-  <description>Apollo game streaming host for Moonlight and Artemis clients: GameStream HTTP/HTTPS pairing (47984, 47989), the web UI (47990), RTSP (48010), and the video, control and audio streams (UDP 47998-48000, 48002, 48010). The web UI only answers on the local network by default.</description>
+  <description>Apollo game streaming host for Moonlight and Artemis clients. Allows GameStream pairing, the web UI, RTSP, the video, control and audio streams, and mDNS discovery.</description>
   <port protocol="tcp" port="47984"/>
   <port protocol="tcp" port="47989"/>
   <port protocol="tcp" port="47990"/>
   <port protocol="tcp" port="48010"/>
   <port protocol="udp" port="47998-48000"/>
-  <port protocol="udp" port="48002"/>
-  <port protocol="udp" port="48010"/>
   <include service="mdns"/>
 </service>

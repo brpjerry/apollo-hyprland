@@ -2876,7 +2876,7 @@ namespace video {
     double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target * 1000 : std::max(config.encodingFramerate / 5, 10000);
     auto max_frametime = std::chrono::nanoseconds(1000ms) * 1000 / minimum_fps_target;
     auto encode_frame_threshold = std::chrono::nanoseconds(1000ms) * 1000 / config.encodingFramerate;
-    // An idle capture repeats the last frame after max_frametime, so this is the stream's lowest frame rate.
+    // max_frametime is how long the encoder waits for a captured image before reusing the last frame.
     BOOST_LOG(info) << "Minimum FPS target set to ~"sv << (minimum_fps_target / 1000) << "fps ("sv << max_frametime << ")"sv;
     BOOST_LOG(info) << "Encoding Frame threshold: "sv << encode_frame_threshold;
 

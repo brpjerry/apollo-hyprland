@@ -45,9 +45,13 @@ else()
         install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunshine.conf"
                 DESTINATION "${SYSTEMD_MODULES_LOAD_DIR}")
     endif()
+endif()
 
-    # Apollo: firewall definitions for the default ports, inert until the user enables them
-    # (firewall-cmd --add-service=apollo, ufw allow Apollo).
+# Apollo: firewall definitions for the default ports, inert until the user enables them (see the Linux setup guide).
+# Only native Linux packages: FreeBSD shares this file, and the bundled formats can't install into the host's firewall
+# directories.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ${SUNSHINE_BUILD_APPIMAGE} AND NOT ${SUNSHINE_BUILD_FLATPAK}
+        AND NOT ${SUNSHINE_BUILD_HOMEBREW})
     install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/firewall/apollo.xml"
             DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/firewalld/services")
     install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/firewall/apollo.ufw"

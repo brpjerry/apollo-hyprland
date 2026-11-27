@@ -121,6 +121,15 @@ namespace confighttp {
   void savePin(const resp_https_t &response, const req_https_t &request);
 
   /**
+   * @brief Set the first Web UI credentials, or change them for an authenticated user.
+   *
+   * Setting the first credentials needs no login, but the request must still come from an allowed origin.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   */
+  void savePassword(const resp_https_t &response, const req_https_t &request);
+
+  /**
    * @brief Start a Web UI login session from a JSON username and password, setting the `auth` cookie (Apollo).
    * @param response The HTTP response object.
    * @param request The HTTP request object.

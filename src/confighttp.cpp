@@ -2220,7 +2220,13 @@ namespace confighttp {
     if (!check_content_type(response, request, "application/json")) {
       return;
     }
-    if (!config::sunshine.username.empty() && !authenticate(response, request)) {
+    // Before the first credentials exist there is nothing to authenticate, but whoever sets them owns the Web UI, so
+    // they must still come from an allowed origin.
+    if (config::sunshine.username.empty()) {
+      if (!checkIPOrigin(response, request)) {
+        return;
+      }
+    } else if (!authenticate(response, request)) {
       return;
     }
 

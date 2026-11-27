@@ -127,7 +127,9 @@ namespace {
     const auto &tray_data = system_tray::tray_data_for_testing();
     ASSERT_NE(tray_data.menu, nullptr);
 
-    EXPECT_STREQ(tray_data.menu[0].text, "Open Apollo");
+    // Initialization names the instance and its web UI port.
+    const auto expected_title = std::format("Open Apollo ({}:{})", config::nvhttp.sunshine_name, net::map_port(confighttp::PORT_HTTPS));
+    EXPECT_STREQ(tray_data.menu[0].text, expected_title.c_str());
     EXPECT_NE(tray_data.menu[0].cb, nullptr);
     EXPECT_STREQ(tray_data.menu[1].text, "-");
     EXPECT_EQ(tray_data.menu[1].cb, nullptr);
@@ -330,16 +332,20 @@ private:
 TEST(SystemTrayMenuOptionsTest, TitleNamesTheInstanceAndHideRemovesTheControls) {
   const auto original_name = config::nvhttp.sunshine_name;
   const auto original_hide = config::sunshine.hide_tray_controls;
+  const auto original_port = config::sunshine.port;
   const auto restore = util::fail_guard([&]() {
+    config::sunshine.port = original_port;
     config::nvhttp.sunshine_name = original_name;
     config::sunshine.hide_tray_controls = original_hide;
     system_tray::reset_tray_data_for_testing();
   });
   const auto &tray_data = system_tray::tray_data_for_testing();
-  const auto expected_title = std::format("Open Apollo (Den PC:{})", net::map_port(confighttp::PORT_HTTPS));
+  const auto expected_title = std::string {"Open Apollo (Den PC:50001)"};
 
   config::nvhttp.sunshine_name = "Den PC";
   config::sunshine.hide_tray_controls = false;
+  // A non-default base port, so a hard-coded 47990 would fail.
+  config::sunshine.port = 50000;
   system_tray::apply_menu_options_for_testing();
   EXPECT_EQ(std::string(tray_data.menu[0].text), expected_title);
   ASSERT_NE(tray_data.menu[1].text, nullptr);
