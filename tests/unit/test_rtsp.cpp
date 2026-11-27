@@ -285,3 +285,22 @@ TEST(RtspAnnounceTest, ValidatesH263PlusDimensionsAfterApplyingResolutionCap) {
     EXPECT_TRUE(response.starts_with(std::format("RTSP/1.0 {} ", test_case.status))) << response;
   }
 }
+
+// Bugs caught: 0, False positives: 0
+TEST(RtspFramerateTest, ExactRateIsKeptWhenItIsTheRequestedRate) {
+  EXPECT_EQ(rtsp_stream::exact_framerate_x100(60, 6000), 6000);
+  EXPECT_EQ(rtsp_stream::exact_framerate_x100(60, 5994), 5994);
+  // maxFPS in mHz, as clients that ask for fractional rates send it.
+  EXPECT_EQ(rtsp_stream::exact_framerate_x100(60000, 6000), 6000);
+  EXPECT_EQ(rtsp_stream::exact_framerate_x100(59940, 5994), 5994);
+  EXPECT_EQ(rtsp_stream::exact_framerate_x100(119880, 11988), 11988);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(RtspFramerateTest, DisplayRefreshRateOfTheClientIsDropped) {
+  // Moonlight Android sends the refresh rate of its display: a 60 fps stream on a 120 Hz phone.
+  EXPECT_EQ(rtsp_stream::exact_framerate_x100(60, 12000), 0);
+  EXPECT_EQ(rtsp_stream::exact_framerate_x100(60000, 12000), 0);
+  EXPECT_EQ(rtsp_stream::exact_framerate_x100(60, 0), 0);
+  EXPECT_EQ(rtsp_stream::exact_framerate_x100(0, 6000), 0);
+}

@@ -16,6 +16,7 @@
   #include <format>
   #include <fstream>
   #include <map>
+  #include <memory>
   #include <optional>
   #include <string>
   #include <string_view>
@@ -30,6 +31,7 @@
 
   // local includes
   #include <src/platform/linux/wayland.h>
+  #include <src/video.h>
   #ifdef SUNSHINE_BUILD_CUDA
     #include <src/platform/linux/cuda.h>
   #endif
@@ -561,6 +563,193 @@ TEST(WaylandInterfaceTest, RecordsOnlyExplicitDmabufModifiers) {
   ASSERT_NE(modifiers, interface.supported_modifiers.end());
   ASSERT_EQ(modifiers->second.size(), 1);
   EXPECT_EQ(modifiers->second.front(), explicit_modifier);
+}
+
+namespace {
+  /**
+   * @brief Describe a monitor the way the compositor's output events do.
+   */
+  struct output_desc_t {
+    int x {0};  ///< Logical position.
+    int y {0};  ///< Logical position.
+    int width {1920};  ///< Mode width.
+    int height {1080};  ///< Mode height.
+    int refresh_mhz {60000};  ///< Mode refresh rate.
+    int logical_width {1920};  ///< Logical width (mode / fractional scale).
+    int logical_height {1080};  ///< Logical height.
+    int scale {1};  ///< wl_output integer scale.
+    int transform {WL_OUTPUT_TRANSFORM_NORMAL};  ///< wl_output transform.
+  };
+
+  /**
+   * @brief Send a monitor the events that describe an output.
+   */
+  void describe(wl::monitor_t &monitor, const output_desc_t &desc) {
+    monitor.wl_geometry(nullptr, 0, 0, 600, 340, WL_OUTPUT_SUBPIXEL_UNKNOWN, "", "", desc.transform);
+    monitor.wl_mode(nullptr, WL_OUTPUT_MODE_CURRENT, desc.width, desc.height, desc.refresh_mhz);
+    monitor.wl_scale(nullptr, desc.scale);
+    monitor.xdg_position(nullptr, desc.x, desc.y);
+    monitor.xdg_size(nullptr, desc.logical_width, desc.logical_height);
+    monitor.wl_done(nullptr);
+  }
+
+  /**
+   * @brief Two outputs side by side, the first one captured.
+   */
+  struct two_outputs_t {
+    wl::interface_t interface;  ///< Registry state.
+    wl::output_watch_t watch;  ///< Watch of the first output.
+
+    two_outputs_t() {
+      interface.monitors.emplace_back(std::make_unique<wl::monitor_t>(nullptr));
+      interface.monitors.emplace_back(std::make_unique<wl::monitor_t>(nullptr));
+      describe(captured(), {});
+      describe(other(), {.x = 1920, .width = 1280, .height = 720, .logical_width = 1280, .logical_height = 720});
+      watch = wl::watch_output(interface, captured());
+    }
+
+    wl::monitor_t &captured() {
+      return *interface.monitors[0];
+    }
+
+    wl::monitor_t &other() {
+      return *interface.monitors[1];
+    }
+
+    std::optional<std::string_view> change() {
+      return wl::output_change(watch, interface);
+    }
+  };
+
+  /**
+   * @brief A display that only carries geometry.
+   */
+  struct fake_display_t: platf::display_t {
+    platf::capture_e capture(const push_captured_image_cb_t &, const pull_free_image_cb_t &, bool *) override {
+      return platf::capture_e::capture_error;
+    }
+
+    std::shared_ptr<platf::img_t> alloc_img() override {
+      return nullptr;
+    }
+
+    int dummy_img(platf::img_t *) override {
+      return 0;
+    }
+  };
+}  // namespace
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, SameEventsAgainAreNoChange) {
+  two_outputs_t outputs;
+  EXPECT_FALSE(outputs.change());
+
+  // Compositors repeat the whole description (and done) on many occasions.
+  describe(outputs.captured(), {});
+  describe(outputs.other(), {.x = 1920, .width = 1280, .height = 720, .logical_width = 1280, .logical_height = 720});
+  EXPECT_FALSE(outputs.change());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, NoWatchIsNoChange) {
+  wl::interface_t interface;
+  EXPECT_FALSE(wl::output_change({}, interface));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, RemovalIsAChange) {
+  two_outputs_t outputs;
+  outputs.captured().removed = true;
+  EXPECT_EQ(outputs.change(), "the output was removed");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, NewRefreshRateIsAChange) {
+  two_outputs_t outputs;
+  describe(outputs.captured(), {.refresh_mhz = 59940});
+  EXPECT_EQ(outputs.change(), "the output's mode changed");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, NewModeIsAChange) {
+  two_outputs_t outputs;
+  describe(outputs.captured(), {.width = 2560, .height = 1440, .logical_width = 2560, .logical_height = 1440});
+  EXPECT_EQ(outputs.change(), "the output's mode changed");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, FractionalScaleChangeIsAChange) {
+  two_outputs_t outputs;
+  describe(outputs.captured(), {.logical_width = 1536, .logical_height = 864, .scale = 2});
+  ASSERT_TRUE(outputs.change());
+
+  // 1.25 to 1.5: the integer scale stays 2, only the logical size tells.
+  outputs.watch = wl::watch_output(outputs.interface, outputs.captured());
+  describe(outputs.captured(), {.logical_width = 1280, .logical_height = 720, .scale = 2});
+  EXPECT_EQ(outputs.change(), "the output's scale changed");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, HalfTurnIsAChange) {
+  two_outputs_t outputs;
+  // A 180 degree turn keeps every size.
+  describe(outputs.captured(), {.transform = WL_OUTPUT_TRANSFORM_180});
+  EXPECT_EQ(outputs.change(), "the output's transform changed");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, MoveIsAChange) {
+  two_outputs_t outputs;
+  describe(outputs.captured(), {.y = 100});
+  EXPECT_EQ(outputs.change(), "the output moved");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, LayoutChangeOfAnotherOutputIsAChange) {
+  two_outputs_t outputs;
+  describe(outputs.other(), {.x = 1920, .width = 2560, .height = 1440, .logical_width = 2560, .logical_height = 1440});
+  EXPECT_EQ(outputs.change(), "the output layout changed");
+
+  outputs.watch = wl::watch_output(outputs.interface, outputs.captured());
+  outputs.other().removed = true;
+  EXPECT_EQ(outputs.change(), "the output layout changed");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, OutputInsideTheLayoutIsNoChange) {
+  two_outputs_t outputs;
+  // A new output that is not described yet, and one inside the bounds, leave the layout as it was.
+  outputs.interface.monitors.emplace_back(std::make_unique<wl::monitor_t>(nullptr));
+  EXPECT_FALSE(outputs.change());
+  describe(*outputs.interface.monitors.back(), {.x = 1920, .y = 0, .width = 640, .height = 480, .logical_width = 640, .logical_height = 480});
+  EXPECT_FALSE(outputs.change());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, CaptureSetupAndWatchUseTheSameOutputs) {
+  // The second output went away during the roundtrips that set capture up.
+  two_outputs_t outputs;
+  outputs.other().removed = true;
+  outputs.watch = wl::watch_output(outputs.interface, outputs.captured());
+
+  fake_display_t display;
+  wl::apply_output_geometry(display, outputs.interface, 0, {1920, 1080});
+  EXPECT_EQ(display.env_width, 1920);
+  EXPECT_EQ(display.env_width, outputs.watch.layout.width);
+  EXPECT_EQ(display.env_height, outputs.watch.layout.height);
+  EXPECT_FALSE(outputs.change());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(WaylandOutputWatchTest, CaptureIntervalMatchesAFractionalRefreshRate) {
+  video::config_t config {};
+  config.framerate = 60;
+  EXPECT_EQ(wl::capture_interval(config, 59940), std::chrono::nanoseconds {16'683'350});
+  EXPECT_EQ(wl::capture_interval(config, 60000), std::chrono::nanoseconds {16'666'666});
+
+  // An exact rate from the client is kept.
+  config.framerateX100 = 6000;
+  EXPECT_EQ(wl::capture_interval(config, 59940), std::chrono::nanoseconds {16'666'666});
 }
 
 TEST(WaylandCaptureTest, ExportsEveryGbmBufferPlane) {

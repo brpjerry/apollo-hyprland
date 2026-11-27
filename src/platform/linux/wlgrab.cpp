@@ -363,8 +363,6 @@ namespace wl {
      * @return 0 on success; nonzero or negative platform status on failure.
      */
     int init(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
-      // calculate frame interval we should capture at
-      delay = ::video::capture_frame_interval(config);
       const AVRational fps = ::video::framerate_to_rational(config);
       if (fps.den != 1) {
         BOOST_LOG(info) << "[wlgrab] Requested frame rate [" << fps.num << "/" << fps.den << ", approx. " << av_q2d(fps) << " fps]";
@@ -415,6 +413,9 @@ namespace wl {
 
       output = monitor->output;
 
+      // The frame interval to capture at, matched to a fractional refresh rate of the output.
+      delay = capture_interval(config, monitor->refresh_mhz);
+
       // copy_with_damage arrived in version 2 of the protocol. With it the
       // compositor answers when the output has a new picture, so capture
       // follows the compositor's frames instead of sampling them on a clock
@@ -434,13 +435,18 @@ namespace wl {
 
       apply_monitor_geometry(*this, *monitor);
       this->monitor = monitor;
+      watch = watch_output(interface, *monitor);
 
       // HDR state and metadata of the output. Without wp-color-management the output is treated as SDR.
       color.open(monitor->name);
 
       platf::desktop_geometry_t desktop;
       for (const auto &monitor_entry : interface.monitors) {
-        desktop.add(monitor_entry->viewport);
+        // The same outputs as output_change() watches (layout_geometries()).
+        const bool described = monitor_entry->geometry.logical_width > 0 || !monitor_entry->listening();
+        if (!monitor_entry->removed && described) {
+          desktop.add(monitor_entry->viewport);
+        }
       }
       desktop.apply(*this);
 
@@ -525,6 +531,10 @@ namespace wl {
         if (remaining_time_ms.count() < 0 || !display.dispatch(remaining_time_ms)) {
           return platf::capture_e::timeout;
         }
+        // The output listeners ran: a picture that is not changing would not end this wait for up to the timeout.
+        if (output_changed()) {
+          return platf::capture_e::reinit;
+        }
       } while (dmabuf.status == dmabuf_t::WAITING);
 
       auto current_frame = dmabuf.current_frame;
@@ -570,8 +580,21 @@ namespace wl {
       }
 
       if (should_wait_for_damage_request(next_request, std::chrono::steady_clock::now(), delay)) {
-        std::this_thread::sleep_until(next_request);
+        platf::precise_sleep_until(next_request);
       }
+    }
+
+    /**
+     * @brief Tell whether the compositor removed or changed the captured output since init(), and log what changed.
+     *
+     * @return `true` when capture has to be reinitialized.
+     */
+    bool output_changed() {
+      if (auto change = output_change(watch, interface)) {
+        BOOST_LOG(info) << "[wlgrab] "sv << *change << "; reinitializing capture"sv;
+        return true;
+      }
+      return false;
     }
 
     /**
@@ -596,6 +619,9 @@ namespace wl {
         // with the new colorspace.
         if (color.poll_changed()) {
           BOOST_LOG(info) << "[wlgrab] Output colors changed; reinitializing capture"sv;
+          return reinit;
+        }
+        if (output_changed()) {
           return reinit;
         }
 
@@ -650,6 +676,7 @@ namespace wl {
 
     wl_output *output;  ///< Wayland output selected for capture.
     wl::monitor_t *monitor {};  ///< Monitor selected for capture.
+    output_watch_t watch;  ///< State of the output and the layout at init(), to notice changes.
 
     capture_stats_t stats;  ///< Capture counters (capture_stats()).
     output_color_t color;  ///< The output's color description (HDR state and metadata).

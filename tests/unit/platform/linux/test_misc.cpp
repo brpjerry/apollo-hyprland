@@ -11,19 +11,29 @@
 
   // standard includes
   #include <array>
+  #include <atomic>
+  #include <cerrno>
+  #include <chrono>
+  #include <condition_variable>
   #include <cstdlib>
   #include <cstring>
-  #include <vector>
+  #include <mutex>
   #include <optional>
   #include <string>
+  #include <thread>
+  #include <vector>
 
   // system includes
   #include <arpa/inet.h>
   #include <linux/rtnetlink.h>
+  #include <sys/prctl.h>
+  #include <sys/resource.h>
+  #include <unistd.h>
 
   // local includes
   #include "src/config.h"
   #include "src/logging.h"
+  #include "src/platform/common.h"
   #include "src/platform/linux/misc.h"
   #include "src/utility.h"
 
@@ -236,6 +246,276 @@ TEST(GatewayRouteTest, OnlyTheDefaultRouteCounts) {
   append_netlink_message(datagram, RTM_NEWROUTE, route_payload("192.168.1.1", "192.168.1.50"));
   EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), datagram.size(), local_ip), platf::route_scan_e::found);
   EXPECT_EQ(local_ip, "192.168.1.50");
+}
+
+namespace {
+  namespace tp = platf::thread_priority;
+
+  /**
+   * @brief Fake system calls for thread priority requests, counting how often each is used.
+   */
+  struct fake_priority_backend_t {
+    tp::rtkit_result_e rtkit_result {tp::rtkit_result_e::unavailable};  ///< What RTKit answers.
+    int lowest_allowed {0};  ///< Lowest nice level set_nice accepts; lower ones fail with EACCES.
+    int floor {20};  ///< What nice_floor reports.
+    int current {0};  ///< What current_nice reports.
+    std::chrono::milliseconds rtkit_delay {0};  ///< How long RTKit takes to answer.
+    std::atomic<int> rtkit_calls {0};  ///< RTKit requests made.
+    std::mutex mutex;  ///< Guards set_nice_calls: several threads may request at once.
+    std::vector<int> set_nice_calls;  ///< Nice levels passed to set_nice.
+
+    /**
+     * @brief Backend whose calls go to this fake.
+     *
+     * @return Backend for an adjuster.
+     */
+    tp::backend_t backend() {
+      return {
+        .rtkit = [this](pid_t, int, std::string &error) {
+          ++rtkit_calls;
+          std::this_thread::sleep_for(rtkit_delay);
+          error = "The name is not activatable";
+          return rtkit_result;
+        },
+        .set_nice = [this](pid_t, int nice) {
+          std::lock_guard lock {mutex};
+          set_nice_calls.push_back(nice);
+          return nice < lowest_allowed ? EACCES : 0;
+        },
+        .nice_floor = [this]() {
+          return floor;
+        },
+        .current_nice = [this](pid_t) {
+          return current;
+        },
+      };
+    }
+  };
+}  // namespace
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, RtkitSetsHigherPriority) {
+  fake_priority_backend_t fake;
+  fake.rtkit_result = tp::rtkit_result_e::ok;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  auto outcome = adjuster.apply(1, -10, "test");
+  EXPECT_EQ(outcome.method, tp::method_e::rtkit);
+  EXPECT_EQ(outcome.nice, -10);
+  EXPECT_EQ(fake.rtkit_calls.load(), 1);
+  EXPECT_TRUE(fake.set_nice_calls.empty());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, MissingRtkitIsAskedOnlyOnce) {
+  fake_priority_backend_t fake;
+  fake.lowest_allowed = -20;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, -10, "first").method, tp::method_e::setpriority);
+  EXPECT_EQ(adjuster.apply(2, -15, "second").method, tp::method_e::setpriority);
+  EXPECT_EQ(fake.rtkit_calls.load(), 1);
+  EXPECT_EQ(fake.set_nice_calls, (std::vector<int> {-10, -15}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, RtkitRefusalIsRetriedOnTheNextThread) {
+  fake_priority_backend_t fake;
+  fake.rtkit_result = tp::rtkit_result_e::failed;
+  fake.lowest_allowed = -20;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  adjuster.apply(1, -10, "first");
+  adjuster.apply(2, -10, "second");
+  EXPECT_EQ(fake.rtkit_calls.load(), 2);
+  EXPECT_EQ(fake.set_nice_calls.size(), 2u);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, RefusalWarnsOncePerProcess) {
+  fake_priority_backend_t fake;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  auto first = adjuster.apply(1, -10, "first");
+  auto second = adjuster.apply(2, -15, "second");
+  auto third = adjuster.apply(3, -10, "third");
+  EXPECT_EQ(first.method, tp::method_e::failed);
+  EXPECT_TRUE(first.warned);
+  EXPECT_EQ(second.method, tp::method_e::failed);
+  EXPECT_FALSE(second.warned);
+  EXPECT_FALSE(third.warned);
+  EXPECT_TRUE(log_checker::line_contains("test_sunshine.log", "Could not raise the priority of thread [first] to nice -10"));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, ClampsToRlimitNice) {
+  fake_priority_backend_t fake;
+  fake.lowest_allowed = -5;
+  fake.floor = -5;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  auto outcome = adjuster.apply(1, -15, "test");
+  EXPECT_EQ(outcome.method, tp::method_e::clamped);
+  EXPECT_EQ(outcome.nice, -5);
+  EXPECT_FALSE(outcome.warned);
+  EXPECT_EQ(fake.set_nice_calls, (std::vector<int> {-15, -5}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, NoClampBelowAnInheritedPriority) {
+  // A process started at nice -10, with a limit of -5: a thread that asks for -15 keeps the -10 it inherited.
+  fake_priority_backend_t fake;
+  fake.lowest_allowed = -5;
+  fake.floor = -5;
+  fake.current = -10;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, -15, "test").method, tp::method_e::failed);
+  EXPECT_EQ(fake.set_nice_calls, (std::vector<int> {-15}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, ThreadsStartingTogetherAskMissingRtkitOnce) {
+  fake_priority_backend_t fake;
+  fake.lowest_allowed = -20;
+  fake.rtkit_delay = std::chrono::milliseconds(50);
+  tp::adjuster_t adjuster {fake.backend()};
+  std::mutex mutex;
+
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 4; ++i) {
+    threads.emplace_back([&adjuster, &mutex, i]() {
+      auto outcome = adjuster.apply(i + 1, -10, "test");
+      std::lock_guard lock {mutex};
+      EXPECT_EQ(outcome.method, tp::method_e::setpriority);
+    });
+  }
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(fake.rtkit_calls.load(), 1);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, RtkitIsUsedOnceATransientFailurePasses) {
+  fake_priority_backend_t fake;
+  fake.rtkit_result = tp::rtkit_result_e::failed;
+  fake.lowest_allowed = -20;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, -10, "first").method, tp::method_e::setpriority);
+  fake.rtkit_result = tp::rtkit_result_e::ok;
+  EXPECT_EQ(adjuster.apply(2, -10, "second").method, tp::method_e::rtkit);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, NoClampWhenRlimitNiceAllowsNothing) {
+  fake_priority_backend_t fake;
+  fake.floor = 0;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, -10, "test").method, tp::method_e::failed);
+  EXPECT_EQ(fake.set_nice_calls, (std::vector<int> {-10}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, LowerPriorityDoesNotAskRtkit) {
+  fake_priority_backend_t fake;
+  fake.rtkit_result = tp::rtkit_result_e::ok;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, 10, "test").method, tp::method_e::setpriority);
+  EXPECT_EQ(fake.rtkit_calls.load(), 0);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, SystemBackendSetsOnlyTheGivenThread) {
+  const auto backend = tp::system_backend();
+  const int main_nice = getpriority(PRIO_PROCESS, static_cast<id_t>(gettid()));
+  if (main_nice >= 19) {
+    GTEST_SKIP() << "The test runs at the lowest priority already";
+  }
+
+  // Raising the nice level needs no privilege. It is done from this thread to a worker that waits, so that a backend
+  // which ignored the thread id (and set the calling thread) would fail.
+  std::mutex mutex;
+  std::condition_variable cv;
+  pid_t worker_tid = 0;
+  bool done = false;
+  int worker_nice = -100;
+  std::thread worker {[&]() {
+    std::unique_lock lock {mutex};
+    worker_tid = gettid();
+    cv.notify_all();
+    cv.wait(lock, [&]() {
+      return done;
+    });
+    worker_nice = getpriority(PRIO_PROCESS, static_cast<id_t>(gettid()));
+  }};
+  int status = -1;
+  {
+    std::unique_lock lock {mutex};
+    cv.wait(lock, [&]() {
+      return worker_tid != 0;
+    });
+    status = backend.set_nice(worker_tid, main_nice + 1);
+    EXPECT_EQ(backend.current_nice(worker_tid), main_nice + 1);
+    done = true;
+    cv.notify_all();
+  }
+  worker.join();
+
+  EXPECT_EQ(status, 0);
+  EXPECT_EQ(worker_nice, main_nice + 1);
+  EXPECT_EQ(getpriority(PRIO_PROCESS, static_cast<id_t>(gettid())), main_nice);
+  EXPECT_EQ(backend.current_nice(gettid()), main_nice);
+  const int floor = backend.nice_floor();
+  EXPECT_GE(floor, -20);
+  EXPECT_LE(floor, 20);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(PreciseSleepTest, NeverReturnsBeforeTheDeadline) {
+  for (int i = 0; i < 200; ++i) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds((i % 10) * 50);
+    platf::precise_sleep_until(deadline);
+    ASSERT_GE(std::chrono::steady_clock::now(), deadline) << "sleep " << i;
+  }
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(PreciseSleepTest, SetsTheTimerSlackOfItsThread) {
+  int slack = -1;
+  std::thread worker {[&]() {
+    // The worker inherits the slack of this thread, which earlier sleeps may have set to 1 ns already.
+    prctl(PR_SET_TIMERSLACK, 50'000UL, 0UL, 0UL, 0UL);
+    platf::precise_sleep_until(std::chrono::steady_clock::now() + std::chrono::microseconds(100));
+    slack = prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0);
+  }};
+  worker.join();
+  EXPECT_EQ(slack, 1);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(PreciseSleepTest, PassedDeadlineReturnsAtOnce) {
+  const auto start = std::chrono::steady_clock::now();
+  platf::precise_sleep_until(start - std::chrono::seconds(1));
+  platf::precise_sleep_until(std::chrono::steady_clock::time_point::min());
+  auto timer = platf::create_high_precision_timer();
+  ASSERT_TRUE(timer);
+  EXPECT_TRUE(static_cast<bool>(*timer));
+  timer->sleep_for(std::chrono::nanoseconds(-1'000'000));
+  // A wait of a second (or forever) is what this catches; the headroom is for preemption.
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(250));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(PreciseSleepTest, TimerSleepsForTheDuration) {
+  auto timer = platf::create_high_precision_timer();
+  ASSERT_TRUE(timer);
+  const auto start = std::chrono::steady_clock::now();
+  timer->sleep_for(std::chrono::microseconds(500));
+  EXPECT_GE(std::chrono::steady_clock::now() - start, std::chrono::microseconds(500));
 }
 
 #endif  // __linux__

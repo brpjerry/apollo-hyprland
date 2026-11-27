@@ -13,6 +13,7 @@
 #endif
 
 // standard includes
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstring>
@@ -20,6 +21,7 @@
 #include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -32,9 +34,11 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <netinet/udp.h>
+#include <pthread.h>
 #include <pwd.h>
 #include <sys/resource.h>  // For setpriority
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #if !defined(__FreeBSD__)
@@ -709,6 +713,150 @@ namespace platf {
     }
   }
 
+  namespace thread_priority {
+    adjuster_t::adjuster_t(backend_t backend):
+        backend_ {std::move(backend)} {
+    }
+
+    outcome_t adjuster_t::apply(pid_t tid, int nice, std::string_view thread_name) {
+      // Streaming threads start together: the first one finds out whether RTKit is there while the others wait.
+      if (nice < 0) {
+        std::optional<outcome_t> first;
+        std::call_once(first_raise_, [&]() {
+          first = apply_request(tid, nice, thread_name);
+        });
+        if (first) {
+          return *first;
+        }
+      }
+      return apply_request(tid, nice, thread_name);
+    }
+
+    outcome_t adjuster_t::apply_request(pid_t tid, int nice, std::string_view thread_name) {
+      // Only a higher priority than the default needs RTKit; anyone may lower the priority of their own threads.
+      if (nice < 0 && !rtkit_unavailable_.load(std::memory_order_relaxed)) {
+        std::string error;
+        switch (backend_.rtkit(tid, nice, error)) {
+          case rtkit_result_e::ok:
+            BOOST_LOG(debug) << "RTKit set thread ["sv << thread_name << "] to nice "sv << nice;
+            return {method_e::rtkit, nice, false};
+          case rtkit_result_e::unavailable:
+            if (!rtkit_unavailable_.exchange(true)) {
+              BOOST_LOG(info) << "RTKit is not available ("sv << error << "); thread priorities are set with setpriority()"sv;
+            }
+            break;
+          case rtkit_result_e::failed:
+            BOOST_LOG(debug) << "RTKit could not set thread ["sv << thread_name << "] to nice "sv << nice << ": "sv << error;
+            break;
+        }
+      }
+
+      int status = backend_.set_nice(tid, nice);
+      if (status == 0) {
+        BOOST_LOG(debug) << "setpriority set thread ["sv << thread_name << "] to nice "sv << nice;
+        return {method_e::setpriority, nice, false};
+      }
+
+      // RLIMIT_NICE may allow part of the way (LimitNICE= in a systemd unit, "nice" in limits.conf).
+      if (status == EACCES || status == EPERM) {
+        // Never below the level the thread has (inherited from a process started at a higher priority, say).
+        if (const int floor = backend_.nice_floor(); floor > nice && floor < 0 && floor < backend_.current_nice(tid) && backend_.set_nice(tid, floor) == 0) {
+          BOOST_LOG(debug) << "setpriority set thread ["sv << thread_name << "] to nice "sv << floor << ", the limit of RLIMIT_NICE, instead of "sv << nice;
+          return {method_e::clamped, floor, false};
+        }
+      }
+
+      if (!warned_.exchange(true)) {
+        BOOST_LOG(warning) << "Could not raise the priority of thread ["sv << thread_name << "] to nice "sv << nice << ": "sv << std::strerror(status)
+                           << ". The thread keeps its current priority. Installing rtkit, or granting CAP_SYS_NICE or an RLIMIT_NICE "sv
+                           << "(LimitNICE= in the service unit), lets them run ahead of other work. Further failures are logged at debug level."sv;
+        return {method_e::failed, 0, true};
+      }
+      BOOST_LOG(debug) << "setpriority failed for thread ["sv << thread_name << "] nice "sv << nice << ": "sv << std::strerror(status);
+      return {method_e::failed, 0, false};
+    }
+
+    namespace {
+      rtkit_result_e rtkit_make_high_priority(pid_t tid, int nice, std::string &error) {
+        g_autoptr(GError) err = nullptr;
+        g_autoptr(GDBusConnection) conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM, nullptr, &err);
+        if (!conn) {
+          error = err ? err->message : "no system bus";
+          // No bus socket, or nobody listening on it, stays so. Anything else (out of file descriptors, say) may pass.
+          if (!err || g_error_matches(err, G_IO_ERROR, G_IO_ERROR_NOT_FOUND) || g_error_matches(err, G_IO_ERROR, G_IO_ERROR_CONNECTION_REFUSED)) {
+            return rtkit_result_e::unavailable;
+          }
+          return rtkit_result_e::failed;
+        }
+
+        // A bounded wait: the default D-Bus timeout is 25 seconds, and this runs as streaming threads start.
+        constexpr int timeout_ms = 1000;
+        g_autoptr(GVariant) reply = g_dbus_connection_call_sync(
+          conn,
+          "org.freedesktop.RealtimeKit1",
+          "/org/freedesktop/RealtimeKit1",
+          "org.freedesktop.RealtimeKit1",
+          "MakeThreadHighPriority",
+          g_variant_new("(ti)", (guint64) tid, (gint32) nice),
+          nullptr,
+          G_DBUS_CALL_FLAGS_NONE,
+          timeout_ms,
+          nullptr,
+          &err
+        );
+        if (reply) {
+          return rtkit_result_e::ok;
+        }
+
+        error = err ? err->message : "unknown error";
+        if (err && (g_error_matches(err, G_DBUS_ERROR, G_DBUS_ERROR_SERVICE_UNKNOWN) || g_error_matches(err, G_DBUS_ERROR, G_DBUS_ERROR_NAME_HAS_NO_OWNER))) {
+          return rtkit_result_e::unavailable;
+        }
+        return rtkit_result_e::failed;
+      }
+
+      id_t priority_target(pid_t tid) {
+        // On Linux the nice level belongs to the thread, so PRIO_PROCESS with a thread id names that thread alone.
+#if defined(__FreeBSD__)
+        return 0;
+#else
+        return static_cast<id_t>(tid);
+#endif
+      }
+
+      int set_thread_nice(pid_t tid, int nice) {
+        return setpriority(PRIO_PROCESS, priority_target(tid), nice) == -1 ? errno : 0;
+      }
+
+      int thread_nice(pid_t tid) {
+        // getpriority() returns -1 for nice -1 too: only errno tells a failure.
+        errno = 0;
+        const int value = getpriority(PRIO_PROCESS, priority_target(tid));
+        return errno == 0 ? value : -20;
+      }
+
+      int rlimit_nice_floor() {
+        rlimit limit {};
+        if (getrlimit(RLIMIT_NICE, &limit) != 0) {
+          return 20;
+        }
+        if (limit.rlim_cur == RLIM_INFINITY) {
+          return -20;
+        }
+        return 20 - static_cast<int>(std::min<rlim_t>(limit.rlim_cur, 40));
+      }
+    }  // namespace
+
+    backend_t system_backend() {
+      return {
+        .rtkit = rtkit_make_high_priority,
+        .set_nice = set_thread_nice,
+        .nice_floor = rlimit_nice_floor,
+        .current_nice = thread_nice,
+      };
+    }
+  }  // namespace thread_priority
+
   /**
    * @brief Apply the requested scheduling priority to the current thread.
    */
@@ -718,63 +866,31 @@ namespace platf {
 #else
     pid_t tid = syscall(SYS_gettid);
 #endif
-    bool success = false;
-    int32_t linux_nice;
+    int nice;
 
     using enum thread_priority_e;
     switch (priority) {
       case low:
-        linux_nice = 10;
+        nice = 10;
         break;
       case normal:
-        linux_nice = 0;
+        nice = 0;
         break;
       case high:
-        linux_nice = -10;
+        nice = -10;
         break;
       case critical:
-        linux_nice = -15;
+        nice = -15;
         break;
       default:
         BOOST_LOG(debug) << "Unknown thread priority: "sv << std::to_underlying(priority);
         return;
     }
 
-    g_autoptr(GError) err = nullptr;
-    GDBusConnection *conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM, nullptr, &err);
-
-    if (conn) {
-      g_dbus_connection_call_sync(
-        conn,
-        "org.freedesktop.RealtimeKit1",
-        "/org/freedesktop/RealtimeKit1",
-        "org.freedesktop.RealtimeKit1",
-        "MakeThreadHighPriority",
-        g_variant_new("(ti)", (guint64) tid, linux_nice),
-        nullptr,
-        G_DBUS_CALL_FLAGS_NONE,
-        -1,
-        nullptr,
-        &err
-      );
-
-      if (!err) {
-        success = true;
-        BOOST_LOG(debug) << "RTKit: Successfully set priority to "sv << linux_nice;
-      } else {
-        BOOST_LOG(debug) << "RTKit: Could not set priority: "sv << err->message;
-        g_clear_error(&err);
-      }
-    }
-
-    if (!success) {
-      // This will run on FreeBSD OR Linux if RTKit failed/was missing
-      if (setpriority(PRIO_PROCESS, 0, linux_nice) == -1) {
-        BOOST_LOG(warning) << "setpriority failed for nice "sv << linux_nice << ": "sv << strerror(errno);
-      } else {
-        BOOST_LOG(debug) << "setpriority success for nice "sv << linux_nice;
-      }
-    }
+    static thread_priority::adjuster_t adjuster {thread_priority::system_backend()};
+    std::array<char, 16> name {};
+    pthread_getname_np(pthread_self(), name.data(), name.size());
+    adjuster.apply(tid, nice, name.data());
   }
 
   void set_thread_name(std::string_view name) {
@@ -1843,13 +1959,53 @@ namespace platf {
     return std::make_unique<deinit_t>();
   }
 
+  void use_precise_timers() {
+#if !defined(__FreeBSD__)
+    // The default slack of 50 us is added to every timed wait of the thread. Set once per thread.
+    thread_local const bool slack_set = prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL) == 0;
+    (void) slack_set;
+#endif
+  }
+
+  void precise_sleep_until(std::chrono::steady_clock::time_point deadline) {
+    use_precise_timers();
+
+    // steady_clock is CLOCK_MONOTONIC with libstdc++ and libc++ on Linux and FreeBSD.
+    static_assert(std::chrono::steady_clock::is_steady);
+    // Compared before subtracting, which would overflow for a deadline near time_point::min().
+    if (deadline > std::chrono::steady_clock::now() + precise_sleep_spin) {
+      const auto wake = deadline - precise_sleep_spin;
+      const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wake.time_since_epoch()).count();
+      const timespec ts {.tv_sec = static_cast<time_t>(ns / 1'000'000'000), .tv_nsec = static_cast<long>(ns % 1'000'000'000)};
+      while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR) {
+        // A signal handler ran; the deadline is absolute, so sleep on.
+      }
+    }
+
+    while (std::chrono::steady_clock::now() < deadline) {
+#if defined(__x86_64__) || defined(__i386__)
+      __builtin_ia32_pause();
+#elif defined(__aarch64__)
+      asm volatile("yield");
+#endif
+    }
+  }
+
   /**
-   * @brief Explicitly linux high-precision timer implementation backed by `timerfd`.
+   * @brief High-precision timer for Linux: precise_sleep_until() the end of the duration.
    */
   class linux_high_precision_timer: public high_precision_timer {
   public:
+    /**
+     * @brief Sleep for a duration with microsecond precision.
+     *
+     * @param duration Time to sleep. Zero or negative returns at once.
+     */
     void sleep_for(const std::chrono::nanoseconds &duration) override {
-      std::this_thread::sleep_for(duration);
+      if (duration <= std::chrono::nanoseconds::zero()) {
+        return;
+      }
+      precise_sleep_until(std::chrono::steady_clock::now() + duration);
     }
 
     explicit operator bool() override {
