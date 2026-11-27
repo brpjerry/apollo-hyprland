@@ -82,7 +82,9 @@ TEST_F(WaylandHdrLiveTest, VideoMemoryFramesOfAnHdrOutputBecomePq) {
   config.width = 1280;
   config.height = 720;
   config.framerate = 60;
-  auto disp = wl::make_ext_display(platf::mem_type_e::cuda, output->name, config, {});
+  // VAAPI's memory type always captures dma-bufs (CUDA's falls back to system memory when the capture GPU isn't the
+  // CUDA device). No VAAPI encoder is opened: the test runs the GL converter itself.
+  auto disp = wl::make_ext_display(platf::mem_type_e::vaapi, output->name, config, {});
   ASSERT_TRUE(disp);
   EXPECT_TRUE(disp->is_hdr());
   EXPECT_TRUE(disp->hdr_supported());
@@ -107,7 +109,9 @@ TEST_F(WaylandHdrLiveTest, VideoMemoryFramesOfAnHdrOutputBecomePq) {
   );
   ASSERT_EQ(status, platf::capture_e::ok);
   ASSERT_TRUE(frame);
-  auto &descriptor = static_cast<egl::img_descriptor_t &>(*frame);
+  auto *captured_descriptor = dynamic_cast<egl::img_descriptor_t *>(frame.get());
+  ASSERT_TRUE(captured_descriptor) << "not a dma-buf frame";
+  auto &descriptor = *captured_descriptor;
   EXPECT_FLOAT_EQ(descriptor.sdr_white_nits, 203.0f);
   std::cout << output->name << ": captured format " << util::hex(descriptor.sd.fourcc).to_string_view() << std::endl;
 

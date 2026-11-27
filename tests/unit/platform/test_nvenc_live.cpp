@@ -14,6 +14,11 @@
   #include "pq_reference.h"
   #include "wayland_test_output.h"
 
+  #include <algorithm>
+  #include <array>
+  #include <cstring>
+  #include <ffnvcodec/dynlink_loader.h>
+  #include <functional>
   #include <src/nvenc/nvenc_encoder.h>
   #include <src/platform/common.h>
   #include <src/platform/linux/graphics.h>
@@ -21,6 +26,7 @@
   #include <src/platform/linux/wayland.h>
   #include <src/video.h>
   #include <src/video_colorspace.h>
+  #include <vector>
 
 extern "C" {
   #include <libavcodec/avcodec.h>
@@ -29,6 +35,7 @@ extern "C" {
 
 namespace platf {
   std::vector<std::string> ext_display_names();
+  std::shared_ptr<display_t> wl_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 }  // namespace platf
 
 namespace {
@@ -102,19 +109,105 @@ namespace {
   };
 
   /**
-   * @brief Capture one frame of a display.
+   * @brief What the GPU's NVENC can do, asked of the driver directly rather than through the code under test.
+   */
+  struct nvenc_caps_t {
+    bool available = false;  ///< An NVENC session opens on CUDA device 0.
+    std::array<bool, 3> codec {};  ///< H.264, HEVC and AV1 can be encoded.
+    std::array<bool, 3> yuv444 {};  ///< 4:4:4 per codec.
+    std::array<bool, 3> ten_bit {};  ///< 10-bit per codec.
+    std::array<bool, 3> invalidation {};  ///< Reference picture invalidation with multiple reference frames, per codec.
+  };
+
+  /**
+   * @brief Query one capability of a codec.
+   *
+   * @param api NVENC functions.
+   * @param session Open session.
+   * @param codec Codec GUID.
+   * @param cap Capability.
+   * @return Its value, 0 on error.
+   */
+  int encode_cap(NV_ENCODE_API_FUNCTION_LIST &api, void *session, GUID codec, NV_ENC_CAPS cap) {
+    NV_ENC_CAPS_PARAM param {.version = NV_ENC_CAPS_PARAM_VER};
+    param.capsToQuery = cap;
+    int value = 0;
+    return api.nvEncGetEncodeCaps(session, codec, &param, &value) == NV_ENC_SUCCESS ? value : 0;
+  }
+
+  /**
+   * @brief Open an NVENC session of its own on CUDA device 0 and read the GPU's capabilities.
+   *
+   * @return Capabilities; `available` is false without a CUDA device or NVENC driver.
+   */
+  nvenc_caps_t query_nvenc_caps() {
+    nvenc_caps_t caps;
+    CudaFunctions *cu = nullptr;
+    NvencFunctions *nv = nullptr;
+    if (cuda_load_functions(&cu, nullptr) == 0 && nvenc_load_functions(&nv, nullptr) == 0) {
+      CUdevice device = 0;
+      CUcontext context = nullptr;
+      int count = 0;
+      if (cu->cuInit(0) == CUDA_SUCCESS && cu->cuDeviceGetCount(&count) == CUDA_SUCCESS && count > 0 && cu->cuDeviceGet(&device, 0) == CUDA_SUCCESS && cu->cuCtxCreate(&context, 0, device) == CUDA_SUCCESS) {
+        NV_ENCODE_API_FUNCTION_LIST api {.version = NV_ENCODE_API_FUNCTION_LIST_VER};
+        NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS params {.version = NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER};
+        params.device = context;
+        params.deviceType = NV_ENC_DEVICE_TYPE_CUDA;
+        params.apiVersion = NVENCAPI_VERSION;
+        void *session = nullptr;
+        if (nv->NvEncodeAPICreateInstance(&api) == NV_ENC_SUCCESS && api.nvEncOpenEncodeSessionEx(&params, &session) == NV_ENC_SUCCESS) {
+          caps.available = true;
+          std::uint32_t guid_count = 0;
+          api.nvEncGetEncodeGUIDCount(session, &guid_count);
+          std::vector<GUID> guids(guid_count);
+          api.nvEncGetEncodeGUIDs(session, guids.data(), guid_count, &guid_count);
+          const std::array<GUID, 3> codecs {NV_ENC_CODEC_H264_GUID, NV_ENC_CODEC_HEVC_GUID, NV_ENC_CODEC_AV1_GUID};
+          for (std::size_t x = 0; x < codecs.size(); ++x) {
+            caps.codec[x] = std::ranges::any_of(guids, [&](const GUID &guid) {
+              return std::memcmp(&guid, &codecs[x], sizeof(GUID)) == 0;
+            });
+            if (caps.codec[x]) {
+              caps.yuv444[x] = encode_cap(api, session, codecs[x], NV_ENC_CAPS_SUPPORT_YUV444_ENCODE);
+              caps.ten_bit[x] = encode_cap(api, session, codecs[x], NV_ENC_CAPS_SUPPORT_10BIT_ENCODE);
+              caps.invalidation[x] = encode_cap(api, session, codecs[x], NV_ENC_CAPS_SUPPORT_REF_PIC_INVALIDATION) &&
+                                     encode_cap(api, session, codecs[x], NV_ENC_CAPS_SUPPORT_MULTIPLE_REF_FRAMES);
+            }
+          }
+          api.nvEncDestroyEncoder(session);
+        }
+        cu->cuCtxDestroy(context);
+      }
+    }
+    nvenc_free_functions(&nv);
+    cuda_free_functions(&cu);
+    return caps;
+  }
+
+  /**
+   * @brief The GPU's NVENC capabilities, queried once.
+   *
+   * @return Capabilities of CUDA device 0.
+   */
+  const nvenc_caps_t &nvenc_caps() {
+    static const auto caps = query_nvenc_caps();
+    return caps;
+  }
+
+  /**
+   * @brief Capture frames of a display into fresh buffers until one is wanted.
    *
    * @param disp Display to capture.
-   * @return Captured frame, or null on failure.
+   * @param wanted Whether a captured frame is the one to return; any frame when empty.
+   * @return The wanted frame, or null on failure or after 5 seconds.
    */
-  std::shared_ptr<platf::img_t> capture_one(platf::display_t &disp) {
+  std::shared_ptr<platf::img_t> capture_first(platf::display_t &disp, const std::function<bool(const platf::img_t &)> &wanted = {}) {
     std::shared_ptr<platf::img_t> frame;
     std::vector<std::shared_ptr<platf::img_t>> pool;
     bool cursor = false;
     const auto deadline = std::chrono::steady_clock::now() + 5s;
     auto status = disp.capture(
       [&](std::shared_ptr<platf::img_t> &&img, bool captured) {
-        if (captured && img) {
+        if (captured && img && (!wanted || wanted(*img))) {
           frame = std::move(img);
         }
         return !frame && std::chrono::steady_clock::now() < deadline;
@@ -158,6 +251,11 @@ namespace {
   struct NvencHdrLiveTest: NvencLiveBase {};
 
   /**
+   * @brief Checks the system memory capture displays the bridge uses.
+   */
+  struct SystemMemoryCaptureLiveTest: NvencLiveBase {};
+
+  /**
    * @brief Probes the native encoder like Apollo does at startup.
    */
   struct NvencProbeLiveTest: NvencLiveBase {};
@@ -178,6 +276,17 @@ namespace {
 // Bugs caught: 0, False positives: 0
 TEST_P(NvencLiveTest, EncodesCapturedFramesAndRecoversALostFrameWithoutAnIdrFrame) {
   const auto &param = GetParam();
+  const auto &caps = nvenc_caps();
+  if (!caps.available) {
+    GTEST_SKIP() << "No NVENC";
+  }
+  const auto format = static_cast<std::size_t>(param.video_format);
+  if (!caps.codec[format] || (param.chroma && !caps.yuv444[format]) || (param.dynamic_range && !caps.ten_bit[format])) {
+    GTEST_SKIP() << "The GPU can't encode this format";
+  }
+  if (!param.system_memory && !wl::use_vram_capture(platf::mem_type_e::cuda)) {
+    GTEST_SKIP() << "The capture GPU is not the CUDA device, so frames can't stay in video memory";
+  }
   auto output = test_wl::headless_output_t::create("1280x720@60");
   ASSERT_TRUE(output) << "Couldn't create a headless output (is this Hyprland?)";
   test_wl::damage_source_t damage {output->name};
@@ -193,7 +302,7 @@ TEST_P(NvencLiveTest, EncodesCapturedFramesAndRecoversALostFrameWithoutAnIdrFram
   config.dynamicRange = param.dynamic_range;
   auto disp = wl::make_ext_display(platf::mem_type_e::cuda, output->name, config, {.system_memory = param.system_memory});
   ASSERT_TRUE(disp);
-  auto frame = capture_one(*disp);
+  auto frame = capture_first(*disp);
   ASSERT_TRUE(frame);
   EXPECT_EQ(param.system_memory, dynamic_cast<egl::img_descriptor_t *>(frame.get()) == nullptr);
 
@@ -203,12 +312,11 @@ TEST_P(NvencLiveTest, EncodesCapturedFramesAndRecoversALostFrameWithoutAnIdrFram
   const auto pix_fmt = param.chroma ? (ten_bit ? platf::pix_fmt_e::yuv444p16 : platf::pix_fmt_e::yuv444p) :
                                       (ten_bit ? platf::pix_fmt_e::p010 : platf::pix_fmt_e::nv12);
   auto device = disp->make_nvenc_encode_device(pix_fmt);
-  if (!device) {
-    GTEST_SKIP() << "No CUDA device";
-  }
+  ASSERT_TRUE(device);
   device->colorspace = colorspace;
   ASSERT_TRUE(device->init_encoder(config, colorspace));
   ASSERT_TRUE(device->nvenc);
+  EXPECT_EQ(device->nvenc->supports_ref_frame_invalidation(), caps.invalidation[format]);
 
   decoder_t decoder {param.video_format};
   ASSERT_TRUE(decoder.ctx) << "FFmpeg can't decode format " << param.video_format;
@@ -231,6 +339,11 @@ TEST_P(NvencLiveTest, EncodesCapturedFramesAndRecoversALostFrameWithoutAnIdrFram
   EXPECT_EQ(decoded_format->comp[0].depth, ten_bit ? 10 : 8) << decoded_format->name;
   EXPECT_EQ(decoder.frame->width, 1280);
 
+  if (!caps.invalidation[format]) {
+    // Apollo doesn't advertise invalidation then (NvencProbeLiveTest); the client asks for an IDR frame instead.
+    EXPECT_FALSE(device->nvenc->invalidate_ref_frames(frames - 1, frames));
+    return;
+  }
   // The client reports the loss; the next frame references only frames it has.
   ASSERT_TRUE(device->nvenc->invalidate_ref_frames(frames - 1, frames));
   ASSERT_EQ(device->convert(*frame), 0);
@@ -245,6 +358,9 @@ TEST_P(NvencLiveTest, EncodesCapturedFramesAndRecoversALostFrameWithoutAnIdrFram
 
 // Bugs caught: 0, False positives: 0
 TEST_F(NvencHdrLiveTest, SystemMemoryFramesOfAnHdrOutputStreamAsHdr10) {
+  if (!nvenc_caps().ten_bit[1]) {
+    GTEST_SKIP() << "No NVENC with 10-bit HEVC";
+  }
   auto output = test_wl::headless_output_t::create("1280x720@60");
   ASSERT_TRUE(output) << "Couldn't create a headless output (is this Hyprland?)";
   test_wl::damage_source_t damage {output->name};
@@ -277,21 +393,20 @@ TEST_F(NvencHdrLiveTest, SystemMemoryFramesOfAnHdrOutputStreamAsHdr10) {
   SS_HDR_METADATA metadata {};
   EXPECT_TRUE(disp->get_hdr_metadata(metadata));
 
-  auto frame = capture_one(*disp);
+  auto frame = capture_first(*disp);
   ASSERT_TRUE(frame);
   auto *ram = dynamic_cast<egl::ram_img_t *>(frame.get());
   ASSERT_TRUE(ram) << "not a system memory frame";
   EXPECT_FLOAT_EQ(ram->sdr_white_nits, 203.0f);
-  // The damage source paints the output red or blue; frames are BGRA.
+  // The damage source paints the output red or blue; frames are BGRA. Black would pass the luma check below either way.
   const auto *pixel = ram->data + 360 * ram->row_pitch + 640 * 4;
+  ASSERT_TRUE((pixel[2] > 200 && pixel[0] < 60) || (pixel[0] > 200 && pixel[2] < 60)) << "neither the red nor the blue damage surface";
   const std::array<double, 3> captured {pixel[2] / 255.0, pixel[1] / 255.0, pixel[0] / 255.0};
 
   const auto colorspace = video::colorspace_from_client_config(config, disp->is_hdr());
   ASSERT_EQ(colorspace.colorspace, video::colorspace_e::bt2020);
   auto device = disp->make_nvenc_encode_device(platf::pix_fmt_e::p010);
-  if (!device) {
-    GTEST_SKIP() << "No CUDA device";
-  }
+  ASSERT_TRUE(device);
   device->colorspace = colorspace;
   ASSERT_TRUE(device->init_encoder(config, colorspace));
 
@@ -317,17 +432,61 @@ TEST_F(NvencHdrLiveTest, SystemMemoryFramesOfAnHdrOutputStreamAsHdr10) {
 }
 
 // Bugs caught: 0, False positives: 0
-TEST_F(NvencProbeLiveTest, AdvertisesReferenceFrameInvalidationAndYuv444) {
-  // The probe captures the default output: one of the private instance's headless outputs.
-  if (!video::validate_encoder(video::nvenc, false)) {
+TEST_F(SystemMemoryCaptureLiveTest, DummyFramesAreBlack) {
+  auto output = test_wl::headless_output_t::create("640x480@60");
+  ASSERT_TRUE(output) << "Couldn't create a headless output (is this Hyprland?)";
+  video::config_t config {};
+  config.width = 640;
+  config.height = 480;
+  config.framerate = 60;
+  // The encoder sends a dummy frame before the first capture (and for input-only sessions).
+  const std::array<std::shared_ptr<platf::display_t>, 2> displays {
+    wl::make_ext_display(platf::mem_type_e::cuda, output->name, config, {.system_memory = true}),
+    platf::wl_display(platf::mem_type_e::system, output->name, config),
+  };
+  for (const auto &disp : displays) {
+    ASSERT_TRUE(disp);
+    auto img = disp->alloc_img();
+    ASSERT_TRUE(img && img->data);
+    const auto size = static_cast<std::size_t>(img->row_pitch) * img->height;
+    std::memset(img->data, 0xA5, size);
+    ASSERT_EQ(disp->dummy_img(img.get()), 0);
+    EXPECT_TRUE(std::all_of(img->data, img->data + size, [](std::uint8_t byte) {
+      return byte == 0;
+    }))
+      << "the dummy frame shows stale memory";
+  }
+}
+
+// Bugs caught: 0, False positives: 1
+TEST_F(NvencProbeLiveTest, AdvertisesWhatTheGpuSupports) {
+  const auto &caps = nvenc_caps();
+  if (!caps.available) {
     GTEST_SKIP() << "No NVENC";
   }
+  // On a GPU with NVENC the native encoder must pass. The probe captures the default output: one of the private
+  // instance's headless outputs.
+  ASSERT_TRUE(video::validate_encoder(video::nvenc, false));
   video::record_encoder_probe_results(video::nvenc);
-  EXPECT_TRUE(video::last_encoder_probe_supported_ref_frames_invalidation);
-  EXPECT_TRUE(video::last_encoder_probe_supported_yuv444_for_codec[0]) << "H.264";
-  EXPECT_TRUE(video::last_encoder_probe_supported_yuv444_for_codec[1]) << "HEVC";
-  EXPECT_TRUE(video::nvenc.hevc[video::encoder_t::PASSED]);
-  EXPECT_TRUE(video::nvenc.hevc[video::encoder_t::DYNAMIC_RANGE]);
+
+  const std::array codecs {&video::nvenc.h264, &video::nvenc.hevc, &video::nvenc.av1};
+  bool every_codec_invalidates = true;
+  for (std::size_t x = 0; x < codecs.size(); ++x) {
+    const auto &codec = *codecs[x];
+    EXPECT_EQ(codec[video::encoder_t::PASSED], caps.codec[x]) << codec.name;
+    if (!caps.codec[x]) {
+      continue;
+    }
+    EXPECT_EQ(codec[video::encoder_t::REF_FRAME_INVALIDATION], caps.invalidation[x]) << codec.name;
+    EXPECT_EQ(video::last_encoder_probe_supported_yuv444_for_codec[x], caps.yuv444[x]) << codec.name;
+    every_codec_invalidates = every_codec_invalidates && caps.invalidation[x];
+  }
+  // HDR profiles also need a display that can deliver HDR (display_t::hdr_supported()), so only check the GPU's part.
+  if (video::nvenc.hevc[video::encoder_t::DYNAMIC_RANGE]) {
+    EXPECT_TRUE(caps.ten_bit[1]);
+  }
+  // Advertised only when every offered codec can do it; otherwise each request would cost an IDR frame.
+  EXPECT_EQ(video::last_encoder_probe_supported_ref_frames_invalidation, every_codec_invalidates);
   video::reset_encoder_probe_results();
 }
 
