@@ -210,7 +210,7 @@ namespace {
   }
 
   platf::pen_input_t stylus(std::uint8_t type, float pressure_or_distance) {
-    return {type, LI_TOOL_TYPE_UNKNOWN, 0, 45, 0, 0.25f, 0.25f, pressure_or_distance, 0, 0};
+    return {type, LI_TOOL_TYPE_UNKNOWN, 0, 45, 30, 0.25f, 0.25f, pressure_or_distance, 0, 0};
   }
 }  // namespace
 
@@ -238,11 +238,18 @@ TEST_F(TouchPenUinputTest, TouchScreenThroughLibinput) {
   // Hovering again lifts the finger.
   EXPECT_EQ(g->types(touch(finger(LI_TOUCH_EVENT_HOVER, 1))), std::vector {LIBINPUT_EVENT_TOUCH_UP});
 
-  // Two fingers, then cancel-all: both are lifted (libvirtualhid lifts rather than cancels them).
+  // Two fingers, then cancel-all: both are cancelled (palms), not lifted (no tap).
   EXPECT_EQ(g->types(touch(finger(LI_TOUCH_EVENT_DOWN, 2))), std::vector {LIBINPUT_EVENT_TOUCH_DOWN});
   EXPECT_EQ(g->types(touch(finger(LI_TOUCH_EVENT_DOWN, 3, 0.6f))), std::vector {LIBINPUT_EVENT_TOUCH_DOWN});
-  auto lifted = g->types(touch(finger(LI_TOUCH_EVENT_CANCEL_ALL, 0)));
-  EXPECT_EQ(lifted.size(), 2u);
+  auto cancelled = g->types(touch(finger(LI_TOUCH_EVENT_CANCEL_ALL, 0)));
+  EXPECT_EQ(cancelled, (std::vector {LIBINPUT_EVENT_TOUCH_CANCEL, LIBINPUT_EVENT_TOUCH_CANCEL}));
+
+  // One finger cancelled alone, with a contact area.
+  auto wide = finger(LI_TOUCH_EVENT_DOWN, 5);
+  wide.contactAreaMajor = 30;
+  wide.contactAreaMinor = 20;
+  EXPECT_EQ(g->types(touch(wide)), std::vector {LIBINPUT_EVENT_TOUCH_DOWN});
+  EXPECT_EQ(g->types(touch(finger(LI_TOUCH_EVENT_CANCEL, 5))), std::vector {LIBINPUT_EVENT_TOUCH_CANCEL});
 
   // The slots work again afterwards.
   EXPECT_EQ(g->types(touch(finger(LI_TOUCH_EVENT_DOWN, 4))), std::vector {LIBINPUT_EVENT_TOUCH_DOWN});
@@ -257,6 +264,8 @@ TEST_F(TouchPenUinputTest, PenTabletThroughLibinput) {
   struct seen_t {
     std::vector<libinput_event_type> types;
     bool tip_down = false;
+    bool has_rotation = false;
+    double rotation = -1;
     double x = -1;
     double pressure = -1;
   };
@@ -271,6 +280,8 @@ TEST_F(TouchPenUinputTest, PenTabletThroughLibinput) {
         seen.types.push_back(libinput_event_get_type(ev));
         if (auto t = libinput_event_get_tablet_tool_event(ev)) {
           seen.x = libinput_event_tablet_tool_get_x_transformed(t, 1920);
+          seen.has_rotation = libinput_tablet_tool_has_rotation(libinput_event_tablet_tool_get_tool(t));
+          seen.rotation = libinput_event_tablet_tool_get_rotation(t);
           seen.pressure = libinput_event_tablet_tool_get_pressure(t);
           if (libinput_event_get_type(ev) == LIBINPUT_EVENT_TABLET_TOOL_TIP) {
             seen.tip_down = libinput_event_tablet_tool_get_tip_state(t) == LIBINPUT_TABLET_TOOL_TIP_DOWN;
@@ -281,12 +292,14 @@ TEST_F(TouchPenUinputTest, PenTabletThroughLibinput) {
     return seen;
   };
 
-  // Hover with an unknown tool: a pen comes into proximity, no tip.
+  // Hover with an unknown tool: a pen comes into proximity, no tip; its rotation arrives.
   auto hover = collect(stylus(LI_TOUCH_EVENT_HOVER, 0.5f));
   ASSERT_FALSE(hover.types.empty());
   EXPECT_EQ(hover.types.front(), LIBINPUT_EVENT_TABLET_TOOL_PROXIMITY);
   EXPECT_EQ(std::ranges::count(hover.types, LIBINPUT_EVENT_TABLET_TOOL_TIP), 0);
   EXPECT_NEAR(hover.x, 480.0, 1.0);
+  EXPECT_TRUE(hover.has_rotation);
+  EXPECT_NEAR(hover.rotation, 30.0, 0.5);
 
   // Contact with unknown pressure: the tip goes down.
   auto down = collect(stylus(LI_TOUCH_EVENT_DOWN, 0.0f));
@@ -307,10 +320,15 @@ TEST_F(TouchPenUinputTest, PenTabletThroughLibinput) {
   EXPECT_EQ(std::ranges::count(up.types, LIBINPUT_EVENT_TABLET_TOOL_TIP), 1);
   EXPECT_FALSE(up.tip_down);
 
-  // A cancel during contact lifts the tip (libvirtualhid keeps the pen in proximity).
+  // Leaving: proximity out.
+  auto leave = collect(stylus(LI_TOUCH_EVENT_HOVER_LEAVE, 0.0f));
+  EXPECT_EQ(std::ranges::count(leave.types, LIBINPUT_EVENT_TABLET_TOOL_PROXIMITY), 1);
+
+  // A cancel during contact lifts the tip and leaves proximity.
   collect(stylus(LI_TOUCH_EVENT_DOWN, 0.5f));
   auto cancel = collect(stylus(LI_TOUCH_EVENT_CANCEL_ALL, 0.0f));
   EXPECT_EQ(std::ranges::count(cancel.types, LIBINPUT_EVENT_TABLET_TOOL_TIP), 1);
+  EXPECT_EQ(std::ranges::count(cancel.types, LIBINPUT_EVENT_TABLET_TOOL_PROXIMITY), 1);
 }
 
 #endif
