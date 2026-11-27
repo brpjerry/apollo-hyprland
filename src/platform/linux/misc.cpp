@@ -820,6 +820,10 @@ namespace platf {
     }
 #endif
 
+#ifdef SUNSHINE_BUILD_WAYLAND
+    bool capture_indexes_wayland_outputs();
+#endif
+
     /**
      * @brief Switch on the streamed output if it is DPMS-off (it would capture as black). Only that output.
      */
@@ -836,6 +840,10 @@ namespace platf {
         return;
       }
       hyprland::wake_output(*ipc, output, []() {
+        // Another backend (KMS, NvFBC) indexes its own list, in another order: only names are known to match then.
+        if (!capture_indexes_wayland_outputs()) {
+          return std::vector<std::string> {};
+        }
         wl::display_t display;
         wl::interface_t interface;
         if (display.init() || !wl::enumerate_outputs(display, interface)) {
@@ -1462,6 +1470,27 @@ namespace platf {
   }  // namespace source
 
   static std::bitset<source::MAX_FLAGS> sources;
+
+#ifdef SUNSHINE_BUILD_WAYLAND
+  namespace {
+    /**
+     * @brief Whether capture takes a numeric output as an index into the Wayland outputs.
+     *
+     * display() prefers KMS, and NvFBC for CUDA encoders, over Wayland; with either available the index may be one
+     * into their lists.
+     */
+    bool capture_indexes_wayland_outputs() {
+      bool other = false;
+  #ifdef SUNSHINE_BUILD_DRM
+      other = other || sources[source::KMS];
+  #endif
+  #ifdef SUNSHINE_BUILD_CUDA
+      other = other || sources[source::NVFBC];
+  #endif
+      return !other && (sources[source::WAYLAND_EXT] || sources[source::WAYLAND]);
+    }
+  }  // namespace
+#endif
 
 #ifdef SUNSHINE_BUILD_CUDA
   std::vector<std::string> nvfbc_display_names();

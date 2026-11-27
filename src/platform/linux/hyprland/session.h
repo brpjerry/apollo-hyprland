@@ -19,7 +19,7 @@ namespace hyprland {
   enum class wake_result_e {
     already_on,  ///< The output was on; nothing was sent.
     woken,  ///< DPMS was off and has been switched on.
-    not_found,  ///< No output has this exact name (empty names and legacy indexes included).
+    not_found,  ///< The name, or the legacy index, does not resolve to an output (empty names included).
     failed,  ///< Hyprland refused the dpms dispatch.
   };
 
