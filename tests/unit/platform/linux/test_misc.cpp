@@ -408,6 +408,8 @@ TEST(PreciseSleepTest, NeverReturnsBeforeTheDeadline) {
 TEST(PreciseSleepTest, SetsTheTimerSlackOfItsThread) {
   int slack = -1;
   std::thread worker {[&]() {
+    // The worker inherits the slack of this thread, which earlier sleeps may have set to 1 ns already.
+    prctl(PR_SET_TIMERSLACK, 50'000UL, 0UL, 0UL, 0UL);
     platf::precise_sleep_until(std::chrono::steady_clock::now() + std::chrono::microseconds(100));
     slack = prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0);
   }};
@@ -419,11 +421,13 @@ TEST(PreciseSleepTest, SetsTheTimerSlackOfItsThread) {
 TEST(PreciseSleepTest, PassedDeadlineReturnsAtOnce) {
   const auto start = std::chrono::steady_clock::now();
   platf::precise_sleep_until(start - std::chrono::seconds(1));
+  platf::precise_sleep_until(std::chrono::steady_clock::time_point::min());
   auto timer = platf::create_high_precision_timer();
   ASSERT_TRUE(timer);
   EXPECT_TRUE(static_cast<bool>(*timer));
   timer->sleep_for(std::chrono::nanoseconds(-1'000'000));
-  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(5));
+  // A wait of a second (or forever) is what this catches; the headroom is for preemption.
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(250));
 }
 
 // Bugs caught: 0, False positives: 0

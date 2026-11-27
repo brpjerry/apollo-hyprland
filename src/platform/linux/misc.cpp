@@ -1941,7 +1941,9 @@ namespace platf {
 
     // steady_clock is CLOCK_MONOTONIC with libstdc++ and libc++ on Linux and FreeBSD.
     static_assert(std::chrono::steady_clock::is_steady);
-    if (const auto wake = deadline - precise_sleep_spin; wake > std::chrono::steady_clock::now()) {
+    // Compared before subtracting, which would overflow for a deadline near time_point::min().
+    if (deadline > std::chrono::steady_clock::now() + precise_sleep_spin) {
+      const auto wake = deadline - precise_sleep_spin;
       const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wake.time_since_epoch()).count();
       const timespec ts {.tv_sec = static_cast<time_t>(ns / 1'000'000'000), .tv_nsec = static_cast<long>(ns % 1'000'000'000)};
       while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR) {
