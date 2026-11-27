@@ -65,7 +65,7 @@
         <div class="card app-card h-100" :class="{ 'border-success': isRunning(app) }">
           <div class="app-poster-container">
             <img
-              v-if="app['image-path']"
+              v-if="app['image-path'] && savedPositions"
               :src="coverUrl(app, index)"
               class="app-poster"
               :alt="app.name"
@@ -857,7 +857,8 @@
         dragIndex: -1,
         dragOverIndex: -1,
         orderChanged: false,
-        // Position of each application (by UUID) in the saved list; covers are served by that position.
+        // Position of each application (by UUID) in the saved list; covers are served by that position. Null while
+        // the positions are unknown (a change whose reload failed): the cards show their placeholder.
         savedPositions: new Map(),
         envVars: ENV_VARS,
       };
@@ -970,8 +971,8 @@
         for (const [key, value] of Object.entries(APP_FIELD_DEFAULTS)) {
           this.editForm[key] ??= structuredClone(value);
         }
-        // The elevation Checkbox emits values of its model's type: a missing flag would toggle to the string
-        // "true", which the server's command reader rejects. Give it a boolean.
+        // The elevation Checkbox emits values of its model's type: give it a boolean for legacy and missing flags
+        // (a missing one would toggle to the string "true").
         if (this.canElevate) {
           for (const command of [...this.editForm["prep-cmd"], ...this.editForm["state-cmd"]]) {
             command.elevated = ELEVATED_FLAGS.has(command.elevated);
@@ -994,21 +995,22 @@
       /**
        * @brief Load the applications, the running application and the host identity.
        *
-       * A failed request keeps the list shown (and an unsaved order) and reports the error above the list.
+       * A failed request keeps the list shown (and an unsaved order) and reports the error above the list, after the
+       * error of the action that asked for the reload.
        *
+       * @param {string} [actionError] Error of the action this reload follows, kept in front of a reload error.
        * @return {Promise<boolean>} Whether the list was loaded.
        */
-      async loadApps() {
+      async loadApps(actionError = "") {
         let body;
         try {
           const r = await apiFetch("./api/apps");
           if (r.status !== 200) {
-            this.actionError = this.$t('apps.load_failed') + (await this.errorText(r));
-            return false;
+            throw new Error(await this.errorText(r));
           }
           body = await r.json();
         } catch (e) {
-          this.actionError = this.$t('apps.load_failed') + e.message;
+          this.actionError = [actionError, this.$t('apps.load_failed') + e.message].filter(Boolean).join(" ");
           return false;
         }
         this.apps = body.apps ?? [];
@@ -1035,6 +1037,7 @@
           return;
         }
         this.actionDisabled = true;
+        this.actionError = "";
         const target = this.deleteTarget;
         try {
           try {
@@ -1059,8 +1062,10 @@
             this.actionError = this.$t('apps.delete_failed') + e.message;
           }
           // The delete may have happened either way, so the list is reloaded as after a success.
-          if (!(await this.loadApps())) {
+          if (!(await this.loadApps(this.actionError))) {
             this.apps = this.apps.some(app => !app.uuid) ? [] : this.apps.filter(app => app.uuid !== target.uuid);
+            // Every app after the deleted one may have moved up a position.
+            this.savedPositions = null;
           }
         } finally {
           this.closeDeleteModal();
@@ -1113,7 +1118,7 @@
        * @return {string} Cover URL.
        */
       coverUrl(app, index) {
-        const position = app.uuid ? this.savedPositions.get(app.uuid) : undefined;
+        const position = app.uuid ? this.savedPositions?.get(app.uuid) : undefined;
         return `/api/covers/${position ?? index}`;
       },
       isRunning(app) {
@@ -1168,7 +1173,7 @@
         } finally {
           // Locked until the list is back, so this reload can't overwrite what a later action shows.
           try {
-            await this.loadApps();
+            await this.loadApps(this.actionError);
           } finally {
             this.actionDisabled = false;
           }
@@ -1199,7 +1204,7 @@
           this.actionError = `${this.$t('apps.close_failed')} ${e.message}`;
         } finally {
           try {
-            await this.loadApps();
+            await this.loadApps(this.actionError);
           } finally {
             this.actionDisabled = false;
           }
@@ -1287,16 +1292,21 @@
             body: JSON.stringify({ order }),
           });
           if (r.status !== 200) {
+            // The server (or a proxy after it) may have written the new order anyway.
+            this.savedPositions = null;
             this.actionError = this.$t('apps.reorder_failed') + (await this.errorText(r));
             return;
           }
-          // The server has the submitted order now: covers are requested by these positions until a reload.
-          this.savedPositions = new Map(order.map((uuid, index) => [uuid, index]));
-          // On a failed reload the shown (sorted) list is still the saved order, so keep showing it.
+          // On a failed reload the shown (sorted) list is still the saved order, so keep showing it. Covers follow
+          // the submitted positions only when the server placed every app there (none was removed meanwhile).
           if (await this.loadApps()) {
             this.sortMode = "default";
+          } else {
+            const result = await Promise.resolve().then(() => r.json()).catch(() => null);
+            this.savedPositions = result?.order_matched === true ? new Map(order.map((uuid, index) => [uuid, index])) : null;
           }
         } catch (e) {
+          this.savedPositions = null;
           this.actionError = this.$t('apps.reorder_failed') + e.message;
         } finally {
           this.actionDisabled = false;

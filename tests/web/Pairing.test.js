@@ -250,6 +250,47 @@ describe('client manager', () => {
     wrapper.unmount()
   })
 
+  // When the list can't be reloaded, the next edit still starts from what the server took away.
+  // Bugs caught: 0, False positives: 0
+  it('keeps a revocation that took effect in the next edit when the list cannot be reloaded', async () => {
+    const wrapper = await mountManager()
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: false, applied: true, error: 'not saved' }))
+    apiFetch.mockRejectedValueOnce(new Error('offline'))
+
+    await wrapper.findAll('.client-row')[0].get('.btn-primary').trigger('click')
+    await wrapper.get('#perm-input_kbd-c1').trigger('click')
+    await wrapper.get('form.client-editor').trigger('submit')
+    await flushPromises()
+    await wrapper.get('form.client-editor').find('.btn-secondary').trigger('click')
+
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: true }))
+    await wrapper.findAll('.client-row')[0].get('.btn-primary').trigger('click')
+    await wrapper.get('#client-name-c1').setValue('Renamed phone')
+    await wrapper.get('form.client-editor').trigger('submit')
+    await flushPromises()
+
+    const next = JSON.parse(apiFetch.mock.calls.at(-2)[1].body)
+    expect(apiFetch.mock.calls.at(-2)[0]).toBe('./api/clients/update')
+    expect(next.name).toBe('Renamed phone')
+    expect(next.perm & PERM.input_kbd).toBe(0)
+    wrapper.unmount()
+  })
+
+  // A page opened (or reloaded) after an unpair whose save failed learns of it from the client list.
+  // Bugs caught: 0, False positives: 0
+  it('offers Unpair All for an empty list when the server says an unpair is unsaved', async () => {
+    apiFetch.mockResolvedValue(jsonResponse({ status: true, platform: 'linux', named_certs: [], unpair_pending: true }))
+    const wrapper = mount(ClientManager, { global: globalOptions })
+    await flushPromises()
+    expect(wrapper.findAll('.btn-danger')[0].element.disabled).toBe(false)
+
+    apiFetch.mockResolvedValue(jsonResponse({ status: true, platform: 'linux', named_certs: [], unpair_pending: false }))
+    await wrapper.vm.refreshClients()
+    await flushPromises()
+    expect(wrapper.findAll('.btn-danger')[0].element.disabled).toBe(true)
+    wrapper.unmount()
+  })
+
   // Bugs caught: 0, False positives: 0
   it('saves the edited client through /api/clients/update', async () => {
     const wrapper = await mountManager()

@@ -227,7 +227,7 @@ describe('UUID-based applications', () => {
     expect(apiFetch.mock.calls[0][1].method).toBe('DELETE')
   })
 
-  // Bugs caught: 0, False positives: 1
+  // Bugs caught: 0, False positives: 2
   it('reorders by UUID in the order shown', async () => {
     apiFetch.mockResolvedValueOnce({ status: 200 })
     const apps = [{ name: 'B', uuid: 'b' }, { name: 'A', uuid: 'a' }, { name: 'C', uuid: 'c' }]
@@ -521,13 +521,73 @@ describe('applications page', () => {
     wrapper.vm.moveApp(0, 1)
     apiFetch.mockImplementation(async url => (url === './api/apps'
       ? { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }
-      : { status: 200, json: async () => ({}) }))
+      : { status: 200, json: async () => ({ status: true, order_matched: true }) }))
 
     await wrapper.vm.saveOrder()
 
     expect(wrapper.vm.apps.map(app => app.name)).toEqual(['B', 'A'])
     expect(wrapper.vm.coverUrl(wrapper.vm.apps[0], 0)).toBe('/api/covers/0')
     expect(wrapper.vm.coverUrl(wrapper.vm.apps[1], 1)).toBe('/api/covers/1')
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // A UUID another admin removed meanwhile moves every later app up: positions are unknown until a reload.
+  // Bugs caught: 0, False positives: 0
+  it('shows no covers after a partly matched reorder whose reload failed', async () => {
+    const { flushPromises } = await import('@vue/test-utils')
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a', 'image-path': 'a.png' }, { name: 'B', uuid: 'b', 'image-path': 'b.png' }])
+    expect(wrapper.findAll('img.app-poster')).toHaveLength(2)
+    wrapper.vm.moveApp(0, 1)
+    apiFetch.mockImplementation(async url => (url === './api/apps'
+      ? { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }
+      : { status: 200, json: async () => ({ status: true, order_matched: false }) }))
+
+    await wrapper.vm.saveOrder()
+    await flushPromises()
+
+    expect(wrapper.vm.savedPositions).toBeNull()
+    expect(wrapper.findAll('img.app-poster')).toHaveLength(0)
+    expect(wrapper.findAll('.app-poster-placeholder').length).toBeGreaterThan(0)
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // After deleting A from [A, B, C] the server serves C's cover at B's old position.
+  // Bugs caught: 0, False positives: 0
+  it('shows no covers for the apps left after a delete whose reload failed', async () => {
+    const { flushPromises } = await import('@vue/test-utils')
+    const wrapper = await mountApps([
+      { name: 'A', uuid: 'a', 'image-path': 'a.png' },
+      { name: 'B', uuid: 'b', 'image-path': 'b.png' },
+      { name: 'C', uuid: 'c', 'image-path': 'c.png' },
+    ])
+    apiFetch.mockImplementation(async url => (url === './api/apps/delete'
+      ? { status: 200 }
+      : { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }))
+
+    wrapper.vm.deleteTarget = { index: 0, uuid: 'a', name: 'A' }
+    await wrapper.vm.confirmDelete()
+    await flushPromises()
+
+    expect(wrapper.vm.apps.map(app => app.name)).toEqual(['B', 'C'])
+    expect(wrapper.findAll('img.app-poster')).toHaveLength(0)
+    wrapper.unmount()
+    apiFetch.mockReset()
+  })
+
+  // Bugs caught: 0, False positives: 0
+  it('keeps the action error in front of a reload error', async () => {
+    const wrapper = await mountApps([{ name: 'A', uuid: 'a' }])
+    wrapper.vm.actionError = 'apps.close_failed earlier'
+    apiFetch.mockImplementation(async url => (url === './api/apps/delete'
+      ? { status: 400, json: async () => ({ error: 'Invalid uuid' }) }
+      : { status: 500, json: async () => ({ error: 'apps.json unreadable' }) }))
+
+    wrapper.vm.deleteTarget = { index: 0, uuid: 'a', name: 'A' }
+    await wrapper.vm.confirmDelete()
+
+    expect(wrapper.vm.actionError).toBe('apps.delete_failedInvalid uuid apps.load_failedapps.json unreadable')
     wrapper.unmount()
     apiFetch.mockReset()
   })

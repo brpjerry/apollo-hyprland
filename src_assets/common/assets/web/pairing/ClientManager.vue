@@ -3,7 +3,7 @@
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center mb-3 gap-2">
         <h2 id="unpair" class="mb-0">{{ $t('pin.device_management') }}</h2>
-        <button type="button" class="btn btn-danger" :disabled="unpairAllPressed || (clients.length === 0 && !unsavedRevocation)" @click="unpairAll">
+        <button type="button" class="btn btn-danger" :disabled="unpairAllPressed || (clients.length === 0 && !unpairPending)" @click="unpairAll">
           <trash-2 :size="18" class="icon"></trash-2>
           {{ $t('pin.unpair_all') }}
         </button>
@@ -94,9 +94,10 @@
         showUnpairMessage: false,
         unpairAllPressed: false,
         unpairAllStatus: null,
-        // A revocation is in effect but not saved: Unpair All stays available, even for an empty list, to retry the
-        // save (it saves the whole client state).
-        unsavedRevocation: false,
+        // A client was unpaired but the state file couldn't be saved, so it would be paired again after a restart:
+        // Unpair All stays available, even for an empty list, to retry the save (it saves the whole client state).
+        // The client list says so (`unpair_pending`), so this survives a reload of the page.
+        unpairPending: false,
       }
     },
     created() {
@@ -123,6 +124,8 @@
           this.platform = body.platform ?? this.platform
           if (body.status && Array.isArray(body.named_certs)) {
             this.clients = sortClients(body.named_certs.map(normalizeClient))
+            // The server knows about an unsaved unpair even after this page was reloaded.
+            this.unpairPending = body.unpair_pending ?? this.unpairPending
             if (this.draft && !this.clients.some(client => client.uuid === this.draft.uuid)) {
               this.draft = null
             }
@@ -149,13 +152,22 @@
         this.saving = true
         this.saveError = ''
         try {
-          const response = await apiFetch('./api/clients/update', jsonRequest(buildClientUpdate(draft)))
+          const update = buildClientUpdate(draft)
+          const response = await apiFetch('./api/clients/update', jsonRequest(update))
           const body = await response.json()
+          if (body.status || body.applied) {
+            // The server has these settings now (the editor sends no enable change, so `applied` is about them).
+            // Applied to the row here too: when the refresh below fails, the next edit must not start from, and
+            // send back, permissions or commands the server already took away.
+            const client = this.clients.find(client => client.uuid === update.uuid)
+            if (client) {
+              Object.assign(client, update)
+            }
+          }
           if (!body.status) {
             if (body.applied) {
-              // A revocation took effect although it couldn't be saved: the list must show the permissions now in
-              // force, or the next edit would start from (and send back) the old ones. The open draft is kept.
-              this.unsavedRevocation = true
+              // A revocation took effect although it couldn't be saved: reconcile the list with the server too
+              // (connection state, other changes). The open draft is kept.
               await this.refreshClients()
             }
             throw new Error(body.error || body.message || `HTTP ${response.status}`)
@@ -182,8 +194,9 @@
         if (body && body.status !== true && body.error) {
           this.actionError = body.error
         }
+        // Covers an unpair whose follow-up list request fails; a successful one reports `unpair_pending` itself.
         if (body && body.status !== true && body.applied === true) {
-          this.unsavedRevocation = true
+          this.unpairPending = true
         }
       },
       /**
@@ -234,7 +247,7 @@
           const body = await response.json()
           this.unpairAllStatus = body.status === true
           if (body.status === true) {
-            this.unsavedRevocation = false
+            this.unpairPending = false
           }
           this.noteActionError(body)
         } catch (e) {
