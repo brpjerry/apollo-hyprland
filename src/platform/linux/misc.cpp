@@ -19,9 +19,12 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <mutex>
+#include <ranges>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 // platform includes
@@ -615,20 +618,32 @@ namespace platf {
     }
 
     /**
-     * @brief Find a program in the PATH of the environment it will run with, as find_working_directory() does.
+     * @brief Find a program in the PATH of the environment it will run with, as exec in the child would.
      *
-     * Boost's default search list reads this process's environment through a std::locale("") on POSIX, which
-     * throws when an LC_* variable names a locale that is not installed.
+     * A relative PATH entry (`bin`, `.`, or an empty one) is relative to the child's working directory. Without a
+     * PATH, command::default_search_path is searched. Boost's own default list is not used: it reads this process's
+     * environment through a std::locale("") on POSIX, which throws when an LC_* variable names a locale that is not
+     * installed.
      * @param name The program name, without a directory.
      * @param env The child's environment.
-     * @return The full path, or empty if it was not found.
+     * @param working_dir The directory the child starts in.
+     * @return The path, or empty if it was not found.
      */
-    boost::filesystem::path find_in_path(const std::string &name, const bp::environment &env) {
+    boost::filesystem::path find_in_path(const std::string &name, const bp::environment &env, const boost::filesystem::path &working_dir) {
+      std::vector<std::string> entries;
       if (auto path_var = env.find("PATH"); path_var != env.end()) {
-        auto entries = path_var->to_vector();
-        return bp::search_path(name, std::vector<boost::filesystem::path> {entries.begin(), entries.end()});
+        entries = path_var->to_vector();
+      } else {
+        for (const auto dir : std::views::split(std::string_view {command::default_search_path}, ':')) {
+          entries.emplace_back(dir.begin(), dir.end());
+        }
       }
-      return bp::search_path(name);
+      std::vector<boost::filesystem::path> dirs;
+      for (const auto &entry : entries) {
+        const boost::filesystem::path dir {entry.empty() ? "." : entry};
+        dirs.push_back(dir.is_absolute() ? dir : working_dir / dir);
+      }
+      return bp::search_path(name, dirs);
     }
 
     template<class... Command>
@@ -669,12 +684,18 @@ namespace platf {
     if (elevated) {
       options.helper = elevation_helper();
       if (options.elevation == command::elevation_e::terminal) {
+        // Found as it will be run: in the child's environment.
+        std::map<std::string, std::string> vars;
         options.terminal = command::terminal_prefix(
-          [](const char *name) {
-            return std::getenv(name);
+          [&](const char *name) -> const char * {
+            auto var = env.find(name);
+            if (var == env.end()) {
+              return nullptr;
+            }
+            return (vars[name] = var->to_string()).c_str();
           },
-          [](const std::string &name) {
-            return !bp::search_path(name).empty();
+          [&](const std::string &name) {
+            return !find_in_path(name, env, working_dir).empty();
           }
         );
         if (options.terminal.empty()) {
@@ -696,7 +717,7 @@ namespace platf {
     }
     boost::filesystem::path exe = plan->argv.front();
     if (!exe.has_parent_path()) {
-      exe = find_in_path(plan->argv.front(), env);
+      exe = find_in_path(plan->argv.front(), env, working_dir);
       if (exe.empty()) {
         BOOST_LOG(error) << "Couldn't find ["sv << plan->argv.front() << "] in PATH to run ["sv << cmd << ']';
         ec = std::make_error_code(std::errc::no_such_file_or_directory);

@@ -286,6 +286,39 @@ TEST(LinuxCommandTest, RunCommandSplitsPlainCommandsLikeTheShell) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(LinuxCommandTest, RelativePathEntriesAreRelativeToTheWorkingDirectory) {
+  // As exec in the child would see them: after it changed to its working directory.
+  fake_tools_t tools {"pkexec"};
+  auto work = tools.tmp.path / "game";
+  fs::create_directories(work / "bin");
+  write_script(work / "bin" / "start-game", "exit 6\n");
+  EXPECT_EQ(tools.run(false, "start-game", work.string(), {{"PATH", "bin:/usr/bin"}}), 6);
+  // Not found from Apollo's directory.
+  EXPECT_EQ(tools.run(false, "start-game", "/", {{"PATH", "bin:/usr/bin"}}), -1);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(LinuxCommandTest, TerminalIsFoundInTheChildsEnvironment) {
+  // Apollo's PATH has xdg-terminal-exec; the app's has only foot. The terminal is chosen where it will be launched.
+  fake_tools_t tools {"terminal"};
+  auto child_bin = tools.tmp.path / "child-bin";
+  fs::create_directories(child_bin);
+  const std::string record = "{ echo \"$0\"; for a in \"$@\"; do echo \"[$a]\"; done; } >> '" + tools.log.string() + "'\n";
+  write_script(child_bin / "foot", record + "exec \"$@\"\n");
+  write_script(child_bin / "sudo", record + "[ \"$1\" = -- ] && shift\nexec \"$@\"\n");
+  EXPECT_EQ(tools.run(true, "/bin/sh -c 'exit 0'", "/", {{"PATH", child_bin.string() + ":/usr/bin:/bin"}, {"TERMINAL", ""}}), 0);
+  auto log = read_file(tools.log);
+  EXPECT_TRUE(log.starts_with((child_bin / "foot").string() + "\n[sudo]\n[--]\n")) << log;
+
+  // TERMINAL comes from the app's environment too.
+  fs::remove(tools.log);
+  write_script(child_bin / "myterm", record + "shift\nexec \"$@\"\n");
+  EXPECT_EQ(tools.run(true, "/bin/sh -c 'exit 0'", "/", {{"PATH", child_bin.string() + ":/usr/bin:/bin"}, {"TERMINAL", "myterm"}}), 0);
+  log = read_file(tools.log);
+  EXPECT_TRUE(log.starts_with((child_bin / "myterm").string() + "\n[-e]\n[sudo]\n")) << log;
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(LinuxCommandTest, RunCommandReportsDenial) {
   fake_tools_t tools {"pkexec"};
   EXPECT_EQ(tools.run(true, "/bin/sh -c 'exit 0'", "/", {{"FAKE_DENY", "1"}}), platf::command::exit_auth_denied);

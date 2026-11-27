@@ -19,6 +19,11 @@
 #include <vector>
 
 namespace platf::command {
+  /**
+   * @brief The programs searched for a command whose environment has no PATH (the shell's usual default).
+   */
+  constexpr const char *default_search_path = "/usr/local/bin:/usr/bin:/bin";
+
   enum class elevation_e {
     pkexec,  ///< `pkexec`: authorization through the polkit agent.
     sudo,  ///< `sudo -n`: never prompts; needs a sudoers rule without a password.

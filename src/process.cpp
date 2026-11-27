@@ -12,7 +12,9 @@
 #include <array>
 #include <cmath>
 #include <filesystem>
+#include <ranges>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -195,7 +197,16 @@ namespace proc {
         const std::vector<boost::filesystem::path> search_dirs {path_entries.begin(), path_entries.end()};
         cmd_path = boost::process::v1::search_path(parts.at(0), search_dirs);
       } else {
+#if defined(_WIN32) || defined(__APPLE__)
         cmd_path = boost::process::v1::search_path(parts.at(0));
+#else
+        // The list platf::run_command() searches without a PATH.
+        std::vector<boost::filesystem::path> search_dirs;
+        for (const auto dir : std::views::split(std::string_view {platf::command::default_search_path}, ':')) {
+          search_dirs.emplace_back(std::string {dir.begin(), dir.end()});
+        }
+        cmd_path = boost::process::v1::search_path(parts.at(0), search_dirs);
+#endif
       }
       if (cmd_path.empty()) {
         BOOST_LOG(error) << "Unable to find executable ["sv << parts.at(0) << "]. Is it in your PATH?"sv;
