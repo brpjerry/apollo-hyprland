@@ -353,14 +353,18 @@ namespace hyprland::dd {
       return std::nullopt;
     }
     auto monitors = ipc->request_json("monitors all"sv);
-    auto workspaces = ipc->request_json("workspaces"sv);
-    // Without the workspaces the layout would be saved, or compared on revert, as one that has none.
-    if (!monitors || !monitors->is_array() || !workspaces || !workspaces->is_array()) {
+    if (!monitors || !monitors->is_array()) {
       return std::nullopt;
     }
     layout_t layout;
     layout.outputs = parse_outputs(*monitors);
-    layout.workspaces = parse_workspaces(*workspaces);
+    // Without the workspaces the layout must not be saved, or compared on revert, as one that has none; the outputs
+    // still serve to list and name the displays.
+    if (auto workspaces = ipc->request_json("workspaces"sv); workspaces && workspaces->is_array()) {
+      layout.workspaces = parse_workspaces(*workspaces);
+    } else {
+      layout.workspaces_listed = false;
+    }
     return layout;
   }
 
@@ -412,7 +416,8 @@ namespace hyprland::dd {
     }
     // hyprlang has no dispatcher that shows a workspace on a monitor without focusing it. moveworkspacetomonitor only
     // moves it (nothing at all when it is already there); `workspace` then shows it, focusing its monitor, so focus
-    // goes back to where it was afterwards.
+    // goes back to where it was afterwards. A workspace that does not exist cannot be moved: `workspace` creates it
+    // on the focused monitor, so that monitor is focused first.
     const auto current = layout();
     if (!current) {
       return false;
@@ -425,7 +430,8 @@ namespace hyprland::dd {
     }
     const auto *ipc = ipc_.get();
     const auto selector = workspace_selector(workspace);
-    if (!ipc->dispatch_legacy("moveworkspacetomonitor", selector + " " + monitor) || !ipc->dispatch_legacy("workspace", selector)) {
+    const bool exists = !current->workspaces_listed || current->find_workspace(workspace);
+    if (!(exists ? ipc->dispatch_legacy("moveworkspacetomonitor", selector + " " + monitor) : ipc->dispatch_legacy("focusmonitor", monitor)) || !ipc->dispatch_legacy("workspace", selector)) {
       return false;
     }
     return focused.empty() || focused == monitor || ipc->dispatch_legacy("focusmonitor", focused);
@@ -1006,8 +1012,8 @@ namespace hyprland::dd {
   ApplyResult settings_manager_t::applySettings(const display_device::SingleDisplayConfiguration &config) {
     BOOST_LOG(info) << "Hyprland display device: applying "sv << describe(config);
     const auto current = compositor_->layout();
-    if (!current) {
-      BOOST_LOG(warning) << "Hyprland display device: Hyprland is not reachable"sv;
+    if (!current || !current->workspaces_listed) {
+      BOOST_LOG(warning) << "Hyprland display device: Hyprland is not reachable"sv << (current ? " (no workspace list)"sv : ""sv);
       return ApplyResult::ApiTemporarilyUnavailable;
     }
 
@@ -1143,6 +1149,10 @@ namespace hyprland::dd {
         after = std::move(again);
       }
     }
+    if (!after->workspaces_listed) {
+      BOOST_LOG(warning) << "Hyprland display device: cannot list the workspaces to put them back; will retry"sv;
+      return RevertResult::ApiTemporarilyUnavailable;
+    }
 
     // Workspaces of monitors that were disabled return to them (Hyprland usually does this itself), and each shows
     // the workspace it showed before. A command that fails keeps the saved state, so the retry finishes the job; it
@@ -1168,8 +1178,9 @@ namespace hyprland::dd {
           moved = true;
         }
       }
-      if (!s->active_workspace.empty() && after->find_workspace(s->active_workspace) &&
-          (moved || now->active_workspace != s->active_workspace || after->find_workspace(s->active_workspace)->monitor != name)) {
+      // Disabling the monitor destroys its active workspace if it was empty; showing it creates it again.
+      const auto *active = after->find_workspace(s->active_workspace);
+      if (!s->active_workspace.empty() && (moved || !active || active->monitor != name || now->active_workspace != s->active_workspace)) {
         if (!compositor_->show_workspace(name, s->active_workspace)) {
           return dispatch_failed(std::format("show workspace {} on {}", s->active_workspace, name));
         }

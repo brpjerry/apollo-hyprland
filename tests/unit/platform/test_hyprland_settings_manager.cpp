@@ -77,6 +77,7 @@ namespace {
     std::set<std::string> refuse;  ///< Outputs whose rules are rejected.
     bool refuse_dispatch = false;  ///< Reject focus and workspace dispatches.
     std::map<std::string, std::string> cm_becomes;  ///< Colour presets the output takes as a different one.
+    bool workspaces_unlisted = false;  ///< The workspace query fails; the outputs are still listed.
 
     std::vector<monitor_rule_t> queued;
     int polls = 0;
@@ -149,6 +150,12 @@ namespace {
         }
         queued.clear();
         polls = 0;
+      }
+      if (workspaces_unlisted) {
+        auto partial = current;
+        partial.workspaces.clear();
+        partial.workspaces_listed = false;
+        return partial;
       }
       return current;
     }
@@ -569,6 +576,29 @@ TEST(HyprlandSettingsManagerTest, RevertShowsTheActiveWorkspaceAfterMovingOthers
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, RevertShowsAnActiveWorkspaceThatDisablingDestroyed) {
+  auto c = desk();
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+  // Hyprland destroys a disabled monitor's workspaces that have no windows: say workspace 1 was empty.
+  c->on_rule = [&](const monitor_rule_t &rule) {
+    if (rule.output == "DP-3" && rule.disabled == true) {
+      std::erase_if(c->current.workspaces, [](const workspace_t &w) {
+        return w.name == "1";
+      });
+    }
+  };
+  ASSERT_EQ(m.applySettings(cfg("HDMI-A-1", Prep::EnsureOnlyDisplay)), ApplyResult::Ok);
+  ASSERT_EQ(c->current.find_workspace("1"), nullptr);
+
+  ASSERT_EQ(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(out(*c, "DP-3").active_workspace, "1");
+  ASSERT_NE(c->current.find_workspace("1"), nullptr);
+  EXPECT_EQ(ws(*c, "1").monitor, "DP-3");
+  EXPECT_FALSE(p->data);
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(HyprlandSettingsManagerTest, RevertKeepsTheStateWhenWorkspacesCannotBeRestored) {
   auto c = desk();
   auto p = std::make_shared<memory_persistence_t>();
@@ -984,16 +1014,62 @@ TEST(HyprlandSettingsManagerTest, RevertWaitsForTheExactColourPreset) {
 }
 
 // Bugs caught: 0, False positives: 0
-TEST(HyprlandCompositorTest, LayoutFailsWhenTheWorkspacesCannotBeListed) {
+TEST(HyprlandCompositorTest, LayoutMarksWorkspacesThatCannotBeListed) {
   fake_socket_t hypr;
   auto c = hypr.compositor();
   auto layout = c->layout();
   ASSERT_TRUE(layout);
   EXPECT_EQ(layout->workspaces.size(), 3u);
+  EXPECT_TRUE(layout->workspaces_listed);
 
-  // An empty list would be saved as the original layout, or make revert skip putting the workspaces back.
+  // An empty list must not be taken for the real one; the outputs are still good for listing the displays.
   hypr.workspaces_fail = true;
-  EXPECT_FALSE(c->layout());
+  layout = c->layout();
+  ASSERT_TRUE(layout);
+  EXPECT_EQ(layout->outputs.size(), 2u);
+  EXPECT_TRUE(layout->workspaces.empty());
+  EXPECT_FALSE(layout->workspaces_listed);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandSettingsManagerTest, UnlistedWorkspacesStillNameTheDisplaysButBlockSavingAndRestoring) {
+  auto c = desk();
+  auto p = std::make_shared<memory_persistence_t>();
+  settings_manager_t m {c, p, fast()};
+
+  c->workspaces_unlisted = true;
+  EXPECT_EQ(m.enumAvailableDevices().size(), 2u);
+  EXPECT_EQ(m.getDisplayName("Monitor HDMI-A-1"), "HDMI-A-1");
+  // The first apply saves the workspaces to put back later.
+  EXPECT_EQ(m.applySettings(cfg("HDMI-A-1", Prep::EnsureOnlyDisplay)), ApplyResult::ApiTemporarilyUnavailable);
+  EXPECT_TRUE(c->rules.empty());
+  EXPECT_FALSE(p->data);
+
+  c->workspaces_unlisted = false;
+  ASSERT_EQ(m.applySettings(cfg("HDMI-A-1", Prep::EnsureOnlyDisplay)), ApplyResult::Ok);
+  c->workspaces_unlisted = true;
+  EXPECT_EQ(m.revertSettings(), RevertResult::ApiTemporarilyUnavailable);
+  EXPECT_TRUE(p->data);
+
+  c->workspaces_unlisted = false;
+  ASSERT_EQ(m.revertSettings(), RevertResult::Ok);
+  EXPECT_EQ(ws(*c, "3").monitor, "DP-3");
+  EXPECT_EQ(out(*c, "DP-3").active_workspace, "1");
+  EXPECT_FALSE(p->data);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandCompositorTest, HyprlangShowWorkspaceCreatesAMissingOneOnTheMonitor) {
+  fake_socket_t hypr;
+  hypr.provider = "hyprlang";
+  auto c = hypr.compositor();
+  // moveworkspacetomonitor fails for a workspace that does not exist; `workspace` creates it on the focused monitor.
+  ASSERT_TRUE(c->show_workspace("DP-3", "7"));
+  EXPECT_EQ(hypr.dispatches(), (std::vector<std::string> {
+                                 "/dispatch focusmonitor DP-3",
+                                 "/dispatch workspace 7",
+                                 "/dispatch focusmonitor HDMI-A-1",
+                               }));
 }
 
 // Bugs caught: 0, False positives: 0
