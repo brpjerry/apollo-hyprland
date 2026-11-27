@@ -223,6 +223,14 @@ namespace confighttp {
   void getApps(const resp_https_t &response, const req_https_t &request);
 
   /**
+   * @brief Reorder the applications by UUID; the response's `order_matched` says whether every UUID was found.
+   *
+   * @param response HTTPS response receiving the result.
+   * @param request Authenticated, CSRF protected request with the `order` array.
+   */
+  void reorderApps(const resp_https_t &response, const req_https_t &request);
+
+  /**
    * @brief Save an application with optional fields normalized before persistence.
    */
   void saveApp(const resp_https_t &response, const req_https_t &request);

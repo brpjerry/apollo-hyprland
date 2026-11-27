@@ -1529,6 +1529,8 @@ namespace confighttp {
    * @brief Reorder applications.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
+   * The response's `order_matched` says whether every UUID of `order` was found, so each app is at its position in
+   * `order`.
    *
    * @api_examples{/api/apps/reorder|:| POST|:| {"order": ["aaaa-bbbb", "cccc-dddd"]}}
    */
@@ -1621,6 +1623,10 @@ namespace confighttp {
           BOOST_LOG(debug) << "ReorderApps: UUID '" << target_uuid << "' from 'order' array not found in available apps list or its matching app was already processed. Omitting.";
         }
       }
+
+      // Whether each app is now at its position in the submitted order: the Web UI requests covers by position, and
+      // an omitted UUID (an app another admin removed) moves every later app up.
+      output_tree["order_matched"] = reordered_apps_list.size() == order_uuids_json.size();
 
       // Phase 2: Append any remaining apps from the original list that were not explicitly ordered.
       // These are app objects that were not marked 'item_moved' in Phase 1.

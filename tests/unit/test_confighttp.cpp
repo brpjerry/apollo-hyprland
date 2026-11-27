@@ -348,6 +348,7 @@ protected:
     server->resource["^/portal-token-reset-test$"]["POST"] = confighttp::resetPortalToken;
     server->resource["^/api/apps$"]["GET"] = confighttp::getApps;
     server->resource["^/api/apps$"]["POST"] = confighttp::saveApp;
+    server->resource["^/api/apps/reorder$"]["POST"] = confighttp::reorderApps;
     server->resource["^/login-test$"]["POST"] = confighttp::login;
     server->resource["^/logout-test$"]["POST"] = confighttp::logout;
     server->default_resource["GET"] = confighttp::getFallbackPage;
@@ -2414,6 +2415,31 @@ TEST_F(ConfigHttpTest, GetAppsSendsCommandElevationAsTheAppListReadsIt) {
     EXPECT_EQ(sent.at(3).at("elevated"), true);
     EXPECT_FALSE(sent.at(4).contains("elevated"));
   }
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ConfigHttpTest, ReorderSaysWhetherEveryAppIsAtItsSubmittedPosition) {
+  // The Web UI requests covers by position; a UUID another admin removed moves every later app up.
+  using json = nlohmann::json;
+  ScopedSaveAppAppsFile apps_file("reorder_matched");
+  const auto write_apps = [] {
+    std::ofstream file(config::stream.file_apps);
+    file << json {{"version", 2}, {"env", json::object()}, {"apps", json::array({json {{"name", "A"}, {"uuid", "a"}}, json {{"name", "B"}, {"uuid", "b"}}})}}.dump();
+  };
+  const auto reorder = [this](const json &order) {
+    const auto response = client->request("POST", "/api/apps/reorder", json {{"order", order}}.dump(), authenticated_json_headers());
+    EXPECT_EQ(response->status_code, "200 OK");
+    return json::parse(response->content.string());
+  };
+
+  write_apps();
+  EXPECT_EQ(reorder(json::array({"b", "a"})).at("order_matched"), true);
+  write_apps();
+  EXPECT_EQ(reorder(json::array({"b", "gone", "a"})).at("order_matched"), false);
+  std::ifstream file(config::stream.file_apps);
+  const auto saved = json::parse(file).at("apps");
+  EXPECT_EQ(saved.at(0).at("uuid"), "b");
+  EXPECT_EQ(saved.at(1).at("uuid"), "a");
 }
 
 // Bugs caught: 0, False positives: 0
