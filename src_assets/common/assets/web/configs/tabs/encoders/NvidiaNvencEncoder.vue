@@ -27,8 +27,8 @@ const config = ref(props.config)
       <div class="form-text">{{ $t('config.nvenc_preset_desc') }}</div>
     </div>
 
-    <!-- Split frame encoding -->
-    <div class="mb-3" v-if="platform === 'windows'">
+    <!-- Split frame encoding (native NVENC: Windows, and Linux since its native encoder) -->
+    <div class="mb-3" v-if="platform === 'windows' || platform === 'linux'">
       <label for="nvenc_split_encode" class="form-label">{{ $t('config.nvenc_split_encode') }}</label>
       <select id="nvenc_split_encode" class="form-select" v-model="config.nvenc_split_encode">
         <option value="disabled">{{ $t('_common.disabled') }}</option>

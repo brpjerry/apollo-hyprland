@@ -3,13 +3,14 @@
  * @brief HDR streaming from a Hyprland HDR output: the video memory path converts captured frames to PQ.
  * @details Captures a headless output in HDR mode through ext-image-copy-capture into dma-bufs, runs the frame
  *          through the same GL converter the NVENC (CUDA) and VAAPI paths use, and checks the Y plane against a
- *          reference computation. Skipped without a compositor, without ext-image-copy-capture or wp-color-management,
- *          or with APOLLO_SKIP_LIVE_HYPRLAND set.
+ *          reference computation. Only runs in the private headless Hyprland of scripts/hyprland/test-live.sh.
+ *          Skipped without ext-image-copy-capture or wp-color-management, or with APOLLO_SKIP_LIVE_HYPRLAND set.
  */
 #include "../../tests_common.h"
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_WAYLAND)
 
+  #include "pq_reference.h"
   #include "wayland_test_output.h"
 
   #include <cmath>
@@ -34,44 +35,13 @@ namespace platf {
 
 namespace {
   using namespace std::literals;
-
-  /// sRGB EOTF.
-  double srgb_to_linear(double c) {
-    return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
-  }
-
-  /// SMPTE ST 2084 inverse EOTF, `l` in units of 10000 cd/m².
-  double pq_encode(double l) {
-    const double m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
-    const double p = std::pow(std::clamp(l, 0.0, 1.0), m1);
-    return std::pow((c1 + c2 * p) / (1 + c3 * p), m2);
-  }
-
-  /// The Y sample (as stored in a 16-bit texture) the converter should produce for an sRGB color at `white` cd/m².
-  double expected_y(std::array<double, 3> srgb, double white, const video::sunshine_colorspace_t &colorspace) {
-    std::array<double, 3> lin;
-    for (int i = 0; i < 3; ++i) {
-      lin[i] = srgb_to_linear(srgb[i]) * white / 10000.0;
-    }
-    // BT.709 -> BT.2020 (ITU-R BT.2087)
-    const std::array<double, 3> bt2020 {
-      0.6274040 * lin[0] + 0.3292820 * lin[1] + 0.0433136 * lin[2],
-      0.0690970 * lin[0] + 0.9195400 * lin[1] + 0.0113612 * lin[2],
-      0.0163916 * lin[0] + 0.0880132 * lin[1] + 0.8955950 * lin[2],
-    };
-    auto vectors = video::color_vectors_from_colorspace(colorspace, true);  // as the GL converter (graphics.cpp)
-    // color_vec_y[3] is the limited-range offset; the luma shader adds it since Sunshine #4404.
-    double y = vectors->color_vec_y[3];
-    for (int i = 0; i < 3; ++i) {
-      y += vectors->color_vec_y[i] * pq_encode(bt2020[i]);
-    }
-    return (y * vectors->range_y[0] + vectors->range_y[1]) * 65535.0;
-  }
+  using test_hdr::expected_y;
 
   struct WaylandHdrLiveTest: PlatformTestSuite {
     void SetUp() override {
-      if (!std::getenv("WAYLAND_DISPLAY")) {
-        GTEST_SKIP() << "WAYLAND_DISPLAY is not set";
+      // The test creates an output and switches it to HDR: never on the desktop session.
+      if (!test_wl::in_private_hyprland()) {
+        GTEST_SKIP() << "Needs the private headless Hyprland of scripts/hyprland/test-live.sh";
       }
       if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
         GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";
@@ -112,7 +82,9 @@ TEST_F(WaylandHdrLiveTest, VideoMemoryFramesOfAnHdrOutputBecomePq) {
   config.width = 1280;
   config.height = 720;
   config.framerate = 60;
-  auto disp = wl::make_ext_display(platf::mem_type_e::cuda, output->name, config, {});
+  // VAAPI's memory type always captures dma-bufs (CUDA's falls back to system memory when the capture GPU isn't the
+  // CUDA device). No VAAPI encoder is opened: the test runs the GL converter itself.
+  auto disp = wl::make_ext_display(platf::mem_type_e::vaapi, output->name, config, {});
   ASSERT_TRUE(disp);
   EXPECT_TRUE(disp->is_hdr());
   EXPECT_TRUE(disp->hdr_supported());
@@ -137,7 +109,9 @@ TEST_F(WaylandHdrLiveTest, VideoMemoryFramesOfAnHdrOutputBecomePq) {
   );
   ASSERT_EQ(status, platf::capture_e::ok);
   ASSERT_TRUE(frame);
-  auto &descriptor = static_cast<egl::img_descriptor_t &>(*frame);
+  auto *captured_descriptor = dynamic_cast<egl::img_descriptor_t *>(frame.get());
+  ASSERT_TRUE(captured_descriptor) << "not a dma-buf frame";
+  auto &descriptor = *captured_descriptor;
   EXPECT_FLOAT_EQ(descriptor.sdr_white_nits, 203.0f);
   std::cout << output->name << ": captured format " << util::hex(descriptor.sd.fourcc).to_string_view() << std::endl;
 

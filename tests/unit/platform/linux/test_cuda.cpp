@@ -2483,6 +2483,96 @@ TEST(CudaInitTest, CallersStartingTogetherLoadTheTableOnce) {
   EXPECT_EQ(init_driver().table_loads.load(), 1);
   EXPECT_EQ(init_driver().cu_inits.load(), callers);
 }
+
+// Bugs caught: 0, False positives: 0
+TEST(NvencCudaSurfaceTest, MapsEveryFormatNvencReadsFromCudaMemory) {
+  EXPECT_EQ(cuda::nvenc_sw_format(platf::pix_fmt_e::nv12), AV_PIX_FMT_NV12);
+  EXPECT_EQ(cuda::nvenc_sw_format(platf::pix_fmt_e::p010), AV_PIX_FMT_P010);
+  EXPECT_EQ(cuda::nvenc_sw_format(platf::pix_fmt_e::yuv444p), AV_PIX_FMT_YUV444P);
+  EXPECT_EQ(cuda::nvenc_sw_format(platf::pix_fmt_e::yuv444p16), AV_PIX_FMT_YUV444P16);
+  // Packed formats are D3D11 surfaces; they never come out of the CUDA converters.
+  EXPECT_FALSE(cuda::nvenc_sw_format(platf::pix_fmt_e::ayuv));
+  EXPECT_FALSE(cuda::nvenc_sw_format(platf::pix_fmt_e::unknown));
+}
+
+namespace {
+  /**
+   * @brief Point a frame's planes at consecutive `pitch * height` blocks of one allocation.
+   *
+   * @param frame Frame to fill.
+   * @param base First plane.
+   * @param pitch Line size of every plane.
+   * @param planes Plane count.
+   */
+  void lay_out_planes(AVFrame &frame, std::uint8_t *base, int pitch, int planes) {
+    for (int plane = 0; plane < planes; ++plane) {
+      frame.data[plane] = base + static_cast<std::ptrdiff_t>(plane) * pitch * frame.height;
+      frame.linesize[plane] = pitch;
+    }
+  }
+}  // namespace
+
+// Bugs caught: 0, False positives: 0
+TEST(NvencCudaSurfaceTest, AcceptsOnlyPlanesThatFollowEachOtherAtTheSamePitch) {
+  std::vector<std::uint8_t> memory(512 * 64 * 3);
+  AVFrame frame {};
+  frame.height = 64;
+
+  lay_out_planes(frame, memory.data(), 512, 2);
+  EXPECT_TRUE(cuda::is_nvenc_surface(frame, 2));
+
+  lay_out_planes(frame, memory.data(), 512, 3);
+  EXPECT_TRUE(cuda::is_nvenc_surface(frame, 3));
+
+  // A pool that pads planes to a taller allocation puts the chroma where NVENC doesn't look.
+  frame.data[1] += 512;
+  EXPECT_FALSE(cuda::is_nvenc_surface(frame, 2));
+
+  lay_out_planes(frame, memory.data(), 512, 3);
+  frame.linesize[2] = 256;
+  EXPECT_FALSE(cuda::is_nvenc_surface(frame, 3));
+
+  frame = {};
+  EXPECT_FALSE(cuda::is_nvenc_surface(frame, 1));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(GlViewportTest, CentersAScaledImageWithEqualBorders) {
+  // A 4:3 desktop in a 16:9 stream: pillarboxed, 240 pixels on each side.
+  const auto pillarbox = egl::fit_viewport(1024, 768, 1920, 1080);
+  EXPECT_EQ(pillarbox.width, 1440);
+  EXPECT_EQ(pillarbox.height, 1080);
+  EXPECT_EQ(pillarbox.offset_x, 240);
+  EXPECT_EQ(pillarbox.offset_y, 0);
+
+  // A 21:9 desktop in a 16:9 stream: letterboxed, 135 rows above and below.
+  const auto letterbox = egl::fit_viewport(2560, 1080, 1920, 1080);
+  EXPECT_EQ(letterbox.width, 1920);
+  EXPECT_EQ(letterbox.height, 810);
+  EXPECT_EQ(letterbox.offset_x, 0);
+  EXPECT_EQ(letterbox.offset_y, 135);
+
+  const auto same = egl::fit_viewport(1920, 1080, 1920, 1080);
+  EXPECT_EQ(same.width, 1920);
+  EXPECT_EQ(same.offset_x, 0);
+  EXPECT_EQ(same.offset_y, 0);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(CudaRamConverterTest, TenBitSystemMemoryFramesGoThroughTheGlConverter) {
+  // The CUDA kernels only write 8-bit NV12 and YUV 4:4:4, and can't convert SDR frames to PQ.
+  EXPECT_TRUE(cuda::ram_frames_need_gl(platf::pix_fmt_e::p010));
+  EXPECT_TRUE(cuda::ram_frames_need_gl(platf::pix_fmt_e::yuv444p16));
+  EXPECT_FALSE(cuda::ram_frames_need_gl(platf::pix_fmt_e::nv12));
+  EXPECT_FALSE(cuda::ram_frames_need_gl(platf::pix_fmt_e::yuv444p));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(NvencCudaSurfaceTest, OnlyCudaConvertersCanFeedNativeNvenc) {
+  // A software (or VAAPI/Vulkan) device writes frames NVENC can't read.
+  EXPECT_FALSE(cuda::make_nvenc_encode_device(std::make_unique<platf::avcodec_encode_device_t>(), platf::pix_fmt_e::nv12));
+  EXPECT_FALSE(cuda::make_nvenc_encode_device(nullptr, platf::pix_fmt_e::nv12));
+}
   #endif  // SUNSHINE_BUILD_CUDA
 
 #endif  // __linux__

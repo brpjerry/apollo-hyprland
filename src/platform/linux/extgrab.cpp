@@ -244,8 +244,8 @@ namespace wl {
     ext_t(std::size_t max_buffers, bool vram):
         pool {max_buffers},
         vram {vram} {
-      // The GL converter of the video memory path turns the SDR frames of an HDR output into PQ
-      // (output_color_t::sdr_white_nits()). System memory frames stay 8-bit BGRA, so HDR outputs stream as SDR there.
+      // The GL converter turns the SDR frames of an HDR output into PQ (output_color_t::sdr_white_nits()). It takes
+      // the video memory frames, and the system memory frames of NVENC (ext_ram_t::init()).
       hdr_frames = vram;
     }
 
@@ -472,6 +472,11 @@ namespace wl {
     }
 
     int dummy_img(platf::img_t *img) override {
+      // The encoder sends a dummy frame before the first capture: it must not show old heap contents.
+      // Video memory images are recognized as dummies by their zero sequence number instead.
+      if (auto *ram = dynamic_cast<egl::ram_img_t *>(img); ram && ram->data) {
+        std::memset(ram->data, 0, static_cast<std::size_t>(ram->row_pitch) * ram->height);
+      }
       return 0;
     }
 
@@ -517,6 +522,9 @@ namespace wl {
         if (!read_buffer(egl_display.get(), pool[slot], *img_out, false)) {
           return platf::capture_e::reinit;
         }
+        if (auto ram = dynamic_cast<egl::ram_img_t *>(img_out.get())) {
+          ram->sdr_white_nits = color.sdr_white_nits();
+        }
         pool.slots.consumed(slot);
       }
 
@@ -557,7 +565,7 @@ namespace wl {
         }
         static_cast<egl::img_descriptor_t *>(img_out.get())->sdr_white_nits = color.sdr_white_nits();
       } else {
-        copy_rows(last_img->data, last_img->row_pitch, img_out->data, img_out->row_pitch, (std::size_t) width * 4, (std::size_t) height, false);
+        repeat_ram_frame(*last_img, *img_out, (std::size_t) width, (std::size_t) height);
       }
       img_out->frame_timestamp = next_timestamp(std::chrono::steady_clock::now());
       img_out->repeat = true;
@@ -642,7 +650,7 @@ namespace wl {
     egl::ctx_t ctx;
   };
 
-  struct ext_ram_img_t: public platf::img_t {
+  struct ext_ram_img_t: public egl::ram_img_t {
     ~ext_ram_img_t() override {
       delete[] data;
       data = nullptr;
@@ -660,6 +668,12 @@ namespace wl {
       if (ext_t::init(hwdevice_type, display_name, config, options)) {
         return -1;
       }
+#ifdef SUNSHINE_BUILD_CUDA
+      // NVENC's 10-bit system memory frames go through the GL converter (make_avcodec_encode_device()), which converts
+      // them to PQ like video memory frames. VAAPI's system memory path could too, but is unverified; software
+      // encoders can't, and neither can FFmpeg's NVENC in builds without CUDA (no GL converter).
+      hdr_frames = hwdevice_type == platf::mem_type_e::cuda;
+#endif
 
       if (!pool.spec.shm) {
         egl_display = egl::make_display(display.get());
@@ -698,7 +712,7 @@ namespace wl {
 
 #ifdef SUNSHINE_BUILD_CUDA
       if (mem_type == platf::mem_type_e::cuda) {
-        return cuda::make_avcodec_encode_device(width, height, false);
+        return cuda::make_avcodec_ram_encode_device(width, height, pix_fmt);
       }
 #endif
 
@@ -754,7 +768,8 @@ namespace wl {
 
     // Like wlr-screencopy: NVENC takes the dma-bufs directly only when the capture node is the CUDA device;
     // otherwise frames go GPU -> RAM -> GPU.
-    if (hwdevice_type == platf::mem_type_e::vaapi || (hwdevice_type == platf::mem_type_e::cuda && use_vram_capture(hwdevice_type))) {
+    const bool vram = hwdevice_type == platf::mem_type_e::vaapi || (hwdevice_type == platf::mem_type_e::cuda && use_vram_capture(hwdevice_type));
+    if (vram && !options.system_memory) {
       auto disp = std::make_shared<ext_vram_t>();
       if (disp->init(hwdevice_type, display_name, config, options)) {
         return nullptr;

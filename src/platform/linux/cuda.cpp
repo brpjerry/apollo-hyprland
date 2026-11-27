@@ -5,6 +5,7 @@
 // standard includes
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <bitset>
 #include <cctype>
 #include <cstring>
@@ -34,7 +35,9 @@ extern "C" {
 #include "cuda.h"
 #include "cuda_gl_textures.h"
 #include "graphics.h"
+#include "src/config.h"
 #include "src/logging.h"
+#include "src/nvenc/nvenc_cuda_interface.h"
 #include "src/utility.h"
 #include "src/video.h"
 #include "wayland.h"
@@ -1149,6 +1152,8 @@ namespace cuda {
 
   /**
    * @brief OpenGL/CUDA interop resources used for GPU-side frame conversion.
+   *
+   * Takes dma-buf frames (egl::img_descriptor_t), and system memory frames, which it uploads first.
    */
   class gl_cuda_vram_t: public platf::avcodec_encode_device_t {
   public:
@@ -1264,26 +1269,31 @@ namespace cuda {
      * @return 0 on success or -1 on failure.
      */
     int convert(platf::img_t &img) override {
-      auto &descriptor = (egl::img_descriptor_t &) img;
+      if (auto *descriptor = dynamic_cast<egl::img_descriptor_t *>(&img)) {
+        if (descriptor->sequence == 0) {
+          // For dummy images, use a blank RGB texture instead of importing a DMA-BUF
+          rgb = egl::create_blank(img);
+        } else if (descriptor->sequence > sequence) {
+          sequence = descriptor->sequence;
 
-      if (descriptor.sequence == 0) {
-        // For dummy images, use a blank RGB texture instead of importing a DMA-BUF
-        rgb = egl::create_blank(img);
-      } else if (descriptor.sequence > sequence) {
-        sequence = descriptor.sequence;
+          rgb = egl::rgb_t {};
 
-        rgb = egl::rgb_t {};
+          auto rgb_opt = egl::import_source(display.get(), descriptor->sd);
 
-        auto rgb_opt = egl::import_source(display.get(), descriptor.sd);
+          if (!rgb_opt) {
+            return -1;
+          }
 
-        if (!rgb_opt) {
-          return -1;
+          rgb = std::move(*rgb_opt);
         }
 
-        rgb = std::move(*rgb_opt);
+        sws.load_vram(*descriptor, offset_x, offset_y, rgb->tex[0], is_yuv444);
+      } else {
+        // A system memory frame (the GPU -> RAM -> GPU bridge): upload it, then convert it like a dma-buf.
+        const auto *ram = dynamic_cast<egl::ram_img_t *>(&img);
+        sws.set_sdr_white(ram ? ram->sdr_white_nits : 0);
+        sws.load_ram(img);
       }
-
-      sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0], is_yuv444);
 
       const int plane_count = is_yuv444 ? 3 : 2;
       const gl_cuda_frame_copy_t copy {
@@ -1391,6 +1401,173 @@ namespace cuda {
     }
 
     return cuda;
+  }
+
+  bool ram_frames_need_gl(platf::pix_fmt_e pix_fmt) {
+    return pix_fmt == platf::pix_fmt_e::p010 || pix_fmt == platf::pix_fmt_e::yuv444p16;
+  }
+
+  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_ram_encode_device(int width, int height, platf::pix_fmt_e pix_fmt) {
+    if (ram_frames_need_gl(pix_fmt)) {
+      return make_avcodec_gl_encode_device(width, height, 0, 0);
+    }
+    return make_avcodec_encode_device(width, height, false);
+  }
+
+  std::optional<AVPixelFormat> nvenc_sw_format(platf::pix_fmt_e pix_fmt) {
+    switch (pix_fmt) {
+      using enum platf::pix_fmt_e;
+      case nv12:
+        return AV_PIX_FMT_NV12;
+      case p010:
+        return AV_PIX_FMT_P010;
+      case yuv444p:
+        return AV_PIX_FMT_YUV444P;
+      case yuv444p16:
+        return AV_PIX_FMT_YUV444P16;
+      default:
+        return std::nullopt;
+    }
+  }
+
+  bool is_nvenc_surface(const AVFrame &frame, int plane_count) {
+    if (!frame.data[0] || frame.linesize[0] <= 0) {
+      return false;
+    }
+    const auto plane_size = static_cast<std::ptrdiff_t>(frame.linesize[0]) * frame.height;
+    for (int plane = 1; plane < plane_count; ++plane) {
+      if (frame.linesize[plane] != frame.linesize[0] || frame.data[plane] != frame.data[plane - 1] + plane_size) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * @brief Native NVENC encode device: a CUDA converter renders each frame into memory that NVENC reads directly.
+   *
+   * The converter is the same one FFmpeg's nvenc encoders use (GL interop for dma-bufs, CUDA kernels for system memory
+   * and NvFBC), writing into a frame of an FFmpeg CUDA frame pool that this device owns.
+   */
+  class nvenc_cuda_device_t: public platf::nvenc_encode_device_t {
+  public:
+    /**
+     * @brief Wrap a converter.
+     *
+     * @param converter CUDA converter that writes the frames.
+     * @param pix_fmt Format of the frames.
+     * @param sw_format FFmpeg format matching `pix_fmt`.
+     */
+    nvenc_cuda_device_t(std::unique_ptr<platf::avcodec_encode_device_t> converter, platf::pix_fmt_e pix_fmt, AVPixelFormat sw_format):
+        converter(std::move(converter)),
+        pix_fmt(pix_fmt),
+        sw_format(sw_format) {
+    }
+
+    ~nvenc_cuda_device_t() override {
+      // The encoder reads the converter's frame, so it is destroyed first.
+      nvenc = nullptr;
+      encoder.reset();
+      converter.reset();
+    }
+
+    nvenc_cuda_device_t(const nvenc_cuda_device_t &) = delete;
+    nvenc_cuda_device_t &operator=(const nvenc_cuda_device_t &) = delete;
+
+    /**
+     * @brief Allocate the frame, set the converter up for it and create the encoder.
+     *
+     * @param client_config Client stream configuration negotiated for this session.
+     * @param encoder_colorspace Colorimetry of the stream.
+     * @return True when the encoder was created.
+     */
+    bool init_encoder(const video::config_t &client_config, const video::sunshine_colorspace_t &encoder_colorspace) override {
+      video::avcodec_buffer_t device_ref;
+      // Like FFmpeg's nvenc path: the primary context, shared with the converter's CUDA runtime calls.
+      if (auto status = av_hwdevice_ctx_create(&device_ref, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 1 /* AV_CUDA_USE_PRIMARY_CONTEXT */); status < 0) {
+        std::array<char, AV_ERROR_MAX_STRING_SIZE> string;
+        BOOST_LOG(error) << "Failed to create a CUDA device: "sv << av_make_error_string(string.data(), string.size(), status);
+        return false;
+      }
+
+      video::avcodec_buffer_t frames_ref {av_hwframe_ctx_alloc(device_ref.get())};
+      if (!frames_ref) {
+        return false;
+      }
+      auto frames_ctx = (AVHWFramesContext *) frames_ref->data;
+      frames_ctx->format = AV_PIX_FMT_CUDA;
+      frames_ctx->sw_format = sw_format;
+      frames_ctx->width = client_config.width;
+      frames_ctx->height = client_config.height;
+      if (av_hwframe_ctx_init(frames_ref.get()) < 0) {
+        BOOST_LOG(error) << "Couldn't create a CUDA frame pool for NVENC"sv;
+        return false;
+      }
+
+      video::avcodec_frame_t frame {av_frame_alloc()};
+      if (!frame || av_hwframe_get_buffer(frames_ref.get(), frame.get(), 0)) {
+        BOOST_LOG(error) << "Couldn't allocate a CUDA frame for NVENC"sv;
+        return false;
+      }
+      const int plane_count = av_pix_fmt_count_planes(sw_format);
+      if (!is_nvenc_surface(*frame, plane_count)) {
+        BOOST_LOG(error) << "The CUDA frame's planes aren't laid out the way NVENC reads them"sv;
+        return false;
+      }
+
+      // The converter takes ownership of the frame (and through it, of the pool and the device).
+      auto *surface_frame = frame.release();
+      converter->colorspace = encoder_colorspace;
+      if (converter->set_frame(surface_frame, frames_ref.get())) {
+        return false;
+      }
+      converter->apply_colorspace();
+
+      const auto *cuda_ctx = (AVCUDADeviceContext *) ((AVHWDeviceContext *) device_ref->data)->hwctx;
+      encoder = nvenc::create_nvenc_cuda({
+        .context = cuda_ctx->cuda_ctx,
+        // The converter sets the device's stream to the one it writes the frame on.
+        .stream = cuda_ctx->stream,
+        .device_ptr = std::bit_cast<std::uintptr_t>(surface_frame->data[0]),
+        .pitch = static_cast<std::uint32_t>(surface_frame->linesize[0]),
+      });
+      if (!encoder || !encoder->create_encoder(config::video.nv, client_config, encoder_colorspace, pix_fmt)) {
+        encoder.reset();
+        return false;
+      }
+
+      nvenc = encoder.get();
+      return true;
+    }
+
+    /**
+     * @brief Convert a captured image into the encoder's frame.
+     *
+     * @param img Captured image.
+     * @return 0 on success, nonzero on failure.
+     */
+    int convert(platf::img_t &img) override {
+      return converter->convert(img);
+    }
+
+  private:
+    std::unique_ptr<platf::avcodec_encode_device_t> converter;
+    std::unique_ptr<nvenc::nvenc_encoder> encoder;
+    platf::pix_fmt_e pix_fmt;
+    AVPixelFormat sw_format;
+  };
+
+  std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(std::unique_ptr<platf::avcodec_encode_device_t> converter, platf::pix_fmt_e pix_fmt) {
+    // Only the CUDA converters write into CUDA frames; VAAPI, Vulkan or software devices can't feed NVENC.
+    if (!dynamic_cast<cuda_t *>(converter.get()) && !dynamic_cast<gl_cuda_vram_t *>(converter.get())) {
+      return nullptr;
+    }
+    auto sw_format = nvenc_sw_format(pix_fmt);
+    if (!sw_format) {
+      BOOST_LOG(error) << "NVENC can't encode frames of format "sv << platf::from_pix_fmt(pix_fmt);
+      return nullptr;
+    }
+    return std::make_unique<nvenc_cuda_device_t>(std::move(converter), pix_fmt, *sw_format);
   }
 
   namespace nvfbc {

@@ -299,6 +299,13 @@ target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE ${SUNSHINE_LINK_OPTIONS})
 
+if (UNIX AND NOT APPLE)
+    # Compile the CUDA encoder test with the SDK 13.1 implementation namespace and headers Linux builds.
+    set_source_files_properties(unit/test_nvenc_cuda.cpp PROPERTIES
+            COMPILE_DEFINITIONS "NVENC_NAMESPACE=nvenc_1301;NVENC_SDK_VERSION=1301"
+            INCLUDE_DIRECTORIES "${NV_CODEC_HEADERS_13_1_INCLUDE_DIR}")
+endif()
+
 if (WIN32)
     # Compile the utility test with the SDK 13.1 implementation namespace and headers.
     set_source_files_properties(unit/test_nvenc_utils.cpp PROPERTIES

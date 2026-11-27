@@ -2766,7 +2766,7 @@ consent prompt for directory ACLs, so the Web UI shows setup steps for correctin
             Significantly reduces encoding latency with a marginal compression efficiency penalty.
             This option is ignored if your GPU has a singular NVENC unit.
             @note{This option only applies when using NVENC [encoder](#encoder) with HEVC or AV1.}
-            @note{Applies to Windows only.}
+            @note{Applies to Windows and Linux.}
         </td>
     </tr>
     <tr>

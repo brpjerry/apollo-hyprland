@@ -301,6 +301,7 @@ namespace NVENC_NAMESPACE {
   template<typename FormatConfig>
   void nvenc_base::configure_h264_hevc_metadata(
     FormatConfig &format_config,
+    const ::nvenc::nvenc_config &config,
     const video::config_t &client_config,
     const nvenc_colorspace_t &colorspace,
     NV_ENC_BUFFER_FORMAT buffer_format,
@@ -326,11 +327,12 @@ namespace NVENC_NAMESPACE {
       configure_vui(format_config.hevcVUIParameters);
     }
 
-    if (client_config.enableIntraRefresh != 1) {
+    // The client asks for it, or the nvenc_intra_refresh setting forces it for clients that need it without asking.
+    if (client_config.enableIntraRefresh != 1 && !config.intra_refresh) {
       return;
     }
     if (!get_encoder_cap(encode_guid, NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
-      BOOST_LOG(error) << "NvEnc: Client asked for intra-refresh but the encoder does not support intra-refresh";
+      BOOST_LOG(error) << "NvEnc: intra-refresh was requested but the encoder does not support intra-refresh";
       return;
     }
     format_config.enableIntraRefresh = 1;
@@ -377,7 +379,7 @@ namespace NVENC_NAMESPACE {
       enc_config.rcParams.minQP.qpIntra = config.min_qp_h264;
     }
 
-    configure_h264_hevc_metadata(format_config, client_config, colorspace, buffer_format, encode_guid);
+    configure_h264_hevc_metadata(format_config, config, client_config, colorspace, buffer_format, encode_guid);
   }
 
   void nvenc_base::configure_hevc(
@@ -413,7 +415,7 @@ namespace NVENC_NAMESPACE {
       enc_config.rcParams.minQP.qpIntra = config.min_qp_hevc;
     }
 
-    configure_h264_hevc_metadata(format_config, client_config, colorspace, buffer_format, encode_guid);
+    configure_h264_hevc_metadata(format_config, config, client_config, colorspace, buffer_format, encode_guid);
   }
 
 #if NVENC_SDK_VERSION >= 1200

@@ -4,6 +4,9 @@
  */
 #pragma once
 
+// standard includes
+#include <functional>
+
 // local includes
 #include "misc.h"
 #include "src/platform/common.h"
@@ -49,6 +52,19 @@ namespace va {
    * @return Constructed AVCodec encode device object.
    */
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(int width, int height, file_t &&card, int offset_x, int offset_y, bool vram);
+
+  /**
+   * @brief Check that a device can encode every codec the configured codec modes require.
+   *
+   * H.264 is always required; HEVC Main when `hevc_mode` > 1 and Main10 when it is > 2; AV1 (profile 0, which covers
+   * 8 and 10 bits) when `av1_mode` > 1.
+   *
+   * @param can_encode Reports whether the device has an encoding entrypoint for a `VAProfile`.
+   * @param hevc_mode Active HEVC mode (video::active_hevc_mode).
+   * @param av1_mode Active AV1 mode (video::active_av1_mode).
+   * @return True when every required profile can be encoded.
+   */
+  bool can_encode_configured_codecs(const std::function<bool(int va_profile)> &can_encode, int hevc_mode, int av1_mode);
 
   // Ensure the render device pointed to by fd is capable of encoding h264 with the hevc_mode configured
   /**

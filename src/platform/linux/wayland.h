@@ -1169,6 +1169,17 @@ namespace wl {
   bool read_buffer(egl::display_t::pointer egl_display, const capture_buffer_t &buffer, platf::img_t &img, bool y_invert);
 
   /**
+   * @brief Copies the newest system memory frame into another image to repeat it while the screen is idle.
+   * @details The SDR white level (egl::ram_img_t) goes along with the pixels; without it the repeat of an HDR output's
+   *          frame would reach the client unconverted.
+   * @param from Frame to repeat.
+   * @param to Image to fill.
+   * @param width Width in pixels to copy.
+   * @param height Rows to copy.
+   */
+  void repeat_ram_frame(const platf::img_t &from, platf::img_t &to, std::size_t width, std::size_t height);
+
+  /**
    * @brief Hands the ready dma-buf in `slot` to the encoder through an egl::img_descriptor_t.
    * @details The image gets duplicated file descriptors, and the slot is not reused while anyone besides
    *          the capture image pool still holds the image.
@@ -1182,6 +1193,9 @@ namespace wl {
   struct ext_options_t {
     /// Use shared memory buffers for system memory capture even when dma-bufs are possible.
     bool prefer_shm {false};
+    /// Capture into system memory even when the encoder could take video memory frames, as it must when the capture
+    /// GPU is not the CUDA device (the GPU -> RAM -> GPU bridge).
+    bool system_memory {false};
   };
 
   /**
