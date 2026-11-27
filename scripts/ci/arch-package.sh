@@ -7,10 +7,13 @@
 set -euo pipefail
 ws="$PWD"
 
+# Source the PKGBUILD as makepkg will see it below, so checkdepends (only set when the unit tests run) is included.
+_run_unit_tests=true
+checkdepends=()
 # shellcheck source=/dev/null
 source packaging/linux/Arch/PKGBUILD
 # shellcheck disable=SC2154 # depends and makedepends come from the PKGBUILD
-pacman -Syu --noconfirm --needed base-devel git "${depends[@]}" "${makedepends[@]}"
+pacman -Syu --noconfirm --needed base-devel git "${depends[@]}" "${makedepends[@]}" "${checkdepends[@]}"
 commit="$(git -c safe.directory="$ws" rev-parse HEAD)"
 
 # makepkg refuses to run as root.
