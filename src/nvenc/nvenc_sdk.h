@@ -30,6 +30,11 @@
 // Include common platform and integer declarations outside the SDK namespace.
 #include <cstddef>
 #include <cstdint>
+// The SDK headers include these C headers themselves; their guards must already be set when the SDK is included
+// into the namespace below, or the C library would be declared inside it.
+#include <stddef.h>  // NOSONAR(cpp:S1041)
+#include <stdint.h>  // NOSONAR(cpp:S1041)
+#include <stdlib.h>  // NOSONAR(cpp:S1041)
 
 #ifdef _WIN32
   #include <Windows.h>

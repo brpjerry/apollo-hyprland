@@ -92,15 +92,27 @@ set(NVENC_PUBLIC_SOURCES
 )
 set(NVENC_SOURCES ${NVENC_PUBLIC_SOURCES})
 
-if(WIN32)
-    set(NVENC_IMPLEMENTATION_SOURCES
-            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_base.cpp"
-            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_d3d11.cpp"
-            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_d3d11_native.cpp"
-            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_d3d11_on_cuda.cpp"
-            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_dynamic_factory_impl.cpp"
-            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_utils.cpp"
-    )
+if(WIN32 OR (UNIX AND NOT APPLE))
+    if(WIN32)
+        set(NVENC_IMPLEMENTATION_SOURCES
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_base.cpp"
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_d3d11.cpp"
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_d3d11_native.cpp"
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_d3d11_on_cuda.cpp"
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_dynamic_factory_impl.cpp"
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_utils.cpp"
+        )
+    else()
+        set(NVENC_IMPLEMENTATION_SOURCES
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_base.cpp"
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_cuda.cpp"
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_utils.cpp"
+        )
+        list(APPEND NVENC_SOURCES
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_cuda.h"
+                "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_cuda_interface.h"
+        )
+    endif()
 
     # Add a version-isolated NVENC implementation object library.
     # add_nvenc_sdk_implementation: args = `target_name`, `sdk_version`, `sdk_include_dir`
@@ -115,17 +127,24 @@ if(WIN32)
         target_compile_options(${target_name} PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
     endfunction()
 
-    add_nvenc_sdk_implementation(nvenc_sdk_1100 1100 "${NV_CODEC_HEADERS_11_INCLUDE_DIR}")
-    add_nvenc_sdk_implementation(nvenc_sdk_1200 1200 "${NV_CODEC_HEADERS_12_INCLUDE_DIR}")
-    add_nvenc_sdk_implementation(nvenc_sdk_1300 1300 "${NV_CODEC_HEADERS_13_INCLUDE_DIR}")
-    add_nvenc_sdk_implementation(nvenc_sdk_1301 1301 "${NV_CODEC_HEADERS_13_1_INCLUDE_DIR}")
+    if(WIN32)
+        add_nvenc_sdk_implementation(nvenc_sdk_1100 1100 "${NV_CODEC_HEADERS_11_INCLUDE_DIR}")
+        add_nvenc_sdk_implementation(nvenc_sdk_1200 1200 "${NV_CODEC_HEADERS_12_INCLUDE_DIR}")
+        add_nvenc_sdk_implementation(nvenc_sdk_1300 1300 "${NV_CODEC_HEADERS_13_INCLUDE_DIR}")
+        add_nvenc_sdk_implementation(nvenc_sdk_1301 1301 "${NV_CODEC_HEADERS_13_1_INCLUDE_DIR}")
 
-    list(APPEND NVENC_SOURCES
-            $<TARGET_OBJECTS:nvenc_sdk_1100>
-            $<TARGET_OBJECTS:nvenc_sdk_1200>
-            $<TARGET_OBJECTS:nvenc_sdk_1300>
-            $<TARGET_OBJECTS:nvenc_sdk_1301>
-    )
+        list(APPEND NVENC_SOURCES
+                $<TARGET_OBJECTS:nvenc_sdk_1100>
+                $<TARGET_OBJECTS:nvenc_sdk_1200>
+                $<TARGET_OBJECTS:nvenc_sdk_1300>
+                $<TARGET_OBJECTS:nvenc_sdk_1301>
+        )
+    else()
+        # Linux builds one implementation, against the NVENC headers FFmpeg is built with (SDK 13.1), so the
+        # native encoder needs the same driver as FFmpeg's nvenc encoders.
+        add_nvenc_sdk_implementation(nvenc_sdk_1301 1301 "${NV_CODEC_HEADERS_13_1_INCLUDE_DIR}")
+        list(APPEND NVENC_SOURCES $<TARGET_OBJECTS:nvenc_sdk_1301>)
+    endif()
 endif()
 
 list(APPEND PLATFORM_TARGET_FILES ${NVENC_SOURCES})
