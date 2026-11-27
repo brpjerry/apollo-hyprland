@@ -2537,6 +2537,15 @@ TEST(NvencCudaSurfaceTest, AcceptsOnlyPlanesThatFollowEachOtherAtTheSamePitch) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(CudaRamConverterTest, TenBitSystemMemoryFramesGoThroughTheGlConverter) {
+  // The CUDA kernels only write 8-bit NV12 and YUV 4:4:4, and can't convert SDR frames to PQ.
+  EXPECT_TRUE(cuda::ram_frames_need_gl(platf::pix_fmt_e::p010));
+  EXPECT_TRUE(cuda::ram_frames_need_gl(platf::pix_fmt_e::yuv444p16));
+  EXPECT_FALSE(cuda::ram_frames_need_gl(platf::pix_fmt_e::nv12));
+  EXPECT_FALSE(cuda::ram_frames_need_gl(platf::pix_fmt_e::yuv444p));
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(NvencCudaSurfaceTest, OnlyCudaConvertersCanFeedNativeNvenc) {
   // A software (or VAAPI/Vulkan) device writes frames NVENC can't read.
   EXPECT_FALSE(cuda::make_nvenc_encode_device(std::make_unique<platf::avcodec_encode_device_t>(), platf::pix_fmt_e::nv12));

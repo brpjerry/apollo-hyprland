@@ -655,6 +655,14 @@ namespace egl {
   };
 
   /**
+   * @brief A captured frame in system memory (8-bit BGRA) that the GL converter can turn into an HDR stream.
+   */
+  struct ram_img_t: public platf::img_t {
+    /// Same as img_descriptor_t::sdr_white_nits: where the frame's SDR white lands in an HDR stream, 0 for no conversion.
+    float sdr_white_nits {0};
+  };
+
+  /**
    * @brief EGL/OpenGL scaler and colorspace conversion pipeline.
    */
   class sws_t {

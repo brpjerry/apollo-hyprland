@@ -1152,6 +1152,8 @@ namespace cuda {
 
   /**
    * @brief OpenGL/CUDA interop resources used for GPU-side frame conversion.
+   *
+   * Takes dma-buf frames (egl::img_descriptor_t), and system memory frames, which it uploads first.
    */
   class gl_cuda_vram_t: public platf::avcodec_encode_device_t {
   public:
@@ -1267,26 +1269,31 @@ namespace cuda {
      * @return 0 on success or -1 on failure.
      */
     int convert(platf::img_t &img) override {
-      auto &descriptor = (egl::img_descriptor_t &) img;
+      if (auto *descriptor = dynamic_cast<egl::img_descriptor_t *>(&img)) {
+        if (descriptor->sequence == 0) {
+          // For dummy images, use a blank RGB texture instead of importing a DMA-BUF
+          rgb = egl::create_blank(img);
+        } else if (descriptor->sequence > sequence) {
+          sequence = descriptor->sequence;
 
-      if (descriptor.sequence == 0) {
-        // For dummy images, use a blank RGB texture instead of importing a DMA-BUF
-        rgb = egl::create_blank(img);
-      } else if (descriptor.sequence > sequence) {
-        sequence = descriptor.sequence;
+          rgb = egl::rgb_t {};
 
-        rgb = egl::rgb_t {};
+          auto rgb_opt = egl::import_source(display.get(), descriptor->sd);
 
-        auto rgb_opt = egl::import_source(display.get(), descriptor.sd);
+          if (!rgb_opt) {
+            return -1;
+          }
 
-        if (!rgb_opt) {
-          return -1;
+          rgb = std::move(*rgb_opt);
         }
 
-        rgb = std::move(*rgb_opt);
+        sws.load_vram(*descriptor, offset_x, offset_y, rgb->tex[0], is_yuv444);
+      } else {
+        // A system memory frame (the GPU -> RAM -> GPU bridge): upload it, then convert it like a dma-buf.
+        const auto *ram = dynamic_cast<egl::ram_img_t *>(&img);
+        sws.set_sdr_white(ram ? ram->sdr_white_nits : 0);
+        sws.load_ram(img);
       }
-
-      sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0], is_yuv444);
 
       const int plane_count = is_yuv444 ? 3 : 2;
       const gl_cuda_frame_copy_t copy {
@@ -1394,6 +1401,17 @@ namespace cuda {
     }
 
     return cuda;
+  }
+
+  bool ram_frames_need_gl(platf::pix_fmt_e pix_fmt) {
+    return pix_fmt == platf::pix_fmt_e::p010 || pix_fmt == platf::pix_fmt_e::yuv444p16;
+  }
+
+  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_ram_encode_device(int width, int height, platf::pix_fmt_e pix_fmt) {
+    if (ram_frames_need_gl(pix_fmt)) {
+      return make_avcodec_gl_encode_device(width, height, 0, 0);
+    }
+    return make_avcodec_encode_device(width, height, false);
   }
 
   std::optional<AVPixelFormat> nvenc_sw_format(platf::pix_fmt_e pix_fmt) {

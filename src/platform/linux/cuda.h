@@ -83,6 +83,27 @@ namespace cuda {
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_gl_encode_device(int width, int height, int offset_x, int offset_y);
 
   /**
+   * @brief Report whether system memory frames for a format must go through the GL converter.
+   *
+   * The CUDA kernels convert 8-bit BGRA into NV12 and YUV 4:4:4 only. The GL converter also writes 10-bit frames, and
+   * converts the SDR frames of an HDR output to PQ (egl::ram_img_t::sdr_white_nits).
+   *
+   * @param pix_fmt Format to encode.
+   * @return True for 10-bit formats.
+   */
+  bool ram_frames_need_gl(platf::pix_fmt_e pix_fmt);
+
+  /**
+   * @brief Create the CUDA encoding device for frames captured into system memory.
+   *
+   * @param width Width of captured frames.
+   * @param height Height of captured frames.
+   * @param pix_fmt Format to encode.
+   * @return The GL converter for 10-bit formats (see ram_frames_need_gl()), otherwise the CUDA kernel converter.
+   */
+  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_ram_encode_device(int width, int height, platf::pix_fmt_e pix_fmt);
+
+  /**
    * @brief Map a Sunshine pixel format to the FFmpeg format of the CUDA frames NVENC reads.
    *
    * @param pix_fmt Sunshine pixel format.

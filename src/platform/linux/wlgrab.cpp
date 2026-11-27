@@ -339,7 +339,7 @@ namespace wl {
   /**
    * @brief Captured frame buffer shared between capture and encode stages.
    */
-  struct img_t: public platf::img_t {
+  struct img_t: public egl::ram_img_t {
     /**
      * @brief Destroy the Wayland capture image.
      */
@@ -690,6 +690,7 @@ namespace wl {
           return platf::capture_e::reinit;
         }
 
+        set_sdr_white(*img_out);
         img_out->frame_timestamp = current_frame->frame_timestamp;
 
         return platf::capture_e::ok;
@@ -726,9 +727,21 @@ namespace wl {
         flip_rows(*img_out);
       }
 
+      set_sdr_white(*img_out);
       img_out->frame_timestamp = current_frame->frame_timestamp;
 
       return platf::capture_e::ok;
+    }
+
+    /**
+     * @brief Record where the frame's SDR white lands in an HDR stream (see egl::ram_img_t).
+     *
+     * @param img Frame just captured.
+     */
+    void set_sdr_white(platf::img_t &img) const {
+      if (auto ram = dynamic_cast<egl::ram_img_t *>(&img)) {
+        ram->sdr_white_nits = color.sdr_white_nits();
+      }
     }
 
     /**
@@ -743,6 +756,10 @@ namespace wl {
       if (wlr_t::init(hwdevice_type, display_name, config)) {
         return -1;
       }
+      // NVENC's 10-bit system memory frames go through the GL converter (make_avcodec_encode_device()), which converts
+      // the SDR frames of an HDR output to PQ. VAAPI's system memory path could too, but is unverified; software
+      // encoders can't.
+      hdr_frames = hwdevice_type == platf::mem_type_e::cuda;
 
       egl_display = egl::make_display(display.get());
       if (!egl_display) {
@@ -779,7 +796,7 @@ namespace wl {
 
 #ifdef SUNSHINE_BUILD_CUDA
       if (mem_type == platf::mem_type_e::cuda) {
-        return cuda::make_avcodec_encode_device(width, height, false);
+        return cuda::make_avcodec_ram_encode_device(width, height, pix_fmt);
       }
 #endif
 

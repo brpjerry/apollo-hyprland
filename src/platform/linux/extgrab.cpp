@@ -244,8 +244,8 @@ namespace wl {
     ext_t(std::size_t max_buffers, bool vram):
         pool {max_buffers},
         vram {vram} {
-      // The GL converter of the video memory path turns the SDR frames of an HDR output into PQ
-      // (output_color_t::sdr_white_nits()). System memory frames stay 8-bit BGRA, so HDR outputs stream as SDR there.
+      // The GL converter turns the SDR frames of an HDR output into PQ (output_color_t::sdr_white_nits()). It takes
+      // the video memory frames, and the system memory frames of NVENC (ext_ram_t::init()).
       hdr_frames = vram;
     }
 
@@ -517,6 +517,9 @@ namespace wl {
         if (!read_buffer(egl_display.get(), pool[slot], *img_out, false)) {
           return platf::capture_e::reinit;
         }
+        if (auto ram = dynamic_cast<egl::ram_img_t *>(img_out.get())) {
+          ram->sdr_white_nits = color.sdr_white_nits();
+        }
         pool.slots.consumed(slot);
       }
 
@@ -642,7 +645,7 @@ namespace wl {
     egl::ctx_t ctx;
   };
 
-  struct ext_ram_img_t: public platf::img_t {
+  struct ext_ram_img_t: public egl::ram_img_t {
     ~ext_ram_img_t() override {
       delete[] data;
       data = nullptr;
@@ -660,6 +663,10 @@ namespace wl {
       if (ext_t::init(hwdevice_type, display_name, config, options)) {
         return -1;
       }
+      // NVENC's 10-bit system memory frames go through the GL converter (make_avcodec_encode_device()), which converts
+      // them to PQ like video memory frames. VAAPI's system memory path could too, but is unverified; software
+      // encoders can't.
+      hdr_frames = hwdevice_type == platf::mem_type_e::cuda;
 
       if (!pool.spec.shm) {
         egl_display = egl::make_display(display.get());
@@ -698,7 +705,7 @@ namespace wl {
 
 #ifdef SUNSHINE_BUILD_CUDA
       if (mem_type == platf::mem_type_e::cuda) {
-        return cuda::make_avcodec_encode_device(width, height, false);
+        return cuda::make_avcodec_ram_encode_device(width, height, pix_fmt);
       }
 #endif
 

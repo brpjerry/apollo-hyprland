@@ -2,19 +2,22 @@
  * @file tests/unit/platform/test_nvenc_live.cpp
  * @brief Native NVENC on Linux: frames captured from a headless Hyprland output, encoded by the real driver.
  * @details Captures through ext-image-copy-capture (dma-bufs, and the system memory bridge), encodes with the native
- *          encoder and decodes the result with FFmpeg. Checks 4:4:4, 10-bit, and that a lost frame is recovered by
- *          reference frame invalidation rather than an IDR frame. Skipped without a compositor with
- *          ext-image-copy-capture, without a CUDA device, or with APOLLO_SKIP_LIVE_HYPRLAND set.
+ *          encoder and decodes the result with FFmpeg. Checks 4:4:4, 10-bit, that a lost frame is recovered by reference
+ *          frame invalidation rather than an IDR frame, and that system memory frames of an HDR output stream as HDR10.
+ *          Skipped without a compositor with ext-image-copy-capture, without a CUDA device, or with
+ *          APOLLO_SKIP_LIVE_HYPRLAND set.
  */
 #include "../../tests_common.h"
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_WAYLAND) && defined(SUNSHINE_BUILD_CUDA)
 
+  #include "pq_reference.h"
   #include "wayland_test_output.h"
 
   #include <src/nvenc/nvenc_encoder.h>
   #include <src/platform/common.h>
   #include <src/platform/linux/graphics.h>
+  #include <src/platform/linux/hyprland/vdisplay.h>
   #include <src/platform/linux/wayland.h>
   #include <src/video.h>
   #include <src/video_colorspace.h>
@@ -149,6 +152,11 @@ namespace {
   struct NvencLiveTest: NvencLiveBase, testing::WithParamInterface<nvenc_case_t> {};
 
   /**
+   * @brief Streams an HDR output.
+   */
+  struct NvencHdrLiveTest: NvencLiveBase {};
+
+  /**
    * @brief Probes the native encoder like Apollo does at startup.
    */
   struct NvencProbeLiveTest: NvencLiveBase {};
@@ -232,6 +240,79 @@ TEST_P(NvencLiveTest, EncodesCapturedFramesAndRecoversALostFrameWithoutAnIdrFram
   // Without the invalidation FFmpeg's HEVC and AV1 decoders reject this frame (checked when this test was written);
   // its H.264 decoder conceals the frame_num gap silently, so for H.264 this only checks that the frame decodes.
   EXPECT_TRUE(decoder.decode(recovery.data)) << "the recovery frame references a lost frame";
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(NvencHdrLiveTest, SystemMemoryFramesOfAnHdrOutputStreamAsHdr10) {
+  auto output = test_wl::headless_output_t::create("1280x720@60");
+  ASSERT_TRUE(output) << "Couldn't create a headless output (is this Hyprland?)";
+  test_wl::damage_source_t damage {output->name};
+  ASSERT_TRUE(damage.ok());
+
+  hyprland::monitor_rule_t rule {.output = output->name};
+  hyprland::apply_hdr_fields(rule, true);
+  ASSERT_TRUE(output->ipc->set_monitor(rule));
+  wl::output_color_t color;
+  if (!color.open(output->name)) {
+    GTEST_SKIP() << "The compositor does not describe output colors (no wp-color-management-v1)";
+  }
+  for (int x = 0; x < 100 && !color.is_hdr(); ++x) {
+    std::this_thread::sleep_for(20ms);
+    color.poll_changed();
+  }
+  ASSERT_TRUE(color.is_hdr());
+
+  video::config_t config {};
+  config.width = 1280;
+  config.height = 720;
+  config.framerate = 60;
+  config.bitrate = 20000;
+  config.videoFormat = 1;
+  config.dynamicRange = 1;
+  auto disp = wl::make_ext_display(platf::mem_type_e::cuda, output->name, config, {.system_memory = true});
+  ASSERT_TRUE(disp);
+  EXPECT_TRUE(disp->is_hdr());
+  EXPECT_TRUE(disp->hdr_supported());
+  SS_HDR_METADATA metadata {};
+  EXPECT_TRUE(disp->get_hdr_metadata(metadata));
+
+  auto frame = capture_one(*disp);
+  ASSERT_TRUE(frame);
+  auto *ram = dynamic_cast<egl::ram_img_t *>(frame.get());
+  ASSERT_TRUE(ram) << "not a system memory frame";
+  EXPECT_FLOAT_EQ(ram->sdr_white_nits, 203.0f);
+  // The damage source paints the output red or blue; frames are BGRA.
+  const auto *pixel = ram->data + 360 * ram->row_pitch + 640 * 4;
+  const std::array<double, 3> captured {pixel[2] / 255.0, pixel[1] / 255.0, pixel[0] / 255.0};
+
+  const auto colorspace = video::colorspace_from_client_config(config, disp->is_hdr());
+  ASSERT_EQ(colorspace.colorspace, video::colorspace_e::bt2020);
+  auto device = disp->make_nvenc_encode_device(platf::pix_fmt_e::p010);
+  if (!device) {
+    GTEST_SKIP() << "No CUDA device";
+  }
+  device->colorspace = colorspace;
+  ASSERT_TRUE(device->init_encoder(config, colorspace));
+
+  decoder_t decoder {1};
+  ASSERT_TRUE(decoder.ctx);
+  for (std::uint64_t index = 1; index <= 3; ++index) {
+    ASSERT_EQ(device->convert(*frame), 0);
+    const auto encoded = device->nvenc->encode_frame(index, index == 1);
+    ASSERT_FALSE(encoded.data.empty());
+    ASSERT_TRUE(decoder.decode(encoded.data));
+  }
+  ASSERT_EQ(decoder.frame->format, AV_PIX_FMT_YUV420P10);
+  EXPECT_EQ(decoder.frame->color_trc, AVCOL_TRC_SMPTE2084);
+  EXPECT_EQ(decoder.frame->color_primaries, AVCOL_PRI_BT2020);
+
+  const auto decoded = reinterpret_cast<const std::uint16_t *>(decoder.frame->data[0] + 360 * decoder.frame->linesize[0])[640];
+  const auto expected = test_hdr::expected_y(captured, 203, colorspace) / 64;
+  const auto unconverted = test_hdr::expected_y(captured, 10000, colorspace) / 64;
+  std::cout << "captured RGB " << (int) pixel[2] << ',' << (int) pixel[1] << ',' << (int) pixel[0] << ": decoded Y " << decoded
+            << ", expected " << expected << std::endl;
+  // A flat color survives the encode nearly exactly.
+  EXPECT_NEAR(decoded, expected, 3) << "unconverted would be about " << unconverted;
 }
 
 // Bugs caught: 0, False positives: 0
