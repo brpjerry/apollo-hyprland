@@ -1041,6 +1041,7 @@ namespace pipewire {
           }
           if (output_name.empty()) {
             output_name = monitor->name;
+            output_name_inferred = true;
           }
         }
       }

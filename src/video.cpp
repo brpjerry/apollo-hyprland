@@ -1854,6 +1854,16 @@ namespace video {
       },
       []() -> std::string {
         return {};
+      },
+      [](const platf::display_t &display, const std::string &name) {
+        // The backend may have opened another output for a name it didn't find; a name guessed from geometry doesn't
+        // prove anything either.
+        if (display.output_name_inferred || display.output_name != name) {
+          BOOST_LOG(warning) << "Capture opened ["sv << display.output_name << "] instead of the session's virtual display ["sv << name << ']';
+          std::this_thread::sleep_for(200ms);
+          return false;
+        }
+        return true;
       }
     );
     if (!disp) {

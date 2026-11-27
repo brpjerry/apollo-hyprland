@@ -92,22 +92,25 @@ namespace video {
    * @brief Open the display a capture worker streams, never falling back from a session's virtual display.
    *
    * A client that asked for its own virtual display must get that display or no stream: when it is missing, late or
-   * fails to open, capturing whatever refresh_displays() would pick instead would stream the host's desktop.
+   * fails to open, capturing whatever refresh_displays() would pick instead would stream the host's desktop. Some
+   * backends substitute another output for a name they don't find (KMS takes the first connector, X11 the whole
+   * desktop), so an opened display only counts when it shows the pinned output.
    *
    * @tparam Display Display type.
    * @param pinned_display The session's virtual display, or "" when any display may be captured.
    * @param attempts How many times to try opening the pinned display.
    * @param open Opens a display by name; returns null on failure (and waits a moment, see reset_display()).
    * @param choose Refreshes the display list and names the display to open; only called when nothing is pinned.
+   * @param shows_output Whether an opened display captures the named output.
    * @return The open display, or null.
    */
-  template<class Display, class Open, class Choose>
-  std::shared_ptr<Display> open_capture_display(const std::string &pinned_display, int attempts, Open &&open, Choose &&choose) {
+  template<class Display, class Open, class Choose, class ShowsOutput>
+  std::shared_ptr<Display> open_capture_display(const std::string &pinned_display, int attempts, Open &&open, Choose &&choose, ShowsOutput &&shows_output) {
     if (pinned_display.empty()) {
       return open(choose());
     }
     for (int attempt = 0; attempt < attempts; ++attempt) {
-      if (auto display = open(pinned_display)) {
+      if (auto display = open(pinned_display); display && shows_output(*display, pinned_display)) {
         return display;
       }
     }

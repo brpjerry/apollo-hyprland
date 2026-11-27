@@ -184,37 +184,67 @@ TEST(VideoCaptureGroupTest, CleansUpFailedStartupBeforeRetry) {
   EXPECT_EQ(resource.use_count(), 1);
 }
 
+/**
+ * @brief A display that only knows which output it captures.
+ */
+struct fake_display_t {
+  std::string output_name;  ///< Output the backend actually opened.
+};
+
+/**
+ * @brief The check video.cpp uses: the display must report the pinned output.
+ */
+static bool fake_shows_output(const fake_display_t &display, const std::string &name) {
+  return display.output_name == name;
+}
+
 // Bugs caught: 0, False positives: 0
 TEST(CaptureDisplaySelectionTest, VirtualDisplaySessionNeverFallsBackToAnotherDisplay) {
   // A client that asked for its own virtual display gets that display or no stream, never the host desktop.
   std::vector<std::string> opened;
   int chosen = 0;
-  auto open_missing_virtual = [&opened](const std::string &name) -> std::shared_ptr<int> {
+  auto open_missing_virtual = [&opened](const std::string &name) -> std::shared_ptr<fake_display_t> {
     opened.push_back(name);
-    return name == "HOST-1" ? std::make_shared<int>(1) : nullptr;
+    return name == "HOST-1" ? std::make_shared<fake_display_t>(fake_display_t {"HOST-1"}) : nullptr;
   };
   auto choose_host = [&chosen]() {
     ++chosen;
     return std::string {"HOST-1"};
   };
 
-  EXPECT_EQ(video::open_capture_display<int>("APOLLO-1", 3, open_missing_virtual, choose_host), nullptr);
+  EXPECT_EQ(video::open_capture_display<fake_display_t>("APOLLO-1", 3, open_missing_virtual, choose_host, fake_shows_output), nullptr);
   EXPECT_EQ(opened, (std::vector<std::string> {"APOLLO-1", "APOLLO-1", "APOLLO-1"}));
   EXPECT_EQ(chosen, 0);
 
   // The virtual display comes back while retrying.
   opened.clear();
   int attempts = 0;
-  auto open_late = [&](const std::string &name) -> std::shared_ptr<int> {
+  auto open_late = [&](const std::string &name) -> std::shared_ptr<fake_display_t> {
     opened.push_back(name);
-    return ++attempts == 2 ? std::make_shared<int>(2) : nullptr;
+    return ++attempts == 2 ? std::make_shared<fake_display_t>(fake_display_t {name}) : nullptr;
   };
-  ASSERT_NE(video::open_capture_display<int>("APOLLO-1", 3, open_late, choose_host), nullptr);
+  ASSERT_NE(video::open_capture_display<fake_display_t>("APOLLO-1", 3, open_late, choose_host, fake_shows_output), nullptr);
   EXPECT_EQ(opened, (std::vector<std::string> {"APOLLO-1", "APOLLO-1"}));
 
   // Without a virtual display the worker opens what the display list picks.
   opened.clear();
-  ASSERT_NE(video::open_capture_display<int>("", 3, open_missing_virtual, choose_host), nullptr);
+  ASSERT_NE(video::open_capture_display<fake_display_t>("", 3, open_missing_virtual, choose_host, fake_shows_output), nullptr);
   EXPECT_EQ(opened, (std::vector<std::string> {"HOST-1"}));
   EXPECT_EQ(chosen, 1);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(CaptureDisplaySelectionTest, VirtualDisplaySessionRejectsASubstitutedOutput) {
+  // KMS opens the first connector and X11 the whole desktop when the name is missing: a non-null display that shows
+  // another output is no virtual display.
+  int opens = 0;
+  auto open_substitute = [&opens](const std::string &) {
+    ++opens;
+    return std::make_shared<fake_display_t>(fake_display_t {"DP-1"});
+  };
+  auto choose = []() {
+    return std::string {"DP-1"};
+  };
+  EXPECT_EQ(video::open_capture_display<fake_display_t>("APOLLO-1", 3, open_substitute, choose, fake_shows_output), nullptr);
+  EXPECT_EQ(opens, 3);
 }

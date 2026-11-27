@@ -72,7 +72,7 @@ namespace wl {
   }
 
   /**
-   * @brief Copy a shared-memory frame into a BGRA image buffer.
+   * @brief Reverse the order of an image's rows in place.
    */
   void flip_rows(platf::img_t &img) {
     if (!img.data || img.row_pitch <= 0) {
@@ -85,6 +85,9 @@ namespace wl {
     }
   }
 
+  /**
+   * @brief Copy a shared-memory frame into a BGRA image buffer.
+   */
   bool convert_shm_frame(const frame_t &frame, platf::img_t &img) {
     auto layout = shm_layout(frame.shm_format);
     if (!layout) {
