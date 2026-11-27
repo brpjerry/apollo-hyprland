@@ -695,6 +695,9 @@
     "scale-factor": 100,
   });
 
+  /** `elevated` values of an application command that the server's app list reader takes as elevated. */
+  const ELEVATED_FLAGS = new Set([true, "true", 1, "1"]);
+
   /** Environment variables Apollo sets for application commands. */
   const ENV_VARS = [
     ["APOLLO_APP_ID", "apps.env_app_id"],
@@ -971,7 +974,7 @@
         // "true", which the server's command reader rejects. Give it a boolean.
         if (this.canElevate) {
           for (const command of [...this.editForm["prep-cmd"], ...this.editForm["state-cmd"]]) {
-            command.elevated = command.elevated === true || command.elevated === "true";
+            command.elevated = ELEVATED_FLAGS.has(command.elevated);
           }
         }
         this.editFormError = "";
@@ -1020,9 +1023,10 @@
        * @brief Delete the application chosen in the delete dialog: by UUID, or by position for an application
        * saved before UUIDs existed.
        *
-       * Actions stay disabled until the list is reloaded. A delete moves every later app down one position on the
-       * server, so when the reload fails, a list with apps identified by position is dropped rather than left usable
-       * with stale positions.
+       * Actions stay disabled until the list is reloaded, which happens after a failed request too: the server (or a
+       * proxy in front of it) can fail after writing the shortened list. A delete moves every later app down one
+       * position on the server, so when the reload fails, a list with apps identified by position is dropped rather
+       * than left usable with stale positions, and otherwise the deleted app goes (saving it would recreate it).
        *
        * @return {Promise<void>} Completion of the request.
        */
@@ -1050,14 +1054,13 @@
               }));
             if (r.status !== 200) {
               this.actionError = this.$t('apps.delete_failed') + (await this.errorText(r));
-              return;
             }
           } catch (e) {
-            // The delete may still have happened, so the list is reloaded as after a success.
             this.actionError = this.$t('apps.delete_failed') + e.message;
           }
-          if (!(await this.loadApps()) && this.apps.some(app => !app.uuid)) {
-            this.apps = [];
+          // The delete may have happened either way, so the list is reloaded as after a success.
+          if (!(await this.loadApps())) {
+            this.apps = this.apps.some(app => !app.uuid) ? [] : this.apps.filter(app => app.uuid !== target.uuid);
           }
         } finally {
           this.closeDeleteModal();
@@ -1160,9 +1163,15 @@
           if (r.status !== 200) {
             this.actionError = this.$t('apps.launch_failed') + (await this.errorText(r));
           }
+        } catch (e) {
+          this.actionError = this.$t('apps.launch_failed') + e.message;
         } finally {
-          this.actionDisabled = false;
-          await this.loadApps();
+          // Locked until the list is back, so this reload can't overwrite what a later action shows.
+          try {
+            await this.loadApps();
+          } finally {
+            this.actionDisabled = false;
+          }
         }
       },
       /**
@@ -1186,9 +1195,14 @@
           if (r.status !== 200) {
             this.actionError = this.$t('apps.close_failed');
           }
+        } catch (e) {
+          this.actionError = `${this.$t('apps.close_failed')} ${e.message}`;
         } finally {
-          this.actionDisabled = false;
-          await this.loadApps();
+          try {
+            await this.loadApps();
+          } finally {
+            this.actionDisabled = false;
+          }
         }
       },
       /**
@@ -1276,6 +1290,8 @@
             this.actionError = this.$t('apps.reorder_failed') + (await this.errorText(r));
             return;
           }
+          // The server has the submitted order now: covers are requested by these positions until a reload.
+          this.savedPositions = new Map(order.map((uuid, index) => [uuid, index]));
           // On a failed reload the shown (sorted) list is still the saved order, so keep showing it.
           if (await this.loadApps()) {
             this.sortMode = "default";
@@ -1487,6 +1503,9 @@
           } else {
             this.editFormError = this.$t('apps.save_failed') + (await this.errorText(r));
           }
+        }, (e) => {
+          // The server may have saved the app before the connection dropped.
+          this.editFormError = this.$t('apps.save_unconfirmed') + e.message;
         });
       },
       handleImageError(event) {
