@@ -5,7 +5,9 @@
 #pragma once
 
 // standard includes
+#include <cstdint>
 #include <string>
+#include <string_view>
 
 /**
  * @brief Responsible for file handling functions.
@@ -56,4 +58,31 @@ namespace file_handler {
    * @examples_end
    */
   int write_file(const char *path, const std::string_view &contents);
+
+#ifndef _WIN32
+  /**
+   * @brief Building blocks of write_file(), exposed for tests.
+   */
+  namespace detail {
+    /**
+     * @brief Whether a probe for a file's access ACL (getxattr of `system.posix_acl_access`) proves it has none.
+     *
+     * @param probe_result Return value of the probe.
+     * @param probe_errno errno after a failed probe.
+     * @return `true` only for "no such attribute" or "no ACL support"; another error proves nothing.
+     */
+    bool access_acl_absent(long probe_result, int probe_errno);
+
+    /**
+     * @brief Overwrite a file in place, provided it is still the regular file inspected earlier.
+     *
+     * @param path File to overwrite.
+     * @param contents New contents.
+     * @param device Device of the file inspected earlier.
+     * @param inode Inode of the file inspected earlier.
+     * @return ``0`` on success, ``-1`` on failure (another file, or not a regular file, is left as it is).
+     */
+    int write_in_place(const char *path, std::string_view contents, std::uint64_t device, std::uint64_t inode);
+  }  // namespace detail
+#endif
 }  // namespace file_handler
