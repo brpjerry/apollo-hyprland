@@ -36,6 +36,7 @@ namespace {
     int driver_calls_outside_context = 0;  ///< NVENC calls made without a current context.
     NV_ENC_REGISTER_RESOURCE registered {};  ///< Last resource registration.
     int unregisters = 0;  ///< Resources unregistered.
+    std::uint32_t intra_refresh = 0;  ///< enableIntraRefresh of the last HEVC initialization.
     std::uint64_t last_timestamp = 0;  ///< inputTimeStamp of the last encoded picture.
     std::uint32_t last_pic_flags = 0;  ///< encodePicFlags of the last encoded picture.
     std::array<std::uint8_t, 4> bitstream {0, 0, 1, 0x40};  ///< Bytes every encoded frame returns.
@@ -93,8 +94,9 @@ namespace {
     list.nvEncGetEncodePresetConfigEx = [](void *, GUID, GUID, NV_ENC_TUNING_INFO, NV_ENC_PRESET_CONFIG *) {
       return NV_ENC_SUCCESS;
     };
-    list.nvEncInitializeEncoder = [](void *, NV_ENC_INITIALIZE_PARAMS *) {
+    list.nvEncInitializeEncoder = [](void *, NV_ENC_INITIALIZE_PARAMS *params) {
       note_driver_call();
+      fake.intra_refresh = params->encodeConfig->encodeCodecConfig.hevcConfig.enableIntraRefresh;
       return NV_ENC_SUCCESS;
     };
     list.nvEncCreateBitstreamBuffer = [](void *, NV_ENC_CREATE_BITSTREAM_BUFFER *params) {
@@ -286,6 +288,26 @@ TEST_F(NvencCudaTest, InvalidatesReferenceFramesInsteadOfRequestingAnIdrFrame) {
   EXPECT_FALSE(recovered.idr);
   EXPECT_TRUE(recovered.after_ref_frame_invalidation);
   EXPECT_EQ(fake.driver_calls_outside_context, 0);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(NvencCudaTest, IntraRefreshFollowsTheClientOrTheServerSetting) {
+  struct case_t {
+    int client_asks;
+    bool server_forces;
+    std::uint32_t expected;
+  };
+
+  for (const auto &[client_asks, server_forces, expected] : std::to_array<case_t>({{0, false, 0}, {1, false, 1}, {0, true, 1}})) {
+    fake = {};
+    auto client = hevc_client();
+    client.enableIntraRefresh = client_asks;
+    ::nvenc::nvenc_config config {};
+    config.intra_refresh = server_forces;
+    fake_nvenc_cuda_t encoder {test_surface()};
+    ASSERT_TRUE(encoder.create_encoder(config, client, video::colorspace_from_client_config(client, false), platf::pix_fmt_e::nv12));
+    EXPECT_EQ(fake.intra_refresh, expected) << "client " << client_asks << ", server " << server_forces;
+  }
 }
 
 // Bugs caught: 0, False positives: 0
