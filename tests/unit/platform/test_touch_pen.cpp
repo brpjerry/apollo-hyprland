@@ -288,4 +288,29 @@ TEST_F(LinuxTouchPenTest, CancelAllLiftsEverything) {
   client.reset();
 }
 
+// Bugs caught: 0, False positives: 0
+TEST_F(LinuxTouchPenTest, PenRotationAndContactAreaReachLibvirtualhid) {
+  // Bound by Hyprland, so the positions change units; rotation and contact area must still arrive.
+  start(std::make_shared<fake_compositor_t>());
+  auto rotated = pen(LI_TOUCH_EVENT_HOVER, LI_TOOL_TYPE_PEN);
+  rotated.tilt = 45;
+  rotated.rotation = 390;
+  platf::pen_update(client.get(), port(), rotated);
+  auto tool = context().pen->last_submitted_tool();
+  EXPECT_FLOAT_EQ(tool.rotation, 30.0f);
+  EXPECT_NE(tool.tilt_x, 0.0f);
+  rotated.rotation = LI_ROT_UNKNOWN;
+  platf::pen_update(client.get(), port(), rotated);
+  EXPECT_LT(context().pen->last_submitted_tool().rotation, 0.0f);
+
+  platf::touch_update(client.get(), port(), {LI_TOUCH_EVENT_DOWN, 90, 1, 0.5f, 0.5f, 0.5f, 30.0f, 20.0f});
+  const auto contact = context().touch->last_submitted_contact();
+  EXPECT_FLOAT_EQ(contact.contact_major_axis, 30.0f);
+  EXPECT_FLOAT_EQ(contact.contact_minor_axis, 20.0f);
+  EXPECT_EQ(contact.orientation, 90);
+  // libvirtualhid scales the axes from the viewport's pixels.
+  EXPECT_EQ(contact.viewport.width, 1920);
+  EXPECT_EQ(contact.viewport.height, 1080);
+}
+
 #endif

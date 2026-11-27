@@ -1,0 +1,462 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jerry <45913169+brpjerry@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 12:00:00 -0800
+Subject: [PATCH] linux: touch palm cancel, contact area, pen rotation and proximity out
+
+Apollo's Linux touch screen and pen tablet features, which its own uinput
+devices had before Sunshine moved input onto libvirtualhid, applied to
+LizardByte/libvirtualhid dd8153df:
+
+- A cancelled touch contact turns into a palm (ABS_MT_TOOL_TYPE
+  MT_TOOL_PALM) before it lifts, so libinput reports a touch cancel
+  instead of a completed tap; the slot is a finger again for the next
+  contact.
+- Touch contacts carry their area (ABS_MT_TOUCH_MAJOR/MINOR, from
+  TouchContact's axes in viewport pixels).
+- PenToolState has a barrel rotation, sent as ABS_Z.
+- A pen that leaves or is cancelled leaves proximity (BTN_TOOL_* released,
+  tip lifted, held buttons released and pressed again when it returns).
+  A tool change takes the old tool out in its own frame first.
+- Test hooks that run a sequence of operations on a pipe-backed
+  touchscreen or pen tablet.
+---
+ src/include/libvirtualhid/types.hpp                |   5 +
+ src/platform/linux/uhid_backend.cpp                | 171 ++++++++++++++++++++-
+ .../include/fixtures/linux_backend_test_hooks.hpp  |  47 ++++++
+ tests/fixtures/linux_backend_test_hooks.cpp        |  40 +++++
+ 4 files changed, 255 insertions(+), 8 deletions(-)
+
+diff --git a/src/include/libvirtualhid/types.hpp b/src/include/libvirtualhid/types.hpp
+index 3cc6601..25bd4d8 100644
+--- a/src/include/libvirtualhid/types.hpp
++++ b/src/include/libvirtualhid/types.hpp
+@@ -1073,6 +1073,11 @@ namespace lvh {
+      */
+     float tilt_y = 0.0F;
+ 
++    /**
++     * @brief Barrel rotation in degrees clockwise in the inclusive range `[0.0, 360.0)`, or negative when unknown.
++     */
++    float rotation = -1.0F;
++
+     /**
+      * @brief Pointer transition represented by this tool state.
+      */
+diff --git a/src/platform/linux/uhid_backend.cpp b/src/platform/linux/uhid_backend.cpp
+index 34d68e2..78d132b 100644
+--- a/src/platform/linux/uhid_backend.cpp
++++ b/src/platform/linux/uhid_backend.cpp
+@@ -93,6 +93,8 @@ namespace lvh::detail {
+     constexpr auto tablet_pressure_max = 4096;
+     constexpr auto tablet_distance_max = 1024;
+     constexpr auto tablet_resolution = 28;
++    constexpr auto touch_contact_axis_max = std::max(touch_axis_max_x, touch_axis_max_y);
++    constexpr auto tablet_rotation_max = 359;
+     constexpr std::int32_t mouse_scroll_units_per_detent = 120;
+ #if defined(REL_WHEEL_HI_RES)
+     constexpr std::optional<std::uint16_t> vertical_high_resolution_scroll_code = REL_WHEEL_HI_RES;
+@@ -872,6 +874,42 @@ namespace lvh::detail {
+       return std::clamp(value, -90, 90);
+     }
+ 
++    /**
++     * @brief Contact ellipse axes in touchscreen units.
++     *
++     * @param contact Contact whose axes are in viewport pixels.
++     * @return Major and minor axes, both zero when the contact area is unknown.
++     */
++    std::pair<int, int> touch_contact_area_units(const TouchContact &contact) {
++      if (!(contact.contact_major_axis > 0.0F) || contact.viewport.width <= 0 || contact.viewport.height <= 0) {
++        return {0, 0};
++      }
++      // An unknown minor axis means a round contact.
++      const auto major = static_cast<double>(contact.contact_major_axis);
++      const auto minor = contact.contact_minor_axis > 0.0F ? static_cast<double>(contact.contact_minor_axis) : major;
++      const auto units_x = static_cast<double>(touch_axis_max_x) / contact.viewport.width;
++      const auto units_y = static_cast<double>(touch_axis_max_y) / contact.viewport.height;
++      // The major axis points `orientation` degrees clockwise from vertical; the minor axis is perpendicular to it.
++      const auto theta = static_cast<double>(clamp_degrees(contact.orientation)) * std::numbers::pi / 180.0;
++      const auto to_units = [](double value) {
++        return std::clamp(static_cast<int>(std::lround(value)), 1, touch_contact_axis_max);
++      };
++      const auto major_units = to_units(major * std::hypot(std::sin(theta) * units_x, std::cos(theta) * units_y));
++      const auto minor_units = to_units(minor * std::hypot(std::cos(theta) * units_x, std::sin(theta) * units_y));
++      return {std::max(major_units, minor_units), std::min(major_units, minor_units)};
++    }
++
++    /**
++     * @brief ABS_Z for a pen's barrel rotation.
++     *
++     * @param degrees Rotation in degrees clockwise.
++     * @return Axis value; libinput reports ABS_Z as `(value / 360 * 360 + 90) mod 360` degrees.
++     */
++    int tablet_rotation_units(float degrees) {
++      const auto rotation = static_cast<int>(std::lround(degrees)) % 360;
++      return (rotation + 270) % 360;
++    }
++
+     int tablet_tilt_units(float degrees) {
+       const auto radians = std::clamp(degrees, -90.0F, 90.0F) * static_cast<float>(std::numbers::pi) / 180.0F;
+       return static_cast<int>(std::lround(radians * tablet_resolution));
+@@ -1325,6 +1363,18 @@ namespace lvh::detail {
+       if (const auto status = configure_evdev_touch_axes(device); !status.ok()) {
+         return status;
+       }
++      // Contact area, and the palm tool type that cancels a contact instead of lifting it.
++      auto contact_axis = make_absinfo(0, touch_contact_axis_max);
++      if (const auto status = enable_evdev_code(device, EV_ABS, ABS_MT_TOUCH_MAJOR, "touch absolute axis", &contact_axis); !status.ok()) {
++        return status;
++      }
++      if (const auto status = enable_evdev_code(device, EV_ABS, ABS_MT_TOUCH_MINOR, "touch absolute axis", &contact_axis); !status.ok()) {
++        return status;
++      }
++      auto tool_type = make_absinfo(0, MT_TOOL_MAX);
++      if (const auto status = enable_evdev_code(device, EV_ABS, ABS_MT_TOOL_TYPE, "touch absolute axis", &tool_type); !status.ok()) {
++        return status;
++      }
+       return enable_evdev_property(device, INPUT_PROP_DIRECT, "direct touch");
+     }
+ 
+@@ -1388,6 +1438,10 @@ namespace lvh::detail {
+       if (const auto status = enable_evdev_code(device, EV_ABS, ABS_TILT_Y, "pen tablet absolute axis", &tilt_y); !status.ok()) {
+         return status;
+       }
++      auto rotation = make_absinfo(0, tablet_rotation_max);
++      if (const auto status = enable_evdev_code(device, EV_ABS, ABS_Z, "pen tablet absolute axis", &rotation); !status.ok()) {
++        return status;
++      }
+ 
+       if (const auto status = enable_evdev_property(device, INPUT_PROP_POINTER, "tablet pointer"); !status.ok()) {
+         return status;
+@@ -1987,6 +2041,13 @@ namespace lvh::detail {
+           return status;
+         }
+         if (new_slot_) {
++          if (palm_slots_[*slot]) {
++            // libinput reads the tool type when the tracking id starts; a palm left in this slot would hide the touch.
++            if (const auto status = emit_event(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_FINGER); !status.ok()) {
++              return status;
++            }
++            palm_slots_[*slot] = false;
++          }
+           const auto tracking_id = next_tracking_id_;
+           next_tracking_id_ = (next_tracking_id_ + 1U) % touch_tracking_id_count;
+           if (const auto status = emit_event(EV_ABS, ABS_MT_TRACKING_ID, static_cast<std::int32_t>(tracking_id)); !status.ok()) {
+@@ -2028,10 +2089,19 @@ namespace lvh::detail {
+         if (const auto status = emit_event(EV_ABS, ABS_MT_ORIENTATION, clamp_degrees(contact.orientation)); !status.ok()) {
+           return status;
+         }
++        if (!update_trackpad_buttons) {
++          const auto [major, minor] = touch_contact_area_units(contact);
++          if (const auto status = emit_event(EV_ABS, ABS_MT_TOUCH_MAJOR, major); !status.ok()) {
++            return status;
++          }
++          if (const auto status = emit_event(EV_ABS, ABS_MT_TOUCH_MINOR, minor); !status.ok()) {
++            return status;
++          }
++        }
+         return sync();
+       }
+ 
+-      OperationStatus release_touch_contact(std::int32_t contact_id, bool update_trackpad_buttons) {
++      OperationStatus release_touch_contact(std::int32_t contact_id, PointerTransition transition, bool update_trackpad_buttons) {
+         if (!is_open()) {
+           return OperationStatus::failure(ErrorCode::device_closed, "uinput touch device is closed");
+         }
+@@ -2043,7 +2113,15 @@ namespace lvh::detail {
+         if (const auto status = select_slot(slot_it->second); !status.ok()) {
+           return status;
+         }
++        const auto slot = slot_it->second;
+         contacts_.erase(slot_it);
++        if (!update_trackpad_buttons && transition == PointerTransition::cancel) {
++          // libinput cancels a contact that turns into a palm (LIBINPUT_EVENT_TOUCH_CANCEL) instead of lifting it.
++          if (const auto status = emit_event(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_PALM); !status.ok()) {
++            return status;
++          }
++          palm_slots_[slot] = true;
++        }
+         if (const auto status = emit_event(EV_ABS, ABS_MT_TRACKING_ID, -1); !status.ok()) {
+           return status;
+         }
+@@ -2136,6 +2214,7 @@ namespace lvh::detail {
+ 
+       std::string device_name_;
+       std::map<std::int32_t, int> contacts_;
++      std::array<bool, touch_max_contacts> palm_slots_ {};
+       int current_slot_ = -1;
+       std::uint32_t next_tracking_id_ = 0;
+       bool new_slot_ = false;
+@@ -2161,8 +2240,8 @@ namespace lvh::detail {
+         return place_touch_contact(contact, false);
+       }
+ 
+-      OperationStatus release_contact(std::int32_t contact_id, PointerTransition /*transition*/) override {
+-        return release_touch_contact(contact_id, false);
++      OperationStatus release_contact(std::int32_t contact_id, PointerTransition transition) override {
++        return release_touch_contact(contact_id, transition, false);
+       }
+ 
+       OperationStatus close() override {
+@@ -2194,8 +2273,8 @@ namespace lvh::detail {
+         return place_touch_contact(contact, true);
+       }
+ 
+-      OperationStatus release_contact(std::int32_t contact_id, PointerTransition /*transition*/) override {
+-        return release_touch_contact(contact_id, true);
++      OperationStatus release_contact(std::int32_t contact_id, PointerTransition transition) override {
++        return release_touch_contact(contact_id, transition, true);
+       }
+ 
+       OperationStatus button(bool pressed) override {
+@@ -2278,6 +2357,15 @@ namespace lvh::detail {
+         if (const auto status = map_output(state.viewport, true); !status.ok()) {
+           return status;
+         }
++        if (state.transition == PointerTransition::leave || state.transition == PointerTransition::cancel) {
++          if (!in_proximity_) {
++            return OperationStatus::success();
++          }
++          if (const auto status = leave_proximity(); !status.ok()) {
++            return status;
++          }
++          return sync();
++        }
+         if (const auto status = update_pen_tool(state.tool); !status.ok()) {
+           return status;
+         }
+@@ -2293,6 +2381,9 @@ namespace lvh::detail {
+         if (const auto status = emit_pen_tilt(state); !status.ok()) {
+           return status;
+         }
++        if (const auto status = emit_pen_rotation(state.rotation); !status.ok()) {
++          return status;
++        }
+         return sync();
+       }
+ 
+@@ -2300,6 +2391,11 @@ namespace lvh::detail {
+         if (!is_open()) {
+           return OperationStatus::failure(ErrorCode::device_closed, "uinput pen tablet is closed");
+         }
++        held_buttons_[static_cast<std::size_t>(button)] = pressed;
++        if (!in_proximity_) {
++          // libinput ignores buttons out of proximity; the button is pressed when the tool comes in.
++          return OperationStatus::success();
++        }
+         if (const auto status = emit_event(EV_KEY, static_cast<std::uint16_t>(pen_button_to_linux(button)), pressed ? 1 : 0); !status.ok()) {
+           return status;
+         }
+@@ -2323,20 +2419,77 @@ namespace lvh::detail {
+         return emit_event(EV_KEY, static_cast<std::uint16_t>(tool_code), value);
+       }
+ 
+-      OperationStatus update_pen_tool(PenToolType tool) {
+-        if (tool == PenToolType::unchanged || tool == last_tool_) {
++      OperationStatus update_pen_tool(PenToolType requested_tool) {
++        const auto tool = requested_tool == PenToolType::unchanged ? last_tool_ : requested_tool;
++        if (tool == PenToolType::unchanged || (in_proximity_ && tool == last_tool_)) {
+           return OperationStatus::success();
+         }
++        if (in_proximity_) {
++          // libinput needs the old tool out of proximity, in its own frame, before the new one comes in.
++          if (const auto status = leave_proximity(); !status.ok()) {
++            return status;
++          }
++          if (const auto status = sync(); !status.ok()) {
++            return status;
++          }
++        }
+         if (const auto status = emit_pen_tool(tool, 1); !status.ok()) {
+           return status;
+         }
++        last_tool_ = tool;
++        in_proximity_ = true;
++        return emit_held_buttons(1);
++      }
++
++      /**
++       * @brief Lift the tip and take the tool out of proximity, releasing its buttons on the device.
++       *
++       * @return Emission status; the caller syncs.
++       */
++      OperationStatus leave_proximity() {
++        if (const auto status = emit_event(EV_KEY, BTN_TOUCH, 0); !status.ok()) {
++          return status;
++        }
++        if (const auto status = emit_event(EV_ABS, ABS_PRESSURE, 0); !status.ok()) {
++          return status;
++        }
++        // Buttons still held stay held, and are pressed again when the tool comes back.
++        if (const auto status = emit_held_buttons(0); !status.ok()) {
++          return status;
++        }
+         if (const auto status = emit_pen_tool(last_tool_, 0); !status.ok()) {
+           return status;
+         }
+-        last_tool_ = tool;
++        in_proximity_ = false;
++        return OperationStatus::success();
++      }
++
++      /**
++       * @brief Emit a value for each held button.
++       *
++       * @param value 1 to press them, 0 to release them.
++       * @return Emission status.
++       */
++      OperationStatus emit_held_buttons(std::int32_t value) {
++        for (std::size_t index = 0; index < held_buttons_.size(); ++index) {
++          if (!held_buttons_[index]) {
++            continue;
++          }
++          const auto code = pen_button_to_linux(static_cast<PenButton>(index));
++          if (const auto status = emit_event(EV_KEY, static_cast<std::uint16_t>(code), value); !status.ok()) {
++            return status;
++          }
++        }
+         return OperationStatus::success();
+       }
+ 
++      OperationStatus emit_pen_rotation(float rotation) {
++        if (rotation < 0.0F) {
++          return OperationStatus::success();
++        }
++        return emit_event(EV_ABS, ABS_Z, tablet_rotation_units(rotation));
++      }
++
+       OperationStatus emit_pen_position(const PenToolState &state) {
+         if (const auto status = emit_event(EV_ABS, ABS_X, scale_normalized_axis(state.x, touch_axis_max_x)); !status.ok()) {
+           return status;
+@@ -2379,6 +2532,8 @@ namespace lvh::detail {
+ 
+       std::string device_name_;
+       PenToolType last_tool_ = PenToolType::unchanged;
++      bool in_proximity_ = false;
++      std::array<bool, 3> held_buttons_ {};  ///< Indexed by PenButton.
+     };
+ 
+ #if defined(LIBVIRTUALHID_HAVE_XTEST)
+diff --git a/tests/fixtures/include/fixtures/linux_backend_test_hooks.hpp b/tests/fixtures/include/fixtures/linux_backend_test_hooks.hpp
+index 6f1ad16..c741107 100644
+--- a/tests/fixtures/include/fixtures/linux_backend_test_hooks.hpp
++++ b/tests/fixtures/include/fixtures/linux_backend_test_hooks.hpp
+@@ -10,6 +10,7 @@
+ #include <optional>
+ #include <string>
+ #include <string_view>
++#include <utility>
+ #include <vector>
+ 
+ // local includes
+@@ -488,6 +489,36 @@ namespace lvh::detail::test {
+     OperationStatus pen_tablet_close_status;
+   };
+ 
++  /**
++   * @brief One operation on a pipe-backed uinput touchscreen.
++   */
++  struct LinuxTouchStep {
++    /**
++     * @brief Contact to place, or whose id to release.
++     */
++    TouchContact contact;
++
++    /**
++     * @brief Release the contact with this transition instead of placing it.
++     */
++    std::optional<PointerTransition> release;
++  };
++
++  /**
++   * @brief One operation on a pipe-backed uinput pen tablet.
++   */
++  struct LinuxPenStep {
++    /**
++     * @brief Tool state to place.
++     */
++    PenToolState state;
++
++    /**
++     * @brief Press (true) or release (false) this button instead of placing the tool.
++     */
++    std::optional<std::pair<PenButton, bool>> button;
++  };
++
+   /**
+    * @brief Event code recorded from a fake libevdev device definition.
+    */
+@@ -1048,6 +1079,22 @@ namespace lvh::detail::test {
+    */
+   LinuxInputSubmissionResult linux_uinput_pen_tablet_transition_pipe();
+ 
++  /**
++   * @brief Run touchscreen operations through a pipe-backed uinput touchscreen.
++   *
++   * @param steps Operations in order.
++   * @return Status of the first failing operation (or success) and captured input events.
++   */
++  LinuxInputSubmissionResult linux_uinput_touchscreen_steps_pipe(const std::vector<LinuxTouchStep> &steps);
++
++  /**
++   * @brief Run pen tablet operations through a pipe-backed uinput pen tablet.
++   *
++   * @param steps Operations in order.
++   * @return Status of the first failing operation (or success) and captured input events.
++   */
++  LinuxInputSubmissionResult linux_uinput_pen_tablet_steps_pipe(const std::vector<LinuxPenStep> &steps);
++
+   /**
+    * @brief Submit pen tablet events after close.
+    *
+diff --git a/tests/fixtures/linux_backend_test_hooks.cpp b/tests/fixtures/linux_backend_test_hooks.cpp
+index ee5fe61..a6fd028 100644
+--- a/tests/fixtures/linux_backend_test_hooks.cpp
++++ b/tests/fixtures/linux_backend_test_hooks.cpp
+@@ -1676,6 +1676,46 @@ namespace lvh::detail::test {
+     return {std::move(status), std::move(records)};
+   }
+ 
++  LinuxInputSubmissionResult linux_uinput_touchscreen_steps_pipe(const std::vector<LinuxTouchStep> &steps) {
++    std::array<int, 2> descriptors {-1, -1};
++    if (::pipe(descriptors.data()) != 0) {
++      return {system_error_status(ErrorCode::backend_failure, "failed to create pipe", errno), {}};
++    }
++
++    UinputTouchscreen touchscreen {descriptors[1]};
++    auto status = OperationStatus::success();
++    for (const auto &step : steps) {
++      status = step.release ? touchscreen.release_contact(step.contact.id, *step.release) : touchscreen.place_contact(step.contact);
++      if (!status.ok()) {
++        break;
++      }
++    }
++    static_cast<void>(touchscreen.close());
++    auto records = read_input_events_until_eof(descriptors[0]);
++    static_cast<void>(::close(descriptors[0]));
++    return {std::move(status), std::move(records)};
++  }
++
++  LinuxInputSubmissionResult linux_uinput_pen_tablet_steps_pipe(const std::vector<LinuxPenStep> &steps) {
++    std::array<int, 2> descriptors {-1, -1};
++    if (::pipe(descriptors.data()) != 0) {
++      return {system_error_status(ErrorCode::backend_failure, "failed to create pipe", errno), {}};
++    }
++
++    UinputPenTablet pen_tablet {descriptors[1]};
++    auto status = OperationStatus::success();
++    for (const auto &step : steps) {
++      status = step.button ? pen_tablet.button(step.button->first, step.button->second) : pen_tablet.place_tool(step.state);
++      if (!status.ok()) {
++        break;
++      }
++    }
++    static_cast<void>(pen_tablet.close());
++    auto records = read_input_events_until_eof(descriptors[0]);
++    static_cast<void>(::close(descriptors[0]));
++    return {std::move(status), std::move(records)};
++  }
++
+   OperationStatus linux_uinput_pen_tablet_closed_status() {
+     UinputPenTablet pen_tablet {-1};
+     static_cast<void>(pen_tablet.close());

@@ -295,6 +295,19 @@ if(UNIX AND NOT APPLE)
         target_compile_definitions(${PROJECT_NAME} PRIVATE TESTS_HAVE_LIBINPUT)
     endif()
 endif()
+
+# libvirtualhid's Linux backend test hooks run its uinput devices on pipes and a fake libevdev, so
+# tests/unit/platform/linux/test_virtualhid_uinput_devices.cpp checks the events and capabilities of the touch screen
+# and pen tablet (with Apollo's libvirtualhid patch) without /dev/uinput.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(LIBVIRTUALHID_LINUX_TEST_HOOKS "${libvirtualhid_SOURCE_DIR}/tests/fixtures/linux_backend_test_hooks.cpp")
+    target_sources(${PROJECT_NAME} PRIVATE "${LIBVIRTUALHID_LINUX_TEST_HOOKS}")
+    target_include_directories(${PROJECT_NAME} PRIVATE "${libvirtualhid_SOURCE_DIR}/tests/fixtures/include")
+    # The hooks compile the backend source again, with the library's private headers and definitions.
+    set_source_files_properties("${LIBVIRTUALHID_LINUX_TEST_HOOKS}" PROPERTIES
+            INCLUDE_DIRECTORIES "${libvirtualhid_SOURCE_DIR}/src"
+            COMPILE_DEFINITIONS "$<TARGET_PROPERTY:libvirtualhid,COMPILE_DEFINITIONS>")
+endif()
 target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST_DEFINITIONS})
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE ${SUNSHINE_LINK_OPTIONS})

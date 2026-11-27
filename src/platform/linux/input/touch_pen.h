@@ -10,8 +10,8 @@
  *          - a pen contact with unknown pressure still puts the tip down (libinput decides contact by pressure);
  *          - events without a position (leaving, cancels) keep the last position instead of jumping to 0,0;
  *          - a button-only event only changes buttons (see pen_buttons_only()).
- *          libvirtualhid cannot report touch cancels as palms, contact areas or pen rotation, and never takes the pen
- *          out of proximity; those are left as they are.
+ *          Palm cancels, contact area, pen rotation and the pen leaving proximity are done by the devices themselves,
+ *          with Apollo's libvirtualhid patch (patches/libvirtualhid-0001-*.patch).
  */
 #pragma once
 
