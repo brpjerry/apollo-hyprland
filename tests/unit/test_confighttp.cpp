@@ -2281,7 +2281,8 @@ TEST_F(ConfigHttpTest, BrowserWithoutCredentialsIsSentToLogin) {
 
 // Bugs caught: 0, False positives: 0
 TEST_F(ConfigHttpTest, FirstCredentialsAreRefusedOutsideTheAllowedOrigin) {
-  const auto credentials = std::filesystem::temp_directory_path() / "sunshine_test_first_credentials.json";  // NOSONAR(cpp:S5443): safe for tests
+  // In the build's test directory and named after this fixture's listening port, so concurrent runs never share it.
+  const auto credentials = std::filesystem::path(SUNSHINE_TEST_BIN_DIR) / std::format("first_credentials_{}.json", port);
   std::filesystem::remove(credentials);
   const auto saved_origin = http::origin_web_ui_allowed;
   const auto saved_credentials_file = config::sunshine.credentials_file;

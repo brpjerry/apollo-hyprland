@@ -621,7 +621,9 @@ ufw application profile for the default base port 47989, but leave them disabled
 and 48010 and UDP 47998-48000; discovery uses mDNS on UDP 5353.
 
 Open them only on the network you stream over. Replace `home` with that network's zone from
-`firewall-cmd --get-active-zones`, or `enp3s0` with its network interface:
+`firewall-cmd --get-active-zones`, or `enp3s0` with its network interface. A firewalld service opens every interface
+in the zone, so check that the zone holds only the streaming network's interfaces; if it also holds an untrusted one,
+put the streaming interface in a zone of its own first.
 
 ```bash
 # firewalld (the service includes mDNS)
@@ -641,7 +643,8 @@ UDP 5353:
 - With ufw, copy `/etc/ufw/applications.d/apollo` to `/etc/ufw/applications.d/apollo-local`, rename its section to
   `[Apollo Local]`, edit the ports, and enable `'Apollo Local'` as above. If you enabled `Apollo` before, remove its
   rules with `sudo ufw status numbered` and `sudo ufw delete NUMBER`, checking the numbers again after each deletion.
-  After later port edits, run `sudo ufw app update 'Apollo Local'`.
+  After later port edits, run `sudo ufw app update 'Apollo Local'`, then `sudo ufw reload` (`app update` skips the
+  reload in some sessions, such as over SSH, which leaves the old ports open until the next reload).
 
 AppImage, Flatpak, Homebrew and `/usr/local` builds don't install the definitions where firewalld and ufw look. Copy
 them from `src_assets/linux/misc/firewall/` in the matching source tree: `apollo.xml` to
