@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -247,6 +248,8 @@ namespace platf {
       std::function<int(pid_t tid, int nice)> set_nice;
       /// Lowest nice level RLIMIT_NICE lets the process set without CAP_SYS_NICE (20 - rlim_cur).
       std::function<int()> nice_floor;
+      /// Current nice level of a thread, or -20 when it cannot be read (so that nothing is set in its place).
+      std::function<int(pid_t tid)> current_nice;
     };
 
     /**
@@ -262,9 +265,11 @@ namespace platf {
      * @brief Carries out thread priority requests, logging each kind of failure once per process.
      *
      * Negative nice levels (higher priority) are asked of RTKit first. Once RTKit turns out to be missing it is not
-     * asked again. Otherwise, and for nice levels of 0 and above, setpriority() is used. When it is refused and
-     * RLIMIT_NICE allows a level between the requested one and 0, that level is set instead. A refusal is logged
-     * as a warning once, with what would grant the priority, and at debug level after that. Thread-safe.
+     * asked again; the first such request runs alone, so threads that start together ask it once. Otherwise, and
+     * for nice levels of 0 and above, setpriority() is used. When it is refused and RLIMIT_NICE allows a level
+     * between the requested one and 0 that is better than the thread's current one (which it may have inherited),
+     * that level is set instead. A refusal is logged as a warning once, with what would grant the priority, and at
+     * debug level after that. Thread-safe.
      */
     class adjuster_t {
     public:
@@ -286,7 +291,18 @@ namespace platf {
       outcome_t apply(pid_t tid, int nice, std::string_view thread_name);
 
     private:
+      /**
+       * @brief Carry out one request; apply() serializes the first request for a higher priority.
+       *
+       * @param tid Kernel thread id.
+       * @param nice Requested nice level.
+       * @param thread_name Name used in log messages.
+       * @return How the request was carried out.
+       */
+      outcome_t apply_request(pid_t tid, int nice, std::string_view thread_name);
+
       backend_t backend_;  ///< System calls in use.
+      std::once_flag first_raise_;  ///< The first request for a higher priority finds out whether RTKit is there.
       std::atomic<bool> rtkit_unavailable_ {false};  ///< RTKit was found missing; not asked again.
       std::atomic<bool> warned_ {false};  ///< The refusal warning was logged.
     };

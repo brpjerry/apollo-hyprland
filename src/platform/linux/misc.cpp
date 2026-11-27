@@ -21,6 +21,7 @@
 #include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -718,6 +719,20 @@ namespace platf {
     }
 
     outcome_t adjuster_t::apply(pid_t tid, int nice, std::string_view thread_name) {
+      // Streaming threads start together: the first one finds out whether RTKit is there while the others wait.
+      if (nice < 0) {
+        std::optional<outcome_t> first;
+        std::call_once(first_raise_, [&]() {
+          first = apply_request(tid, nice, thread_name);
+        });
+        if (first) {
+          return *first;
+        }
+      }
+      return apply_request(tid, nice, thread_name);
+    }
+
+    outcome_t adjuster_t::apply_request(pid_t tid, int nice, std::string_view thread_name) {
       // Only a higher priority than the default needs RTKit; anyone may lower the priority of their own threads.
       if (nice < 0 && !rtkit_unavailable_.load(std::memory_order_relaxed)) {
         std::string error;
@@ -744,7 +759,8 @@ namespace platf {
 
       // RLIMIT_NICE may allow part of the way (LimitNICE= in a systemd unit, "nice" in limits.conf).
       if (status == EACCES || status == EPERM) {
-        if (const int floor = backend_.nice_floor(); floor > nice && floor < 0 && backend_.set_nice(tid, floor) == 0) {
+        // Never below the level the thread has (inherited from a process started at a higher priority, say).
+        if (const int floor = backend_.nice_floor(); floor > nice && floor < 0 && floor < backend_.current_nice(tid) && backend_.set_nice(tid, floor) == 0) {
           BOOST_LOG(debug) << "setpriority set thread ["sv << thread_name << "] to nice "sv << floor << ", the limit of RLIMIT_NICE, instead of "sv << nice;
           return {method_e::clamped, floor, false};
         }
@@ -752,7 +768,7 @@ namespace platf {
 
       if (!warned_.exchange(true)) {
         BOOST_LOG(warning) << "Could not raise the priority of thread ["sv << thread_name << "] to nice "sv << nice << ": "sv << std::strerror(status)
-                           << ". Streaming threads run at the default priority. Installing rtkit, or granting CAP_SYS_NICE or an RLIMIT_NICE "sv
+                           << ". The thread keeps its current priority. Installing rtkit, or granting CAP_SYS_NICE or an RLIMIT_NICE "sv
                            << "(LimitNICE= in the service unit), lets them run ahead of other work. Further failures are logged at debug level."sv;
         return {method_e::failed, 0, true};
       }
@@ -766,7 +782,11 @@ namespace platf {
         g_autoptr(GDBusConnection) conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM, nullptr, &err);
         if (!conn) {
           error = err ? err->message : "no system bus";
-          return rtkit_result_e::unavailable;
+          // No bus socket, or nobody listening on it, stays so. Anything else (out of file descriptors, say) may pass.
+          if (!err || g_error_matches(err, G_IO_ERROR, G_IO_ERROR_NOT_FOUND) || g_error_matches(err, G_IO_ERROR, G_IO_ERROR_CONNECTION_REFUSED)) {
+            return rtkit_result_e::unavailable;
+          }
+          return rtkit_result_e::failed;
         }
 
         // A bounded wait: the default D-Bus timeout is 25 seconds, and this runs as streaming threads start.
@@ -795,14 +815,24 @@ namespace platf {
         return rtkit_result_e::failed;
       }
 
-      int set_thread_nice(pid_t tid, int nice) {
-        // On Linux the nice level belongs to the thread, so PRIO_PROCESS with a thread id sets that thread alone.
+      id_t priority_target(pid_t tid) {
+        // On Linux the nice level belongs to the thread, so PRIO_PROCESS with a thread id names that thread alone.
 #if defined(__FreeBSD__)
-        const id_t who = 0;
+        return 0;
 #else
-        const id_t who = static_cast<id_t>(tid);
+        return static_cast<id_t>(tid);
 #endif
-        return setpriority(PRIO_PROCESS, who, nice) == -1 ? errno : 0;
+      }
+
+      int set_thread_nice(pid_t tid, int nice) {
+        return setpriority(PRIO_PROCESS, priority_target(tid), nice) == -1 ? errno : 0;
+      }
+
+      int thread_nice(pid_t tid) {
+        // getpriority() returns -1 for nice -1 too: only errno tells a failure.
+        errno = 0;
+        const int value = getpriority(PRIO_PROCESS, priority_target(tid));
+        return errno == 0 ? value : -20;
       }
 
       int rlimit_nice_floor() {
@@ -822,6 +852,7 @@ namespace platf {
         .rtkit = rtkit_make_high_priority,
         .set_nice = set_thread_nice,
         .nice_floor = rlimit_nice_floor,
+        .current_nice = thread_nice,
       };
     }
   }  // namespace thread_priority

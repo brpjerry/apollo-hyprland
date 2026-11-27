@@ -11,10 +11,13 @@
 
   // standard includes
   #include <array>
+  #include <atomic>
   #include <cerrno>
   #include <chrono>
+  #include <condition_variable>
   #include <cstdlib>
   #include <cstring>
+  #include <mutex>
   #include <optional>
   #include <string>
   #include <thread>
@@ -255,7 +258,10 @@ namespace {
     tp::rtkit_result_e rtkit_result {tp::rtkit_result_e::unavailable};  ///< What RTKit answers.
     int lowest_allowed {0};  ///< Lowest nice level set_nice accepts; lower ones fail with EACCES.
     int floor {20};  ///< What nice_floor reports.
-    int rtkit_calls {0};  ///< RTKit requests made.
+    int current {0};  ///< What current_nice reports.
+    std::chrono::milliseconds rtkit_delay {0};  ///< How long RTKit takes to answer.
+    std::atomic<int> rtkit_calls {0};  ///< RTKit requests made.
+    std::mutex mutex;  ///< Guards set_nice_calls: several threads may request at once.
     std::vector<int> set_nice_calls;  ///< Nice levels passed to set_nice.
 
     /**
@@ -267,15 +273,20 @@ namespace {
       return {
         .rtkit = [this](pid_t, int, std::string &error) {
           ++rtkit_calls;
+          std::this_thread::sleep_for(rtkit_delay);
           error = "The name is not activatable";
           return rtkit_result;
         },
         .set_nice = [this](pid_t, int nice) {
+          std::lock_guard lock {mutex};
           set_nice_calls.push_back(nice);
           return nice < lowest_allowed ? EACCES : 0;
         },
         .nice_floor = [this]() {
           return floor;
+        },
+        .current_nice = [this](pid_t) {
+          return current;
         },
       };
     }
@@ -291,7 +302,7 @@ TEST(ThreadPriorityTest, RtkitSetsHigherPriority) {
   auto outcome = adjuster.apply(1, -10, "test");
   EXPECT_EQ(outcome.method, tp::method_e::rtkit);
   EXPECT_EQ(outcome.nice, -10);
-  EXPECT_EQ(fake.rtkit_calls, 1);
+  EXPECT_EQ(fake.rtkit_calls.load(), 1);
   EXPECT_TRUE(fake.set_nice_calls.empty());
 }
 
@@ -303,7 +314,7 @@ TEST(ThreadPriorityTest, MissingRtkitIsAskedOnlyOnce) {
 
   EXPECT_EQ(adjuster.apply(1, -10, "first").method, tp::method_e::setpriority);
   EXPECT_EQ(adjuster.apply(2, -15, "second").method, tp::method_e::setpriority);
-  EXPECT_EQ(fake.rtkit_calls, 1);
+  EXPECT_EQ(fake.rtkit_calls.load(), 1);
   EXPECT_EQ(fake.set_nice_calls, (std::vector<int> {-10, -15}));
 }
 
@@ -316,7 +327,7 @@ TEST(ThreadPriorityTest, RtkitRefusalIsRetriedOnTheNextThread) {
 
   adjuster.apply(1, -10, "first");
   adjuster.apply(2, -10, "second");
-  EXPECT_EQ(fake.rtkit_calls, 2);
+  EXPECT_EQ(fake.rtkit_calls.load(), 2);
   EXPECT_EQ(fake.set_nice_calls.size(), 2u);
 }
 
@@ -351,6 +362,53 @@ TEST(ThreadPriorityTest, ClampsToRlimitNice) {
 }
 
 // Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, NoClampBelowAnInheritedPriority) {
+  // A process started at nice -10, with a limit of -5: a thread that asks for -15 keeps the -10 it inherited.
+  fake_priority_backend_t fake;
+  fake.lowest_allowed = -5;
+  fake.floor = -5;
+  fake.current = -10;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, -15, "test").method, tp::method_e::failed);
+  EXPECT_EQ(fake.set_nice_calls, (std::vector<int> {-15}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, ThreadsStartingTogetherAskMissingRtkitOnce) {
+  fake_priority_backend_t fake;
+  fake.lowest_allowed = -20;
+  fake.rtkit_delay = std::chrono::milliseconds(50);
+  tp::adjuster_t adjuster {fake.backend()};
+  std::mutex mutex;
+
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 4; ++i) {
+    threads.emplace_back([&adjuster, &mutex, i]() {
+      auto outcome = adjuster.apply(i + 1, -10, "test");
+      std::lock_guard lock {mutex};
+      EXPECT_EQ(outcome.method, tp::method_e::setpriority);
+    });
+  }
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(fake.rtkit_calls.load(), 1);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, RtkitIsUsedOnceATransientFailurePasses) {
+  fake_priority_backend_t fake;
+  fake.rtkit_result = tp::rtkit_result_e::failed;
+  fake.lowest_allowed = -20;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, -10, "first").method, tp::method_e::setpriority);
+  fake.rtkit_result = tp::rtkit_result_e::ok;
+  EXPECT_EQ(adjuster.apply(2, -10, "second").method, tp::method_e::rtkit);
+}
+
+// Bugs caught: 0, False positives: 0
 TEST(ThreadPriorityTest, NoClampWhenRlimitNiceAllowsNothing) {
   fake_priority_backend_t fake;
   fake.floor = 0;
@@ -367,7 +425,7 @@ TEST(ThreadPriorityTest, LowerPriorityDoesNotAskRtkit) {
   tp::adjuster_t adjuster {fake.backend()};
 
   EXPECT_EQ(adjuster.apply(1, 10, "test").method, tp::method_e::setpriority);
-  EXPECT_EQ(fake.rtkit_calls, 0);
+  EXPECT_EQ(fake.rtkit_calls.load(), 0);
 }
 
 // Bugs caught: 0, False positives: 0
@@ -377,19 +435,40 @@ TEST(ThreadPriorityTest, SystemBackendSetsOnlyTheGivenThread) {
   if (main_nice >= 19) {
     GTEST_SKIP() << "The test runs at the lowest priority already";
   }
-  int thread_nice = -100;
-  int status = -1;
 
-  // Raising the nice level needs no privilege. It is done on a thread of its own, which then ends.
+  // Raising the nice level needs no privilege. It is done from this thread to a worker that waits, so that a backend
+  // which ignored the thread id (and set the calling thread) would fail.
+  std::mutex mutex;
+  std::condition_variable cv;
+  pid_t worker_tid = 0;
+  bool done = false;
+  int worker_nice = -100;
   std::thread worker {[&]() {
-    status = backend.set_nice(gettid(), main_nice + 1);
-    thread_nice = getpriority(PRIO_PROCESS, static_cast<id_t>(gettid()));
+    std::unique_lock lock {mutex};
+    worker_tid = gettid();
+    cv.notify_all();
+    cv.wait(lock, [&]() {
+      return done;
+    });
+    worker_nice = getpriority(PRIO_PROCESS, static_cast<id_t>(gettid()));
   }};
+  int status = -1;
+  {
+    std::unique_lock lock {mutex};
+    cv.wait(lock, [&]() {
+      return worker_tid != 0;
+    });
+    status = backend.set_nice(worker_tid, main_nice + 1);
+    EXPECT_EQ(backend.current_nice(worker_tid), main_nice + 1);
+    done = true;
+    cv.notify_all();
+  }
   worker.join();
 
   EXPECT_EQ(status, 0);
-  EXPECT_EQ(thread_nice, main_nice + 1);
+  EXPECT_EQ(worker_nice, main_nice + 1);
   EXPECT_EQ(getpriority(PRIO_PROCESS, static_cast<id_t>(gettid())), main_nice);
+  EXPECT_EQ(backend.current_nice(gettid()), main_nice);
   const int floor = backend.nice_floor();
   EXPECT_GE(floor, -20);
   EXPECT_LE(floor, 20);
