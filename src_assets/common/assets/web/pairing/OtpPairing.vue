@@ -4,7 +4,8 @@
       <div v-show="showLink" ref="qrContainer" class="qr-container mb-2 p-2 bg-white align-self-center"></div>
       <p v-if="showLink" class="text-center text-secondary d-flex align-items-center justify-content-center gap-2">
         <a class="text-secondary" :href="deepLink">art://{{ hostAddr }}:{{ hostPort }}</a>
-        <button type="button" class="btn btn-link btn-sm p-0 text-secondary" :title="$t('pin.otp_edit_host')" @click="editHost">
+        <button type="button" class="btn btn-link btn-sm p-0 text-secondary" :title="$t('pin.otp_edit_host')"
+                :disabled="editingHost && !hostAddr" @click="editHost">
           <pencil :size="16" class="icon"></pencil>
         </button>
       </p>
@@ -151,7 +152,11 @@
         this.otpStatus = 'warning'
         this.passphrase = ''
       },
+      /** @brief Open or close the host editor; it stays open while it is the only way to enter an address. */
       editHost() {
+        if (this.editingHost && !this.hostAddr) {
+          return
+        }
         this.editingHost = !this.editingHost
       },
       async saveHost() {

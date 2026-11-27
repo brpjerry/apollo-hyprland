@@ -439,6 +439,10 @@ describe('OTP pairing', () => {
     await flushPromises()
     expect(wrapper.find('#otp-host').exists()).toBe(true)
 
+    // The edit button cannot close the editor while it is the only way to enter an address.
+    await wrapper.get('button[title="pin.otp_edit_host"]').trigger('click')
+    expect(wrapper.find('#otp-host').exists()).toBe(true)
+
     vi.runOnlyPendingTimers()
     await flushPromises()
     expect(wrapper.find('#otp-host').exists()).toBe(false)
