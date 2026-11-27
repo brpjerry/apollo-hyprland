@@ -398,6 +398,7 @@ namespace video {
       YUV444,  ///< YUV 4:4:4 support.
       DYNAMIC_RANGE_YUV444,  ///< YUV 4:4:4 HDR support.
       VUI_PARAMETERS,  ///< AMD encoder with VAAPI doesn't add VUI parameters to SPS.
+      REF_FRAME_INVALIDATION,  ///< The driver can invalidate reference frames for this codec (native NVENC).
       MAX_FLAGS  ///< Maximum number of flags.
     };
 
@@ -420,6 +421,7 @@ namespace video {
         _CONVERT(YUV444);
         _CONVERT(DYNAMIC_RANGE_YUV444);
         _CONVERT(VUI_PARAMETERS);
+        _CONVERT(REF_FRAME_INVALIDATION);
         _CONVERT(MAX_FLAGS);
       }
 #ifndef DOXYGEN

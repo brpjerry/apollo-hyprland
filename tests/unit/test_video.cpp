@@ -340,11 +340,38 @@ TEST_F(EncoderProbeResultsTest, FailedCodecProbeDoesNotPublishCapabilities) {
   }
 }
 
+// Bugs caught: 0, False positives: 0
+TEST_F(EncoderProbeResultsTest, ReferenceFrameInvalidationNeedsTheDriverForEveryOfferedCodec) {
+  constexpr uint32_t ref_frames_invalidation = 1 << 8;  // Mirrors REF_FRAMES_INVALIDATION in video.cpp.
+  video::encoder_t encoder {"test"sv, {}, {}, {}, {}, {}, {}, ref_frames_invalidation};
+  encoder.h264[video::encoder_t::PASSED] = true;
+  encoder.h264[video::encoder_t::REF_FRAME_INVALIDATION] = true;
+  encoder.hevc[video::encoder_t::PASSED] = true;
+  encoder.hevc[video::encoder_t::REF_FRAME_INVALIDATION] = true;
+  // AV1 failed its probe: it isn't offered, so its missing support doesn't matter.
+  encoder.av1[video::encoder_t::PASSED] = false;
+  video::record_encoder_probe_results(encoder);
+  EXPECT_TRUE(video::last_encoder_probe_supported_ref_frames_invalidation);
+
+  // The driver can't invalidate HEVC references: clients would get an IDR frame for every request.
+  encoder.hevc[video::encoder_t::REF_FRAME_INVALIDATION] = false;
+  video::record_encoder_probe_results(encoder);
+  EXPECT_FALSE(video::last_encoder_probe_supported_ref_frames_invalidation);
+
+  // Encoders without invalidation never advertise it.
+  video::encoder_t ffmpeg {"ffmpeg"sv, {}, {}, {}, {}, {}, {}, 0};
+  ffmpeg.h264[video::encoder_t::PASSED] = true;
+  ffmpeg.h264[video::encoder_t::REF_FRAME_INVALIDATION] = true;
+  video::record_encoder_probe_results(ffmpeg);
+  EXPECT_FALSE(video::last_encoder_probe_supported_ref_frames_invalidation);
+}
+
 TEST_F(EncoderProbeResultsTest, SubsequentProbeReplacesPriorResults) {
   constexpr uint32_t ref_frames_invalidation = 1 << 8;  // Mirrors REF_FRAMES_INVALIDATION in video.cpp.
   video::encoder_t first {"first"sv, {}, {}, {}, {}, {}, {}, ref_frames_invalidation};
   for (auto *codec : {&first.h264, &first.hevc, &first.av1}) {
     (*codec)[video::encoder_t::PASSED] = true;
+    (*codec)[video::encoder_t::REF_FRAME_INVALIDATION] = true;
     (*codec)[video::encoder_t::YUV444] = true;
     (*codec)[video::encoder_t::DYNAMIC_RANGE] = true;
     (*codec)[video::encoder_t::DYNAMIC_RANGE_YUV444] = true;

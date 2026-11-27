@@ -27,6 +27,7 @@ namespace {
   struct fake_driver_t {
     CUresult push_status = CUDA_SUCCESS;  ///< Status cuCtxPushCurrent() returns.
     CUresult sync_status = CUDA_SUCCESS;  ///< Status cuStreamSynchronize() returns.
+    bool invalidation_cap = true;  ///< Whether the GPU reports reference picture invalidation.
     int context_depth = 0;  ///< Contexts pushed and not popped yet.
     int max_context_depth = 0;  ///< Deepest nesting seen.
     std::vector<CUcontext> pushed;  ///< Every context pushed.
@@ -39,6 +40,7 @@ namespace {
     std::uint32_t intra_refresh = 0;  ///< enableIntraRefresh of the last HEVC initialization.
     std::uint64_t last_timestamp = 0;  ///< inputTimeStamp of the last encoded picture.
     std::uint32_t last_pic_flags = 0;  ///< encodePicFlags of the last encoded picture.
+    std::vector<std::uint64_t> invalidated;  ///< Frame timestamps handed to nvEncInvalidateRefFrames().
     std::array<std::uint8_t, 4> bitstream {0, 0, 1, 0x40};  ///< Bytes every encoded frame returns.
   };
 
@@ -80,8 +82,10 @@ namespace {
         case NV_ENC_CAPS_HEIGHT_MAX:
           *value = 4096;
           break;
-        case NV_ENC_CAPS_SUPPORT_INTRA_REFRESH:
         case NV_ENC_CAPS_SUPPORT_REF_PIC_INVALIDATION:
+          *value = fake.invalidation_cap ? 1 : 0;
+          break;
+        case NV_ENC_CAPS_SUPPORT_INTRA_REFRESH:
         case NV_ENC_CAPS_SUPPORT_MULTIPLE_REF_FRAMES:
         case NV_ENC_CAPS_SUPPORT_YUV444_ENCODE:
           *value = 1;
@@ -135,8 +139,9 @@ namespace {
     list.nvEncUnlockBitstream = [](void *, NV_ENC_OUTPUT_PTR) {
       return NV_ENC_SUCCESS;
     };
-    list.nvEncInvalidateRefFrames = [](void *, std::uint64_t) {
+    list.nvEncInvalidateRefFrames = [](void *, std::uint64_t timestamp) {
       note_driver_call();
+      fake.invalidated.push_back(timestamp);
       return NV_ENC_SUCCESS;
     };
     list.nvEncUnregisterResource = [](void *, NV_ENC_REGISTERED_PTR) {
@@ -278,12 +283,16 @@ TEST_F(NvencCudaTest, InvalidatesReferenceFramesInsteadOfRequestingAnIdrFrame) {
   auto client = hevc_client();
   client.numRefFrames = 0;
   fake_nvenc_cuda_t encoder {test_surface()};
+  EXPECT_FALSE(encoder.supports_ref_frame_invalidation()) << "no session yet";
   ASSERT_TRUE(encoder.create_encoder({}, client, video::colorspace_from_client_config(client, false), platf::pix_fmt_e::nv12));
+  EXPECT_TRUE(encoder.supports_ref_frame_invalidation());
   for (std::uint64_t frame = 1; frame <= 3; ++frame) {
     ASSERT_FALSE(encoder.encode_frame(frame, frame == 1).data.empty());
   }
 
-  EXPECT_TRUE(encoder.invalidate_ref_frames(3, 3));
+  // The client lost frame 2; frame 3 references it, so the range grows to the last encoded frame.
+  EXPECT_TRUE(encoder.invalidate_ref_frames(2, 2));
+  EXPECT_EQ(fake.invalidated, (std::vector<std::uint64_t> {2, 3}));
   const auto recovered = encoder.encode_frame(4, false);
   EXPECT_FALSE(recovered.idr);
   EXPECT_TRUE(recovered.after_ref_frame_invalidation);
@@ -308,6 +317,19 @@ TEST_F(NvencCudaTest, IntraRefreshFollowsTheClientOrTheServerSetting) {
     ASSERT_TRUE(encoder.create_encoder(config, client, video::colorspace_from_client_config(client, false), platf::pix_fmt_e::nv12));
     EXPECT_EQ(fake.intra_refresh, expected) << "client " << client_asks << ", server " << server_forces;
   }
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(NvencCudaTest, ReportsNoInvalidationWhenTheGpuLacksIt) {
+  fake.invalidation_cap = false;
+  const auto client = hevc_client();
+  fake_nvenc_cuda_t encoder {test_surface()};
+  ASSERT_TRUE(encoder.create_encoder({}, client, video::colorspace_from_client_config(client, false), platf::pix_fmt_e::nv12));
+  EXPECT_FALSE(encoder.supports_ref_frame_invalidation());
+  ASSERT_FALSE(encoder.encode_frame(1, true).data.empty());
+  // The caller has to send an IDR frame instead.
+  EXPECT_FALSE(encoder.invalidate_ref_frames(1, 1));
+  EXPECT_TRUE(fake.invalidated.empty());
 }
 
 // Bugs caught: 0, False positives: 0

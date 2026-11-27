@@ -70,6 +70,15 @@ namespace nvenc {
      * @return `true` on success, `false` on error.
      */
     virtual bool invalidate_ref_frames(std::uint64_t first_frame, std::uint64_t last_frame) = 0;
+
+    /**
+     * @brief Report whether the created encoder can invalidate reference frames.
+     *
+     * @return `true` when the driver supports it for this codec and stream; `false` before `create_encoder()`.
+     */
+    virtual bool supports_ref_frame_invalidation() const {
+      return false;
+    }
   };
 
 }  // namespace nvenc

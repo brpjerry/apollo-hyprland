@@ -3560,6 +3560,7 @@ namespace video {
    */
   enum validate_flag_e {
     VUI_PARAMS = 0x01,  ///< VUI parameters
+    REF_FRAMES_INVALIDATED = 0x02,  ///< The created encoder can invalidate reference frames.
   };
 
   /**
@@ -3575,6 +3576,8 @@ namespace video {
     if (!encode_device) {
       return -1;
     }
+    // Owned by the session from here on; it tells whether the driver can invalidate reference frames.
+    const auto *nvenc_device = dynamic_cast<const platf::nvenc_encode_device_t *>(encode_device.get());
 
     auto session = make_encode_session(disp.get(), encoder, config, disp->width, disp->height, std::move(encode_device));
     if (!session) {
@@ -3606,6 +3609,10 @@ namespace video {
     }
 
     int flag = 0;
+
+    if (nvenc_device && nvenc_device->nvenc && nvenc_device->nvenc->supports_ref_frame_invalidation()) {
+      flag |= REF_FRAMES_INVALIDATED;
+    }
 
     // This check only applies for H.264 and HEVC
     if (config.videoFormat <= 1) {
@@ -3709,6 +3716,7 @@ namespace video {
 
     std::vector<std::pair<validate_flag_e, encoder_t::flag_e>> packet_deficiencies {
       {VUI_PARAMS, encoder_t::VUI_PARAMETERS},
+      {REF_FRAMES_INVALIDATED, encoder_t::REF_FRAME_INVALIDATION},
     };
 
     for (auto [validate_flag, encoder_flag] : packet_deficiencies) {
@@ -3885,7 +3893,11 @@ namespace video {
 
   void record_encoder_probe_results(const encoder_t &encoder) {
     probed_codec_modes().h264 = encoder.h264[encoder_t::PASSED];
-    last_encoder_probe_supported_ref_frames_invalidation = (encoder.flags & REF_FRAMES_INVALIDATION);
+    // One bit for the whole stream: only when every codec that may be offered can do it, as the driver reported.
+    last_encoder_probe_supported_ref_frames_invalidation = (encoder.flags & REF_FRAMES_INVALIDATION) &&
+                                                           std::ranges::all_of(std::array {&encoder.h264, &encoder.hevc, &encoder.av1}, [](const auto *codec) {
+                                                             return !(*codec)[encoder_t::PASSED] || (*codec)[encoder_t::REF_FRAME_INVALIDATION];
+                                                           });
     last_encoder_probe_supported_yuv444_for_codec[0] = encoder.h264[encoder_t::PASSED] &&
                                                        encoder.h264[encoder_t::YUV444];
     last_encoder_probe_supported_yuv444_for_codec[1] = encoder.hevc[encoder_t::PASSED] &&

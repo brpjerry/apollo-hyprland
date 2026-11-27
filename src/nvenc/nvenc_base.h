@@ -92,6 +92,15 @@ namespace NVENC_NAMESPACE {
      */
     bool invalidate_ref_frames(uint64_t first_frame, uint64_t last_frame) override;
 
+    /**
+     * @brief Report whether the created encoder can invalidate reference frames.
+     *
+     * @return `true` when the driver reported reference picture invalidation and multiple reference frames.
+     */
+    bool supports_ref_frame_invalidation() const override {
+      return encoder && encoder_params.rfi;
+    }
+
   protected:
     /**
      * @brief Required. Used for loading NvEnc library and setting `nvenc` variable with `NvEncodeAPICreateInstance()`.
