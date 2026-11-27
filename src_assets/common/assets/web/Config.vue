@@ -193,7 +193,8 @@
   const COMMAND_LISTS = {
     global_prep_cmd: rows => rows.filter(cmd => !!(cmd.do?.trim() || cmd.undo?.trim())),
     global_state_cmd: rows => rows.filter(cmd => !!(cmd.do?.trim() || cmd.undo?.trim())),
-    server_cmd: rows => dropTrailingBlankRows(rows, cmd => !cmd.cmd?.trim() && !cmd.name?.trim()),
+    // The server reads both fields as text, so a hand-edited number counts as text here too.
+    server_cmd: rows => dropTrailingBlankRows(rows, cmd => !String(cmd.cmd ?? '').trim() && !String(cmd.name ?? '').trim()),
   };
 
   /** `elevated` values the server's Boost bool parser reads as true. */

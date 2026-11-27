@@ -104,13 +104,16 @@ TEST(FileHandlerTests, ReadMissingFileTest) {
   // standard includes
   #include <cerrno>
   #include <chrono>
+  #include <cstdlib>
   #include <filesystem>
   #include <fstream>
   #include <future>
   #include <string>
+  #include <string_view>
   #include <sys/stat.h>
   #include <sys/xattr.h>
   #include <unistd.h>
+  #include <vector>
 
   // local includes
   #include <src/compat/boost_process.h>
@@ -123,7 +126,12 @@ namespace {
    * @return The raw attribute, or an empty string when the file has none.
    */
   std::string access_acl_of(const std::filesystem::path &file) {
-    std::string value(256, '\0');
+    // Ask for the size first: an inherited default ACL can make the attribute longer than any fixed buffer.
+    const auto needed = ::getxattr(file.c_str(), "system.posix_acl_access", nullptr, 0);
+    if (needed <= 0) {
+      return {};
+    }
+    std::string value(static_cast<std::size_t>(needed), '\0');
     const auto size = ::getxattr(file.c_str(), "system.posix_acl_access", value.data(), value.size());
     value.resize(size < 0 ? 0 : static_cast<std::size_t>(size));
     return value;
@@ -226,7 +234,19 @@ TEST(FileHandlerTests, WriteFileKeepsHardLinksAndAccessAcls) {
   const auto acl_file = dir / "acl.json";
   ASSERT_EQ(file_handler::write_file(acl_file.c_str(), "old"), 0);
   namespace bp = boost::process::v1;
-  const auto setfacl = bp::search_path("setfacl");
+  // Explicit PATH entries: the default search reads PATH through the process locale, which can be unavailable.
+  std::vector<boost::filesystem::path> path_dirs;
+  if (const char *path = std::getenv("PATH")) {
+    std::string_view rest {path};
+    while (!rest.empty()) {
+      const auto colon = rest.find(':');
+      if (const auto dir_entry = rest.substr(0, colon); !dir_entry.empty()) {
+        path_dirs.emplace_back(std::string {dir_entry});
+      }
+      rest = colon == std::string_view::npos ? std::string_view {} : rest.substr(colon + 1);
+    }
+  }
+  const auto setfacl = bp::search_path("setfacl", path_dirs);
   if (!setfacl.empty() && bp::system(setfacl, "-m", "u:nobody:r", "--", acl_file.string(), bp::std_out > bp::null, bp::std_err > bp::null) == 0) {
     const auto acl = access_acl_of(acl_file);
     ASSERT_FALSE(acl.empty());

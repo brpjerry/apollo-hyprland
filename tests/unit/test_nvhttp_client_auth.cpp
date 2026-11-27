@@ -13,6 +13,7 @@
 #include <iterator>
 #include <fstream>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -631,7 +632,7 @@ TEST_F(ClientAuthorizationTest, InaccessibleStateDirectoryIsAFailedSave) {
   config::nvhttp.file_state = (locked_dir / "state.json").string();
   fs::permissions(locked_dir, fs::perms::none);
   std::error_code probe_error;
-  fs::exists(config::nvhttp.file_state, probe_error);
+  std::ignore = fs::exists(config::nvhttp.file_state, probe_error);
   if (!probe_error) {
     fs::permissions(locked_dir, fs::perms::owner_all);
     fs::remove_all(locked_dir, ignored);
