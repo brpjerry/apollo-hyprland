@@ -10,6 +10,7 @@
 // standard includes
 #include <atomic>
 #include <filesystem>
+#include <iterator>
 #include <fstream>
 #include <thread>
 #include <type_traits>
@@ -406,4 +407,61 @@ TEST_F(ClientAuthorizationTest, StreamAdmissionSeesRevocation) {
   ASSERT_TRUE(nvhttp::unpair_client(uuid));
   EXPECT_FALSE(nvhttp::client_may_stream(credentials.x509));
   EXPECT_FALSE(nvhttp::client_may_stream(""));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ClientAuthorizationTest, ChangesThatCantBeSavedAreUndoneAndReported) {
+  // A revocation that only lived in memory would come back on restart while the Web UI reported success.
+  const auto credentials = test_utils::certificates::generate_ca_credentials();
+  const auto other_credentials = test_utils::certificates::generate_ca_credentials("Sunshine Other Client");
+  const auto uuid = nvhttp::test_support::add_client("kept", credentials.x509, true);
+  ASSERT_FALSE(uuid.empty());
+
+  // A state file that isn't a JSON object can't be saved to (it also holds other settings, so it is left alone).
+  {
+    std::ofstream out(state_file);
+    out << "[1]";
+  }
+  EXPECT_FALSE(nvhttp::set_client_enabled(uuid, false));
+  EXPECT_TRUE(nvhttp::test_support::authorize_client_certificate(credentials.x509));
+  EXPECT_FALSE(nvhttp::unpair_client(uuid));
+  EXPECT_TRUE(nvhttp::test_support::authorize_client_certificate(credentials.x509));
+  EXPECT_FALSE(nvhttp::erase_all_clients());
+  EXPECT_EQ(nvhttp::get_all_clients().size(), 1);
+  EXPECT_FALSE(nvhttp::update_device_info(uuid, "renamed", "", {}, {}, crypto::PERM::_all, true, true, false));
+  EXPECT_EQ(nvhttp::get_all_clients().at(0).at("name"), "kept");
+  EXPECT_TRUE(nvhttp::test_support::add_client("new", other_credentials.x509, true).empty());
+  EXPECT_FALSE(nvhttp::test_support::authorize_client_certificate(other_credentials.x509));
+
+  std::ifstream in(state_file);
+  EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "[1]");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ClientAuthorizationTest, NonObjectStateFileDoesNotStopStartup) {
+  for (const auto *contents : {"[1]", "null", "42"}) {
+    SCOPED_TRACE(contents);
+    {
+      std::ofstream out(state_file);
+      out << contents;
+    }
+    ASSERT_NO_THROW(nvhttp::test_support::reload_client_state());
+    EXPECT_TRUE(uuid_util::uuid_t::valid_text(http::unique_id));
+    std::ifstream in(state_file);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), contents);
+  }
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_F(ClientAuthorizationTest, InvalidUtf8DeviceNameStillPairsAndSaves) {
+  const auto credentials = test_utils::certificates::generate_ca_credentials();
+  const auto other_credentials = test_utils::certificates::generate_ca_credentials("Sunshine Other Client");
+  const auto uuid = nvhttp::test_support::add_client("Phone \xff\xfe", credentials.x509, true);
+  ASSERT_FALSE(uuid.empty());
+  EXPECT_EQ(nvhttp::get_all_clients().at(0).at("name"), "Phone \xEF\xBF\xBD\xEF\xBF\xBD");
+  // Later saves still work.
+  EXPECT_FALSE(nvhttp::test_support::add_client("other", other_credentials.x509, true).empty());
+  nvhttp::test_support::reset_client_state();
+  nvhttp::test_support::reload_client_state();
+  EXPECT_EQ(nvhttp::get_all_clients().size(), 2);
 }

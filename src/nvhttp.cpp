@@ -266,9 +266,10 @@ namespace nvhttp {
   /**
    * @brief Persist the current state to its backing store.
    *
+   * @return `true` when the state file now holds the in-memory state.
    * @note The caller must hold `client_auth_mutex()`.
    */
-  void save_state() {
+  bool save_state() {
     nlohmann::json root = nlohmann::json::object();
     // If the state file exists, try to read it.
     if (fs::exists(config::nvhttp.file_state)) {
@@ -277,8 +278,13 @@ namespace nvhttp {
         in >> root;
       } catch (std::exception &e) {
         BOOST_LOG(error) << "Couldn't read "sv << config::nvhttp.file_state << ": "sv << e.what();
-        return;
+        return false;
       }
+    }
+    // The file holds other settings too (the Web UI credentials): leave a file that isn't a JSON object alone.
+    if (!root.is_object()) {
+      BOOST_LOG(error) << "Not saving to "sv << config::nvhttp.file_state << ": it is not a JSON object"sv;
+      return false;
     }
 
     // Erase any previous "root" key.
@@ -344,10 +350,22 @@ namespace nvhttp {
     root["root"]["named_devices"] = named_cert_nodes;
 
     // Replaced as a whole (write_file()): the file also holds the Web UI credentials, so a failed write must not
-    // truncate it.
-    if (file_handler::write_file(config::nvhttp.file_state.c_str(), root.dump(4)) != 0) {
+    // truncate it. Invalid UTF-8 (names are sanitized when added) is replaced rather than thrown on.
+    if (file_handler::write_file(config::nvhttp.file_state.c_str(), root.dump(4, ' ', false, nlohmann::json::error_handler_t::replace)) != 0) {
       BOOST_LOG(error) << "Couldn't save "sv << config::nvhttp.file_state;
+      return false;
     }
+    return true;
+  }
+
+  /**
+   * @brief Replace invalid UTF-8 in a client-supplied name, which the state file and the client list can't hold.
+   *
+   * @param text Name as received.
+   * @return The name with each invalid byte sequence replaced by U+FFFD.
+   */
+  std::string valid_utf8(const std::string &text) {
+    return nlohmann::json::parse(nlohmann::json(text).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)).get<std::string>();
   }
 
   /**
@@ -539,6 +557,7 @@ namespace nvhttp {
     }
 
     named_cert_p->cert = crypto::pem(certificate);
+    named_cert_p->name = valid_utf8(named_cert_p->name);
     if (named_cert_p->uuid.empty()) {
       named_cert_p->uuid = uuid_util::uuid_t::generate().string();
     }
@@ -546,6 +565,7 @@ namespace nvhttp {
 
     {
       std::lock_guard lock {client_auth_mutex()};
+      const auto previous = client_root.named_devices;
       std::erase_if(client_root.named_devices, [&certificate](const p_named_cert_t &existing_client) {
         auto existing_certificate = crypto::x509(existing_client->cert);
         return existing_certificate && X509_cmp(existing_certificate.get(), certificate.get()) == 0;
@@ -559,8 +579,11 @@ namespace nvhttp {
       client_root.named_devices.emplace_back(named_cert_p);
       rebuild_client_cert_chain();
 
-      if (!config::sunshine.flags[config::flag::FRESH_STATE]) {
-        save_state();
+      // A pairing that can't be saved would be gone after a restart: undo it and report the failure.
+      if (!config::sunshine.flags[config::flag::FRESH_STATE] && !save_state()) {
+        client_root.named_devices = previous;
+        rebuild_client_cert_chain();
+        return {};
       }
     }
 
@@ -2385,11 +2408,18 @@ namespace nvhttp {
     return one_time_pin;
   }
 
-  void erase_all_clients() {
+  bool erase_all_clients() {
     std::lock_guard lock {client_auth_mutex()};
+    auto previous = std::move(client_root);
     client_root = {};
-    cert_chain.clear();
-    save_state();
+    rebuild_client_cert_chain();
+    // Memory and disk must agree: a change that can't be saved is undone and reported, rather than lost on restart.
+    if (!save_state()) {
+      client_root = std::move(previous);
+      rebuild_client_cert_chain();
+      return false;
+    }
+    return true;
   }
 
   void stop_session(stream::session_t& session, bool graceful) {
@@ -2437,6 +2467,7 @@ namespace nvhttp {
       std::lock_guard lock {client_auth_mutex()};
       for (const auto &named_cert_p : client_root.named_devices) {
         if (named_cert_p->uuid == uuid) {
+          const auto previous = *named_cert_p;
           named_cert_p->name = name;
           named_cert_p->display_mode = display_mode;
           named_cert_p->perm = newPerm;
@@ -2445,7 +2476,11 @@ namespace nvhttp {
           named_cert_p->enable_legacy_ordering = enable_legacy_ordering;
           named_cert_p->allow_client_commands = allow_client_commands;
           named_cert_p->always_use_virtual_display = always_use_virtual_display;
-          save_state();
+          if (!save_state()) {
+            // Undone, so memory and disk agree; the caller reports the failure.
+            *named_cert_p = previous;
+            return false;
+          }
           found = true;
           break;
         }
@@ -2464,6 +2499,7 @@ namespace nvhttp {
     std::vector<std::string> removed_certs;
     {
       std::lock_guard lock {client_auth_mutex()};
+      const auto previous = client_root.named_devices;
       for (auto it = client_root.named_devices.begin(); it != client_root.named_devices.end();) {
         if ((*it)->uuid == uuid) {
           removed_certs.push_back((*it)->cert);
@@ -2474,7 +2510,12 @@ namespace nvhttp {
       }
 
       rebuild_client_cert_chain();
-      save_state();
+      if (!removed_certs.empty() && !save_state()) {
+        // An unpairing that can't be saved would come back on restart: undo it and report the failure.
+        client_root.named_devices = previous;
+        rebuild_client_cert_chain();
+        return false;
+      }
       no_clients_left = client_root.named_devices.empty();
     }
 
@@ -2497,9 +2538,15 @@ namespace nvhttp {
     std::lock_guard lock {client_auth_mutex()};
     for (auto &named_cert_p : client_root.named_devices) {
       if (named_cert_p->uuid == uuid) {
+        const bool was_enabled = named_cert_p->enabled;
         named_cert_p->enabled = enabled;
         rebuild_client_cert_chain();
-        save_state();
+        if (!save_state()) {
+          // Undone, so memory and disk agree; the caller reports the failure.
+          named_cert_p->enabled = was_enabled;
+          rebuild_client_cert_chain();
+          return false;
+        }
         return true;
       }
     }

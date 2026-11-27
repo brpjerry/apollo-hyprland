@@ -1917,12 +1917,18 @@ namespace confighttp {
 
     print_req(request);
 
-    nvhttp::erase_all_clients();
+    nlohmann::json output_tree;
+    // An unpairing that can't be saved is undone (it would come back on restart): report it and keep the streams.
+    if (!nvhttp::erase_all_clients()) {
+      output_tree["status"] = false;
+      output_tree["error"] = "Couldn't save the paired clients; nothing was changed";
+      send_response(response, output_tree);
+      return;
+    }
     // Stop every stream and drop the input devices clients kept for a resume; none of them is paired any more.
     rtsp_stream::terminate_sessions();
     proc::proc.terminate();
 
-    nlohmann::json output_tree;
     output_tree["status"] = true;
     send_response(response, output_tree);
   }

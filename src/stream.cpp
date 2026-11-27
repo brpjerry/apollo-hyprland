@@ -2276,15 +2276,24 @@ namespace stream {
       ref->message_queue_queue->raise(type, session_id, nullptr);
     });
 
-    auto start_time = std::chrono::steady_clock::now();
-    auto current_time = start_time;
-
-    while (current_time - start_time < config::stream.ping_timeout) {
-      auto delta_time = current_time - start_time;
-
-      auto msg_opt = messages->pop(config::stream.ping_timeout - delta_time);
-      if (!msg_opt) {
+    // Wait in short slices so a stopped session (e.g. one RTSP rejected after starting it) doesn't keep its workers
+    // here for the whole ping timeout: join() would then trip its ten-second hang watchdog.
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+      if (session->shutdown_event->peek()) {
+        return -1;
+      }
+      const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+      if (remaining <= 0ms) {
         break;
+      }
+
+      auto msg_opt = messages->pop(std::min<std::chrono::milliseconds>(remaining, 250ms));
+      if (!msg_opt) {
+        if (!messages->running()) {
+          break;
+        }
+        continue;
       }
 
       TUPLE_2D_REF(recv_peer, msg, *msg_opt);
@@ -2296,7 +2305,6 @@ namespace stream {
         BOOST_LOG(debug) << "Received ping [v1] from "sv << recv_peer.address() << ':' << recv_peer.port() << " ["sv << util::hex_vec(msg) << ']';
       } else {
         BOOST_LOG(debug) << "Received non-ping from "sv << recv_peer.address() << ':' << recv_peer.port() << " ["sv << util::hex_vec(msg) << ']';
-        current_time = std::chrono::steady_clock::now();
         continue;
       }
 

@@ -438,7 +438,8 @@ namespace nvhttp {
    * nvhttp::unpair_client("4D7BB2DD-5704-A405-B41C-891A022932E1");
    * @examples_end
    *
-   * @return True when the client entry was found and removed.
+   * @return True when the client entry was found, removed and the change saved. A change that can't be saved is
+   * undone (memory and the state file agree) and returns false; the client's streams are then left running.
    */
   bool unpair_client(std::string_view uuid);
 
@@ -446,7 +447,7 @@ namespace nvhttp {
    * @brief Enable or disable a client.
    * @param uuid The UUID of the client.
    * @param enabled Whether the client should be enabled.
-   * @return true if the client was found and updated.
+   * @return true if the client was found, updated and the change saved; a change that can't be saved is undone.
    */
   bool set_client_enabled(std::string_view uuid, bool enabled);
   /**
@@ -468,11 +469,12 @@ namespace nvhttp {
 
   /**
    * @brief Remove all paired clients.
+   * @return Whether the change was saved; a change that can't be saved is undone.
    * @examples
    * nvhttp::erase_all_clients();
    * @examples_end
    */
-  void erase_all_clients();
+  bool erase_all_clients();
 
   /**
    * @brief      Stops a session.
@@ -520,7 +522,7 @@ namespace nvhttp {
    * @param[in]  allow_client_commands  Allow client commands
    * @param[in]  always_use_virtual_display  Always use virtual display
    * 
-   * @return     Whether the update is successful
+   * @return     Whether the client was found, updated and the change saved; a change that can't be saved is undone.
    */
   bool update_device_info(
     const std::string& uuid,
