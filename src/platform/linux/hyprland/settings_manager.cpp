@@ -418,8 +418,9 @@ namespace hyprland::dd {
     // moves it (nothing at all when it is already there); `workspace` then shows it, focusing its monitor, so focus
     // goes back to where it was afterwards. A workspace that does not exist cannot be moved: `workspace` creates it
     // on the focused monitor, so that monitor is focused first.
+    // Without the workspace list it is not known whether the workspace can be moved or has to be created.
     const auto current = layout();
-    if (!current) {
+    if (!current || !current->workspaces_listed) {
       return false;
     }
     std::string focused;
@@ -430,11 +431,14 @@ namespace hyprland::dd {
     }
     const auto *ipc = ipc_.get();
     const auto selector = workspace_selector(workspace);
-    const bool exists = !current->workspaces_listed || current->find_workspace(workspace);
-    if (!(exists ? ipc->dispatch_legacy("moveworkspacetomonitor", selector + " " + monitor) : ipc->dispatch_legacy("focusmonitor", monitor)) || !ipc->dispatch_legacy("workspace", selector)) {
+    const bool ready = current->find_workspace(workspace) ? ipc->dispatch_legacy("moveworkspacetomonitor", selector + " " + monitor) : ipc->dispatch_legacy("focusmonitor", monitor);
+    if (!ready) {
       return false;
     }
-    return focused.empty() || focused == monitor || ipc->dispatch_legacy("focusmonitor", focused);
+    // Focus goes back even if showing the workspace failed: focusmonitor may have moved it.
+    const bool shown = ipc->dispatch_legacy("workspace", selector);
+    const bool restored = focused.empty() || focused == monitor || ipc->dispatch_legacy("focusmonitor", focused);
+    return shown && restored;
   }
 
   std::optional<bool> hyprland_compositor_t::virtual_hdr(const std::string &name) {

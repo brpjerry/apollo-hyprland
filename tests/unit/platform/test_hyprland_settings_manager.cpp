@@ -274,6 +274,7 @@ namespace {
     hyprland_fakes::temp_dir_t tmp;
     std::string provider = "lua";  ///< configProvider in j/status: "lua" or "hyprlang".
     std::atomic<bool> workspaces_fail {false};
+    std::string fail_dispatch;  ///< Dispatches starting with this (after `/dispatch `) fail; empty: none.
     hyprland_fakes::fake_request_socket_t socket {make_dir(tmp.path()) / ".socket.sock", [this](const std::string &req) {
                                                     return handle(req);
                                                   }};
@@ -305,7 +306,7 @@ namespace {
                    {"id": 3, "name": "3", "monitor": "DP-3"}])";
       }
       if (req.starts_with("/dispatch ")) {
-        return "ok";
+        return !fail_dispatch.empty() && req.substr(10).starts_with(fail_dispatch) ? "error: no" : "ok";
       }
       return "unknown request";
     }
@@ -1084,6 +1085,25 @@ TEST(HyprlandCompositorTest, HyprlangShowWorkspaceSelectsItAndKeepsTheFocus) {
                                  "/dispatch workspace 3",
                                  "/dispatch focusmonitor HDMI-A-1",
                                }));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(HyprlandCompositorTest, HyprlangShowWorkspaceGivesFocusBackWhenShowingFails) {
+  fake_socket_t hypr;
+  hypr.provider = "hyprlang";
+  hypr.fail_dispatch = "workspace ";
+  auto c = hypr.compositor();
+  EXPECT_FALSE(c->show_workspace("DP-3", "7"));
+  EXPECT_EQ(hypr.dispatches(), (std::vector<std::string> {
+                                 "/dispatch focusmonitor DP-3",
+                                 "/dispatch workspace 7",
+                                 "/dispatch focusmonitor HDMI-A-1",
+                               }));
+
+  // Without the workspace list it is not known whether to move the workspace or create it: nothing is sent.
+  hypr.workspaces_fail = true;
+  EXPECT_FALSE(c->show_workspace("DP-3", "3"));
+  EXPECT_EQ(hypr.dispatches().size(), 3u);
 }
 
 // Bugs caught: 0, False positives: 0
