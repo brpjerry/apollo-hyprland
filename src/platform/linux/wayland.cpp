@@ -340,7 +340,10 @@ namespace wl {
   }
 
   void monitor_t::listen(zxdg_output_manager_v1 *output_manager) {
-    auto xdg_output = zxdg_output_manager_v1_get_xdg_output(output_manager, output);
+    if (xdg_output) {
+      return;
+    }
+    xdg_output = zxdg_output_manager_v1_get_xdg_output(output_manager, output);
     zxdg_output_v1_add_listener(xdg_output, &xdg_listener, this);
     wl_output_add_listener(output, &wl_listener, this);
   }
@@ -416,6 +419,12 @@ namespace wl {
           (wl_output *) wl_registry_bind(registry, id, &wl_output_interface, std::min(version, max_wl_output_version))
         )
       );
+      monitors.back()->global_name = id;
+      // An output added after setup (hotplug, a new virtual display) is described right away, so that the layout
+      // it extends is known. During setup the manager may not be bound yet; enumerate_outputs() listens then.
+      if (output_manager) {
+        monitors.back()->listen(output_manager);
+      }
     } else if (!std::strcmp(interface_name, zxdg_output_manager_v1_interface.name)) {
       BOOST_LOG(info) << "[wayland] Found interface: "sv << interface_name << '(' << id << ") version "sv << version;
       output_manager = (zxdg_output_manager_v1 *) wl_registry_bind(registry, id, &zxdg_output_manager_v1_interface, std::min(version, max_xdg_output_manager_version));
@@ -459,6 +468,66 @@ namespace wl {
 
   void interface_t::del_interface(wl_registry *registry, uint32_t id) {
     BOOST_LOG(info) << "[wayland] Delete: "sv << id;
+
+    for (auto &monitor : monitors) {
+      if (monitor->global_name == id && !monitor->removed) {
+        monitor->removed = true;
+        BOOST_LOG(info) << "[wayland] Output removed: "sv << monitor->name;
+      }
+    }
+  }
+
+  namespace {
+    /**
+     * @brief Bounds of the layout of the outputs that are still there.
+     */
+    layout_bounds_t current_layout(const interface_t &interface) {
+      std::vector<output_geometry_t> geometries;
+      geometries.reserve(interface.monitors.size());
+      for (const auto &m : interface.monitors) {
+        if (!m->removed) {
+          geometries.emplace_back(m->geometry);
+        }
+      }
+      return layout_bounds(geometries);
+    }
+  }  // namespace
+
+  output_watch_t watch_output(const interface_t &interface, const monitor_t &monitor) {
+    return {
+      .monitor = &monitor,
+      .geometry = monitor.geometry,
+      .refresh_mhz = monitor.refresh_mhz,
+      .layout = current_layout(interface),
+    };
+  }
+
+  std::optional<std::string_view> output_change(const output_watch_t &watch, const interface_t &interface) {
+    if (!watch.monitor) {
+      return std::nullopt;
+    }
+    const auto &monitor = *watch.monitor;
+    const auto &before = watch.geometry;
+    const auto &now = monitor.geometry;
+    if (monitor.removed) {
+      return "the output was removed"sv;
+    }
+    if (now.mode_width != before.mode_width || now.mode_height != before.mode_height || monitor.refresh_mhz != watch.refresh_mhz) {
+      return "the output's mode changed"sv;
+    }
+    if (now.integer_scale != before.integer_scale || now.logical_width != before.logical_width || now.logical_height != before.logical_height) {
+      return "the output's scale changed"sv;
+    }
+    if (now.transform != before.transform) {
+      return "the output's transform changed"sv;
+    }
+    if (now.logical_x != before.logical_x || now.logical_y != before.logical_y) {
+      return "the output moved"sv;
+    }
+    if (current_layout(interface) != watch.layout) {
+      return "the output layout changed"sv;
+    }
+    return std::nullopt;
   }
 
   // Initialize GBM

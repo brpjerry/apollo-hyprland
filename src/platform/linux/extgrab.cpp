@@ -273,6 +273,7 @@ namespace wl {
         return -1;
       }
       output = interface.monitors[*index]->output;
+      watch = watch_output(interface, *interface.monitors[*index]);
 
       // HDR state and metadata of the output. Without wp-color-management the output is treated as SDR.
       color.open(output_names(interface)[*index]);
@@ -405,6 +406,14 @@ namespace wl {
         // with the new colorspace. The loop wakes at least every idle_repeat_interval, which bounds the delay.
         if (color.poll_changed()) {
           BOOST_LOG(info) << "Output colors changed; reinitializing capture"sv;
+          abandon_frame();
+          return platf::capture_e::reinit;
+        }
+
+        // A new scale, refresh rate, transform or position keeps the buffer constraints (and the session) as they
+        // were, but the touch port and the pacing were made for the old ones.
+        if (auto change = output_change(watch, interface)) {
+          BOOST_LOG(info) << "ext-image-copy-capture: "sv << *change << "; reinitializing capture"sv;
           abandon_frame();
           return platf::capture_e::reinit;
         }
@@ -597,6 +606,8 @@ namespace wl {
     buffer_pool_t pool;
     ext_session_t session;
     wl_output *output {nullptr};
+    /// State of the output and the layout at init(), to notice changes.
+    output_watch_t watch;
 
     bool vram;
     std::size_t frame_slot {0};

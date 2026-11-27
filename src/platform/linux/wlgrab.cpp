@@ -434,6 +434,7 @@ namespace wl {
 
       apply_monitor_geometry(*this, *monitor);
       this->monitor = monitor;
+      watch = watch_output(interface, *monitor);
 
       // HDR state and metadata of the output. Without wp-color-management the output is treated as SDR.
       color.open(monitor->name);
@@ -525,6 +526,10 @@ namespace wl {
         if (remaining_time_ms.count() < 0 || !display.dispatch(remaining_time_ms)) {
           return platf::capture_e::timeout;
         }
+        // The output listeners ran: a picture that is not changing would not end this wait for up to the timeout.
+        if (output_changed()) {
+          return platf::capture_e::reinit;
+        }
       } while (dmabuf.status == dmabuf_t::WAITING);
 
       auto current_frame = dmabuf.current_frame;
@@ -575,6 +580,19 @@ namespace wl {
     }
 
     /**
+     * @brief Tell whether the compositor removed or changed the captured output since init(), and log what changed.
+     *
+     * @return `true` when capture has to be reinitialized.
+     */
+    bool output_changed() {
+      if (auto change = output_change(watch, interface)) {
+        BOOST_LOG(info) << "[wlgrab] "sv << *change << "; reinitializing capture"sv;
+        return true;
+      }
+      return false;
+    }
+
+    /**
      * @brief Capture frames until the stream stops or the display has to be set up again.
      *
      * @param push_captured_image_cb Callback that takes a captured image, or a timeout without one.
@@ -596,6 +614,9 @@ namespace wl {
         // with the new colorspace.
         if (color.poll_changed()) {
           BOOST_LOG(info) << "[wlgrab] Output colors changed; reinitializing capture"sv;
+          return reinit;
+        }
+        if (output_changed()) {
           return reinit;
         }
 
@@ -650,6 +671,7 @@ namespace wl {
 
     wl_output *output;  ///< Wayland output selected for capture.
     wl::monitor_t *monitor {};  ///< Monitor selected for capture.
+    output_watch_t watch;  ///< State of the output and the layout at init(), to notice changes.
 
     capture_stats_t stats;  ///< Capture counters (capture_stats()).
     output_color_t color;  ///< The output's color description (HDR state and metadata).

@@ -450,6 +450,86 @@ TEST_P(ExtCaptureLiveTest, ReinitializesWhenTheOutputSwitchesToHdr) {
   EXPECT_EQ(disp->hdr_supported(), disp->is_hdr());
 }
 
+namespace {
+  /// Gives a headless test output another mode or scale, keeping its position.
+  bool reconfigure_test_output(test_wl::headless_output_t &output, const std::string &mode, double scale) {
+    hyprland::monitor_rule_t rule {.output = output.name, .mode = mode, .position = "20000x0", .scale = scale};
+    return output.ipc->set_monitor(rule);
+  }
+
+  /**
+   * @brief Captures a headless output and reconfigures it after 10 frames; the capture has to notice in time.
+   * @param make_display Creates the capture display for the output.
+   * @param mem_type Memory type of the capture.
+   * @param mode Mode to switch to.
+   * @param scale Scale to switch to.
+   * @return The display created after the change.
+   */
+  std::shared_ptr<platf::display_t> expect_reinit_on_reconfigure(const std::function<std::shared_ptr<platf::display_t>(const std::string &)> &make_display, platf::mem_type_e mem_type, const std::string &mode, double scale) {
+    auto output = test_wl::headless_output_t::create("1280x720@60");
+    if (!output) {
+      ADD_FAILURE() << "Couldn't create a headless output (is this Hyprland?)";
+      return nullptr;
+    }
+    test_wl::damage_source_t damage {output->name};
+    EXPECT_TRUE(damage.ok());
+
+    auto disp = make_display(output->name);
+    if (!disp) {
+      ADD_FAILURE() << "No display for " << output->name;
+      return nullptr;
+    }
+    EXPECT_EQ(disp->logical_width, 1280);
+
+    std::optional<std::chrono::steady_clock::time_point> changed_at;
+    auto run = run_capture(*disp, mem_type, 100000, 10s, true, false, [&](int frames) {
+      if (frames == 10 && !changed_at) {
+        EXPECT_TRUE(reconfigure_test_output(*output, mode, scale));
+        changed_at = std::chrono::steady_clock::now();
+      }
+    });
+
+    if (!changed_at) {
+      ADD_FAILURE() << "The capture stopped before the output was reconfigured";
+      return nullptr;
+    }
+    auto reaction = std::chrono::steady_clock::now() - *changed_at;
+    std::cout << output->name << " to " << mode << " scale " << scale << ": capture returned " << (int) run.status << " "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(reaction).count() << " ms after the change" << std::endl;
+    EXPECT_EQ(run.status, platf::capture_e::reinit);
+    EXPECT_LT(reaction, 1s);
+    return make_display(output->name);
+  }
+}  // namespace
+
+// Bugs caught: 0, False positives: 0
+TEST_P(ExtCaptureLiveTest, ReinitializesWhenTheOutputScaleChanges) {
+  if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
+    GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";
+  }
+  // The buffer keeps its size: only the logical size (and so absolute input) changes.
+  auto make_60 = [&](const std::string &name) {
+    return make(name, 60);
+  };
+  auto disp = expect_reinit_on_reconfigure(make_60, GetParam().mem_type, "1280x720@60", 2.0);
+  ASSERT_TRUE(disp);
+  EXPECT_EQ(disp->width, 1280);
+  EXPECT_EQ(disp->logical_width, 640);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_P(ExtCaptureLiveTest, ReinitializesWhenTheOutputRefreshRateChanges) {
+  if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
+    GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";
+  }
+  auto make_60 = [&](const std::string &name) {
+    return make(name, 60);
+  };
+  auto disp = expect_reinit_on_reconfigure(make_60, GetParam().mem_type, "1280x720@30", 1.0);
+  ASSERT_TRUE(disp);
+  EXPECT_EQ(disp->width, 1280);
+}
+
 INSTANTIATE_TEST_SUITE_P(Wayland, ExtCaptureLiveTest, testing::ValuesIn(ext_cases), ext_case_name);
 
 // Bugs caught: 0, False positives: 0
@@ -580,6 +660,23 @@ TEST_P(WlrCaptureLiveTest, ReusesBuffersAcrossFrames) {
   EXPECT_EQ(run.bad_pixels, 0);
   EXPECT_EQ(run.missing_fds, 0);
   EXPECT_LE(run.stats.buffers_allocated, is_vram(GetParam()) ? 3u : 1u);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST_P(WlrCaptureLiveTest, ReinitializesWhenTheOutputScaleChanges) {
+  if (std::getenv("APOLLO_SKIP_LIVE_HYPRLAND")) {
+    GTEST_SKIP() << "APOLLO_SKIP_LIVE_HYPRLAND is set";
+  }
+  if (is_vram(GetParam()) && test_wl::drm_render_node().empty()) {
+    GTEST_SKIP() << "No DRM render node (no GPU) to allocate dma-bufs on";
+  }
+  auto make_60 = [&](const std::string &name) {
+    return platf::wl_display(GetParam(), name, config_at(60));
+  };
+  auto disp = expect_reinit_on_reconfigure(make_60, GetParam(), "1280x720@60", 2.0);
+  ASSERT_TRUE(disp);
+  EXPECT_EQ(disp->width, 1280);
+  EXPECT_EQ(disp->logical_width, 640);
 }
 
 INSTANTIATE_TEST_SUITE_P(Wayland, WlrCaptureLiveTest, testing::Values(platf::mem_type_e::system, platf::mem_type_e::cuda), [](const auto &info) {

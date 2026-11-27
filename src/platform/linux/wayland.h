@@ -790,11 +790,21 @@ namespace wl {
     monitor_t &operator=(monitor_t &&) = delete;
 
     /**
-     * @brief Attach xdg-output and wl-output listeners for this monitor.
+     * @brief Attach xdg-output and wl-output listeners for this monitor. Does nothing the second time.
      *
      * @param output_manager xdg-output manager used to query logical monitor metadata.
      */
     void listen(zxdg_output_manager_v1 *output_manager);
+
+    /**
+     * @brief Whether listen() attached the listeners.
+     *
+     * @return `true` once the monitor receives output events.
+     */
+    bool listening() const {
+      return xdg_output != nullptr;
+    }
+
     /**
      * @brief Store the xdg-output logical monitor name.
      *
@@ -885,10 +895,13 @@ namespace wl {
     platf::touch_port_t viewport;  ///< Logical monitor bounds used to scale absolute input.
     output_geometry_t geometry;  ///< Logical position/size, mode size, transform and scale of this output.
     std::int32_t refresh_mhz {0};  ///< Refresh rate of the current mode in mHz, 0 when the compositor did not say.
+    std::uint32_t global_name {0};  ///< Registry name of the wl_output global, matched against global_remove.
+    bool removed {false};  ///< The compositor removed the output (wl_registry.global_remove).
     wl_output_listener wl_listener;  ///< Callback table for wl-output events.
     zxdg_output_v1_listener xdg_listener;  ///< Callback table for xdg-output events.
 
   private:
+    zxdg_output_v1 *xdg_output {nullptr};  ///< xdg-output object, once listen() created it.
     bool has_wl_name {false};  ///< `name` came from wl_output.name and is kept over the xdg-output name.
   };
 
@@ -969,7 +982,9 @@ namespace wl {
      */
     void dmabuf_modifier(zwp_linux_dmabuf_v1 *zwp_linux_dmabuf, uint32_t format, uint32_t modifier_hi, uint32_t modifier_lo);
 
-    std::vector<std::unique_ptr<monitor_t>> monitors;  ///< Outputs discovered from the Wayland registry.
+    /// Outputs discovered from the Wayland registry. A removed output stays in the list, marked `removed`, so that
+    /// pointers to it stay valid until the capture that uses it is reinitialized.
+    std::vector<std::unique_ptr<monitor_t>> monitors;
     std::map<std::uint32_t, std::vector<std::uint64_t>> supported_modifiers;  ///< DRM format modifiers grouped by format.
     zwlr_screencopy_manager_v1 *screencopy_manager {nullptr};  ///< WLR screencopy global used to request frames.
     std::uint32_t screencopy_version {0};  ///< Version of the screencopy global the compositor offered.
@@ -1007,6 +1022,40 @@ namespace wl {
     wl_registry_listener listener;
     zwp_linux_dmabuf_v1_listener dmabuf_listener;
   };
+
+  /**
+   * @brief What a capture was set up for: its output's state and the layout of all outputs.
+   * @details The registry and output listeners stay attached while capture dispatches events, so the monitors keep
+   *          following the compositor. output_change() compares them with this.
+   */
+  struct output_watch_t {
+    const monitor_t *monitor {nullptr};  ///< Captured output.
+    output_geometry_t geometry;  ///< Its position, sizes, transform and scale at setup.
+    std::int32_t refresh_mhz {0};  ///< Its refresh rate at setup.
+    layout_bounds_t layout {};  ///< Bounds of the layout of all outputs at setup (absolute input maps onto it).
+  };
+
+  /**
+   * @brief Record the state of a captured output and of the output layout.
+   *
+   * @param interface Registry state with all outputs.
+   * @param monitor Captured output, one of `interface.monitors`.
+   * @return State to compare with output_change().
+   */
+  output_watch_t watch_output(const interface_t &interface, const monitor_t &monitor);
+
+  /**
+   * @brief Tell whether the compositor changed the captured output (or the layout) in a way that needs a new capture.
+   *
+   * Removal, a new mode (size or refresh rate), a new scale (integer or fractional, seen in the logical size), a new
+   * transform or position of the output, and a change of the layout bounds (an output added, removed or moved)
+   * each change the frames or the mapping of absolute input.
+   *
+   * @param watch State at setup, from watch_output().
+   * @param interface Registry state with all outputs, as the listeners keep it.
+   * @return What changed, or nothing.
+   */
+  std::optional<std::string_view> output_change(const output_watch_t &watch, const interface_t &interface);
 
   /**
    * @brief Wayland display connection used to dispatch capture events.
