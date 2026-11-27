@@ -119,8 +119,10 @@ build() {
   export CFLAGS="${CFLAGS/-Werror=format-security/}"
   export CXXFLAGS="${CXXFLAGS/-Werror=format-security/}"
   export CUDA_PATH=/opt/cuda
-  # Keep CPM downloads inside the makepkg tree rather than a cache from the environment.
-  export CPM_SOURCE_CACHE="${srcdir}/cpm-cache"
+  # No CPM source cache: CPM reuses a cached checkout without running its PATCH_COMMAND, so a cached tree that was
+  # reset or half-patched would be built as it is. Without one, the dependencies are fetched into build/_deps (inside
+  # the makepkg tree) and cmake/scripts/apply_patches_once.cmake checks their patches on every configure.
+  unset CPM_SOURCE_CACHE
 
   local _tests=OFF
   [[ "${_run_unit_tests::1}" == "t" ]] && _tests=ON

@@ -99,7 +99,8 @@ they never add input devices to your session.
 `packaging/linux/Arch/PKGBUILD` has the full dependency list. Most other dependencies (moonlight-common-c,
 Simple-Web-Server, libdisplaydevice, libvirtualhid, the tray and the Wayland protocol files that Arch does not package)
 are fetched by [CPM](https://github.com/cpm-cmake/CPM.cmake) at configure time, at the versions pinned in
-`package-lock.cmake`. Set `CPM_SOURCE_CACHE` to a directory to share the downloads between build directories. Apollo's
+`package-lock.cmake`. Set `CPM_SOURCE_CACHE` to a directory to share the downloads between build directories; CPM then reuses a cached
+checkout without checking its patches again, so delete the cache entry if one was reset or its patching interrupted. Apollo's
 changes to moonlight-common-c and Simple-Web-Server are applied from `patches/`. `build.sh` checks out the one
 remaining submodule, `third-party/lizardbyte-common`.
 
