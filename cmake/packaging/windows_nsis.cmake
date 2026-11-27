@@ -3,10 +3,15 @@
 
 set(CPACK_NSIS_INSTALLED_ICON_NAME "${PROJECT__DIR}\\\\${PROJECT_EXE}")
 
+# Enable detailed logging only on AMD64
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64")
+    set(NSIS_LOGSET_COMMAND "LogSet on")
+else()
+    set(NSIS_LOGSET_COMMAND "")
+endif()
+
 # Extra install commands
-# Restores permissions on the install directory
-# Migrates config files from the root into the new config folder
-# Install service
+# Runs the main setup script which handles all installation tasks
 SET(CPACK_NSIS_EXTRA_INSTALL_COMMANDS
         "${CPACK_NSIS_EXTRA_INSTALL_COMMANDS}
         IfSilent +2 0
@@ -17,14 +22,17 @@ SET(CPACK_NSIS_EXTRA_INSTALL_COMMANDS
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\migrate-config.bat\\\"'
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\add-firewall-rule.bat\\\"'
         nsExec::ExecToLog \
-          'powershell.exe -NoProfile -ExecutionPolicy Bypass -File \\\"$INSTDIR\\\\scripts\\\\install-gamepad.ps1\\\"'
-        nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\install-service.bat\\\"'
-        nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\autostart-service.bat\\\"'
-        NoController:
+          'powershell -ExecutionPolicy Bypass \
+          -File \\\"$INSTDIR\\\\scripts\\\\sunshine-setup.ps1\\\" -Action install'
+        Goto +2
+        nsExec::ExecToLog \
+          'powershell -ExecutionPolicy Bypass \
+          -File \\\"$INSTDIR\\\\scripts\\\\sunshine-setup.ps1\\\" -Action install -Silent'
+        install_done:
         ")
 
 # Extra uninstall commands
-# Uninstall service
+# Runs the main setup script which handles all uninstallation tasks
 set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS
         "${CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS}
         nsExec::ExecToLog '\\\"$INSTDIR\\\\scripts\\\\delete-firewall-rule.bat\\\"'

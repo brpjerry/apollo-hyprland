@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yukino Song <nutosservice@gmail.com>
+Date: Sun, 15 Sep 2024 05:10:14 +0800
+Subject: [PATCH] Add userp for Request
+
+Apollo fork commit
+ClassicOldSong/Simple-Web-Server@ab36f1576bdc05ec0c017a74c4edd7f48109b302,
+rebased onto LizardByte-infrastructure/Simple-Web-Server 546895a9.
+---
+ server_http.hpp | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/server_http.hpp b/server_http.hpp
+index baace86..b71662f 100644
+--- a/server_http.hpp
++++ b/server_http.hpp
+@@ -235,10 +235,11 @@ namespace SimpleWeb {
+       Request(std::size_t max_request_streambuf_size, const std::shared_ptr<Connection> &connection_) noexcept
+           : streambuf(new asio::streambuf(max_request_streambuf_size)), content_streambuf(max_request_streambuf_size), connection(connection_), content(content_streambuf) {}
+       Request(std::size_t max_request_streambuf_size, const std::shared_ptr<Connection> &connection_, std::unique_ptr<asio::streambuf> &&previous_streambuf) noexcept
+-          : streambuf(std::move(previous_streambuf)), content_streambuf(max_request_streambuf_size), connection(connection_), content(content_streambuf) {
+-      }
++          : streambuf(std::move(previous_streambuf)), content_streambuf(max_request_streambuf_size), connection(connection_), content(content_streambuf) {}
+ 
+     public:
++      std::shared_ptr<void> userp;
++
+       std::string method, path, query_string, http_version;
+ 
+       Content content;
+@@ -354,6 +355,7 @@ namespace SimpleWeb {
+     public:
+       Session(std::size_t max_request_streambuf_size, std::shared_ptr<Connection> connection_) noexcept
+           : connection(std::move(connection_)), request(new Request(max_request_streambuf_size, connection)) {}
++
+       Session(std::size_t max_request_streambuf_size, std::shared_ptr<Connection> connection_, std::unique_ptr<asio::streambuf> &&previous_streambuf) noexcept
+           : connection(std::move(connection_)), request(new Request(max_request_streambuf_size, connection, std::move(previous_streambuf))) {}
+ 
+@@ -808,12 +810,14 @@ namespace SimpleWeb {
+                 return;
+               else if(case_insensitive_equal(it->second, "keep-alive")) {
+                 auto new_session = std::make_shared<Session>(this->config.max_request_streambuf_size, response->session->connection, std::move(response->session->request->streambuf));
++                new_session->request->userp = std::move(response->session->request->userp);
+                 this->read(new_session);
+                 return;
+               }
+             }
+             if(response->session->request->http_version >= "1.1") {
+               auto new_session = std::make_shared<Session>(this->config.max_request_streambuf_size, response->session->connection, std::move(response->session->request->streambuf));
++              new_session->request->userp = std::move(response->session->request->userp);
+               this->read(new_session);
+               return;
+             }

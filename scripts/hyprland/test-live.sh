@@ -57,8 +57,32 @@ export APOLLO_TEST_EXPECT_OUTPUTS="$APOLLO_TEST_HEADLESS_OUTPUTS"
 echo "test-live: running '$filter' against $HYPRLAND_INSTANCE_SIGNATURE ($WAYLAND_DISPLAY)" >&2
 cd "$build/tests"
 mkdir -p "$logs"
+# Hide /dev/uinput and /dev/uhid from the tests (see test.sh): a headless Hyprland has no libinput, but the desktop's
+# libinput adopts every virtual input device a test creates.
+no_access="$APOLLO_HEADLESS_HYPRLAND_DIR/no-input-device"
+: > "$no_access"
+chmod 000 "$no_access"
+sandbox=()
+# Only nodes this user can write need hiding; in a container or CI runner there are usually none, and bwrap can only
+# bind over a node that exists.
+hide=()
+for node in /dev/uinput /dev/uhid; do
+  if [[ -w $node ]]; then
+    hide+=(--ro-bind "$no_access" "$node")
+  fi
+done
+if ((${#hide[@]} == 0)) || [[ ${APOLLO_TEST_ALLOW_UINPUT:-} == 1 ]]; then
+  :
+elif command -v bwrap > /dev/null; then
+  sandbox=(bwrap --dev-bind / / "${hide[@]}" --)
+else
+  echo "test-live: bwrap (bubblewrap) is needed to hide /dev/uinput from the tests; install it, or set" \
+    "APOLLO_TEST_ALLOW_UINPUT=1 to let the tests create virtual input devices on this session" >&2
+  exit 1
+fi
+
 set +e
-./test_sunshine --gtest_filter="$filter" "$@" 2>&1 | tee "$logs/test_sunshine.out"
+"${sandbox[@]}" ./test_sunshine --gtest_filter="$filter" "$@" 2>&1 | tee "$logs/test_sunshine.out"
 status=${PIPESTATUS[0]}
 set -e
 

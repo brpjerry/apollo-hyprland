@@ -6,8 +6,16 @@
 #pragma once
 
 // standard includes
-#include <string>
 #include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 #include <list>
 
 // lib includes
@@ -18,7 +26,6 @@
 // local includes
 #include "crypto.h"
 #include "rtsp.h"
-#include "thread_safe.h"
 
 using namespace std::chrono_literals;
 
@@ -55,6 +62,26 @@ namespace nvhttp {
   constexpr auto OTP_EXPIRE_DURATION = 180s;
 
   /**
+   * @brief Maximum number of pairing sessions retained at one time.
+   */
+  constexpr std::size_t MAX_PENDING_PAIRING_SESSIONS = 32;
+
+  /**
+   * @brief Number of hexadecimal characters in an operator approval identifier.
+   */
+  constexpr std::size_t PAIRING_ID_SIZE = 32;
+
+  /**
+   * @brief Maximum number of bytes accepted for an operator-supplied paired-client name.
+   */
+  constexpr std::size_t MAX_PAIRING_CLIENT_NAME_SIZE = 128;
+
+  /**
+   * @brief Lifetime of an incomplete pairing session.
+   */
+  constexpr auto PAIRING_SESSION_TIMEOUT = std::chrono::minutes {5};
+
+  /**
    * @brief Start the nvhttp server.
    * @examples
    * nvhttp::start();
@@ -69,8 +96,75 @@ namespace nvhttp {
   cmd_list_t
   extract_command_entries(const nlohmann::json& j, const std::string& key);
 
+  /**
+   * @brief Build the launch session of a GameStream launch or resume request.
+   *
+   * The paired client's own commands are only copied when the client may run them (`allow_client_commands`); the
+   * caller still drops them when the app forbids client commands.
+   */
   std::shared_ptr<rtsp_stream::launch_session_t>
   make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t* named_cert_p);
+
+  /**
+   * @brief Outcome of a change to the paired clients.
+   *
+   * A grant that can't be saved is undone (`applied` false). A revocation that can't be saved stays in effect
+   * (`applied` true, `saved` false) until a restart reloads the state file: an admin must be able to cut a client off.
+   */
+  struct client_change_t {
+    bool applied = false;  ///< The change is in effect (false also when the client wasn't found).
+    bool saved = true;  ///< The state file holds the change (true when nothing needed saving).
+
+    /**
+     * @brief Whether the change is in effect and saved.
+     */
+    explicit operator bool() const {
+      return applied && saved;
+    }
+  };
+
+  /**
+   * @brief Whether a paired client may (still) stream: its certificate belongs to one enabled paired client.
+   *
+   * @param cert PEM certificate of the client.
+   * @return `true` when the client is paired and enabled.
+   */
+  bool client_may_stream(std::string_view cert);
+
+  /**
+   * @brief Whether a launch request names the app that is already running.
+   *
+   * An omitted appid reads as 0, which is also what an idle host reports as running, so a numeric id only counts
+   * when it names an app.
+   *
+   * @param appid Numeric app id of the request, 0 when omitted.
+   * @param appuuid App UUID of the request, empty when omitted.
+   * @param current_appid Id of the running app, 0 when none.
+   * @param current_app_uuid UUID of the running app.
+   */
+  bool launch_targets_running_app(std::int64_t appid, std::string_view appuuid, std::int64_t current_appid, std::string_view current_app_uuid);
+
+  /**
+   * @brief Whether either identifier of a launch request names the Terminate entry.
+   *
+   * @param appid Numeric app id of the request.
+   * @param appuuid App UUID of the request.
+   */
+  bool launch_names_terminate(std::int64_t appid, std::string_view appuuid);
+
+  /**
+   * @brief The permission a launch request needs.
+   *
+   * Joining the running app (or the input-only session) only needs view permission; starting or terminating an app
+   * needs launch permission, whichever identifier names it.
+   *
+   * @param appid Numeric app id of the request, 0 when omitted.
+   * @param appuuid App UUID of the request, empty when omitted.
+   * @param is_input_only Whether the request joins the input-only session.
+   * @param current_appid Id of the running app, 0 when none.
+   * @param current_app_uuid UUID of the running app.
+   */
+  crypto::PERM launch_permission(std::int64_t appid, std::string_view appuuid, bool is_input_only, std::int64_t current_appid, std::string_view current_app_uuid);
 
   /**
    * @brief Setup the nvhttp server.
@@ -79,8 +173,17 @@ namespace nvhttp {
    */
   void setup(const std::string &pkey, const std::string &cert);
 
+  /**
+   * @brief Simple-Web-Server HTTPS backend configured for Sunshine certificate handling.
+   */
   class SunshineHTTPS: public SimpleWeb::HTTPS {
   public:
+    /**
+     * @brief Construct an HTTPS connection using Sunshine's TLS context.
+     *
+     * @param io_context Boost.Asio context used for network operations.
+     * @param ctx TLS context configured with Sunshine's certificate and key.
+     */
     SunshineHTTPS(boost::asio::io_context &io_context, boost::asio::ssl::context &ctx):
         SimpleWeb::HTTPS(io_context, ctx) {
     }
@@ -92,6 +195,9 @@ namespace nvhttp {
     }
   };
 
+  /**
+   * @brief Enumerates supported pAIR PHASE options.
+   */
   enum class PAIR_PHASE {
     NONE,  ///< Sunshine is not in a pairing phase
     GETSERVERCERT,  ///< Sunshine is in the get server certificate phase
@@ -100,52 +206,148 @@ namespace nvhttp {
     CLIENTPAIRINGSECRET  ///< Sunshine is in the client pairing secret phase
   };
 
+  /**
+   * @brief Shared result used to return the completed pairing outcome to a PIN submitter.
+   */
+  struct pairing_completion_t {
+    std::condition_variable condition;  ///< Wakes the REST request when pairing finishes.
+    std::mutex mutex;  ///< Protects the completion result.
+    std::optional<bool> result;  ///< Final pairing result, or no value while the handshake is pending.
+  };
+
+  /**
+   * @brief Pairing handshake state exchanged with a Moonlight client.
+   */
   struct pair_session_t {
     struct {
-      std::string uniqueID = {};
-      std::string cert = {};
-      std::string name = {};
-    } client;
+      std::string uniqueID = {};  ///< Client-provided pairing-session identifier.
+      std::string cert = {};  ///< Client certificate bytes exchanged during pairing.
+      std::string name = {};  ///< Client name recorded after successful pairing.
+    } client;  ///< Client object or client certificate data owned by this state..
 
-    std::unique_ptr<crypto::aes_t> cipher_key = {};
-    std::vector<uint8_t> clienthash = {};
+    std::unique_ptr<crypto::aes_t> cipher_key = {};  ///< Cipher key.
+    std::vector<uint8_t> clienthash = {};  ///< Client certificate hash used during pairing.
 
-    std::string serversecret = {};
-    std::string serverchallenge = {};
+    std::string serversecret = {};  ///< Server pairing secret.
+    std::string serverchallenge = {};  ///< Server challenge sent during pairing.
+    std::shared_ptr<pairing_completion_t> completion = std::make_shared<pairing_completion_t>();  ///< Result shared with the REST request waiting for the handshake.
 
     struct {
       util::Either<
         std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response>,
         std::shared_ptr<typename SimpleWeb::ServerBase<SunshineHTTPS>::Response>>
-        response;
-      std::string salt = {};
-    } async_insert_pin;
+        response;  ///< Pending HTTP or HTTPS response completed after PIN approval.
+      std::string salt = {};  ///< Client-provided salt used to derive the pairing key.
+      std::string id = {};  ///< Unguessable identifier used by the Web UI to approve this session.
+      std::string device_name = {};  ///< Untrusted device name reported by the pairing client.
+      std::string address = {};  ///< Network address from which the pairing request originated.
+      std::chrono::steady_clock::time_point expires_at = std::chrono::steady_clock::time_point::max();  ///< Deadline for completing this pairing session.
+    } async_insert_pin;  ///< Async insert pin.
 
     /**
      * @brief used as a security measure to prevent out of order calls
      */
     PAIR_PHASE last_phase = PAIR_PHASE::NONE;
-
-    /**
-     * @brief When the client sent getservercert; a PIN goes to the newest session waiting for one.
-     */
-    std::chrono::steady_clock::time_point started {};
+    bool failed = false;  ///< Whether protocol validation failed and the session must be removed.
   };
+
+  /**
+   * @brief Operator-visible context for a pairing request awaiting PIN approval.
+   */
+  struct pending_pairing_t {
+    std::string id;  ///< Unguessable approval identifier.
+    std::string name;  ///< Untrusted device name reported by the pairing client.
+    std::string address;  ///< Network address from which the request originated.
+  };
+
+  /**
+   * @brief Result of inserting a new pairing session into bounded pending storage.
+   */
+  enum class pair_session_insert_e {
+    ADDED,  ///< The session was inserted successfully.
+    ALREADY_EXISTS,  ///< A session with the same client unique ID is already active.
+    FULL  ///< The bounded session store has reached its limit.
+  };
+
+  /**
+   * @brief Validate an operator approval identifier received from the REST API.
+   *
+   * @param pairing_id Approval identifier to validate.
+   * @return `true` when the value has the exact hexadecimal format Sunshine generates.
+   */
+  bool is_valid_pairing_id(std::string_view pairing_id);
+
+  /**
+   * @brief Validate a Moonlight pairing PIN received from the REST API.
+   *
+   * @param pin PIN to validate.
+   * @return `true` when the value contains exactly four ASCII digits.
+   */
+  bool is_valid_pairing_pin(std::string_view pin);
+
+  /**
+   * @brief Validate an operator-supplied paired-client name received from the REST API.
+   *
+   * @param name Client name to validate.
+   * @return `true` when the name is non-empty and within the storage limit.
+   */
+  bool is_valid_pairing_name(std::string_view name);
+
+  /**
+   * @brief Insert a newly created pairing session into bounded pending storage.
+   *
+   * @param sess Pairing session to insert.
+   * @param pairing_id Receives the unguessable approval identifier on success.
+   * @return Status describing whether the session was inserted.
+   */
+  pair_session_insert_e insert_pair_session(pair_session_t sess, std::string &pairing_id);
+
+  /**
+   * @brief Evict an abandoned in-progress pairing session for a client.
+   *
+   * A fresh `getservercert` request means the client abandoned its previous handshake and
+   * started over: the phase machine never accepts `getservercert` twice for one session, so
+   * the old handshake cannot resume. Evicting it lets the retry proceed instead of failing
+   * with 409 until the session expires. Sessions still waiting for operator PIN approval
+   * (`last_phase == NONE`) are left untouched, so a pending approval cannot be displaced
+   * by a stray `getservercert`. Eviction completes the old session as failed, waking any
+   * PIN submitter waiting on it, and orphans no live HTTP response: the response is
+   * consumed when PIN approval advances the session past the certificate phase.
+   *
+   * @param unique_id Client-provided pairing-session identifier.
+   * @return `true` when an in-progress session was evicted.
+   */
+  bool evict_abandoned_pair_session(const std::string &unique_id);
+
+  /**
+   * @brief Remove pairing sessions whose completion deadline has passed.
+   *
+   * @param now Monotonic time used to evaluate session deadlines.
+   */
+  void expire_pair_sessions(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+
+  /**
+   * @brief List pairing requests that are waiting for operator PIN approval.
+   *
+   * @return Pending requests ordered from oldest to newest.
+   */
+  std::vector<pending_pairing_t> get_pending_pairings();
+
+  /**
+   * @brief Cancel a pairing request that is waiting for operator approval.
+   *
+   * @param pairing_id Unguessable approval identifier returned by @ref get_pending_pairings.
+   * @return `true` if the pending request was found and cancelled.
+   */
+  bool cancel_pairing(std::string_view pairing_id);
 
   /**
    * @brief removes the temporary pairing session
    * @param sess
-   * @note Takes the pairing lock (recursive), like every function that touches the pairing sessions. The web UI
+   * @note Takes the pairing-session lock, like every function that touches the pairing sessions. The web UI
    *       thread (pin) and the nvhttp server threads (pair) both change them.
    */
   void remove_session(const pair_session_t &sess);
-
-  /**
-   * @brief Store the pairing session a client opened with getservercert.
-   * @param sess The new session; its client.uniqueID is the key.
-   * @return The stored session. It stays valid only while the caller holds the pairing lock (pair() does).
-   */
-  pair_session_t &start_pair_session(pair_session_t &&sess);
 
   /**
    * @brief Pair, phase 1
@@ -156,6 +358,9 @@ namespace nvhttp {
    * in order to be used to decrypt_symmetric in the next phases.
    *
    * At this stage we only have to send back our public certificate.
+   * @param sess Pairing session that owns the request state.
+   * @param tree XML property tree used for the response body.
+   * @param pin PIN supplied by the client during pairing.
    */
   void getservercert(pair_session_t &sess, boost::property_tree::ptree &tree, const std::string &pin);
 
@@ -170,6 +375,9 @@ namespace nvhttp {
    *  - Server secret: a randomly generated secret
    *
    * The hash + server_challenge will then be AES encrypted and sent as the `challengeresponse` in the returned XML
+   * @param sess Pairing session that owns the request state.
+   * @param tree XML property tree used for the response body.
+   * @param challenge Client challenge bytes from the pairing request.
    */
   void clientchallenge(pair_session_t &sess, boost::property_tree::ptree &tree, const std::string &challenge);
 
@@ -179,6 +387,9 @@ namespace nvhttp {
    * Moonlight will send back a `serverchallengeresp`: an AES encrypted client hash,
    * we have to send back the `pairingsecret`:
    * using our private key we have to sign the certificate_signature + server_secret (generated in phase 2)
+   * @param sess Pairing session that owns the request state.
+   * @param tree XML property tree used for the response body.
+   * @param encrypted_response Encrypted response.
    */
   void serverchallengeresp(pair_session_t &sess, boost::property_tree::ptree &tree, const std::string &encrypted_response);
 
@@ -195,19 +406,24 @@ namespace nvhttp {
    *
    * Then using the client certificate public key we should be able to verify that
    * the client secret has been signed by Moonlight
+   * @param sess Pairing session that owns the request state.
+   * @param tree XML property tree used for the response body.
+   * @param client_pairing_secret Client pairing secret.
    */
   void clientpairingsecret(pair_session_t &sess, boost::property_tree::ptree &tree, const std::string &client_pairing_secret);
 
   /**
-   * @brief Compare the user supplied pin to the Moonlight pin.
+   * @brief Apply the user supplied PIN to the explicitly selected pairing request.
+   * @param pairing_id Unguessable identifier of the pairing request to approve.
    * @param pin The user supplied pin.
    * @param name The user supplied name.
-   * @return `true` if the pin is correct, `false` otherwise.
+   * @return `true` if Moonlight proves the PIN by completing the handshake, `false` otherwise.
+   * @note The handshake wait uses the configured `ping_timeout` and never exceeds the pairing session deadline.
    * @examples
-   * bool pin_status = nvhttp::pin("1234", "laptop");
+   * bool pin_status = nvhttp::pin("0123456789abcdef0123456789abcdef", "1234", "laptop");
    * @examples_end
    */
-  bool pin(std::string pin, std::string name);
+  bool pin(std::string_view pairing_id, const std::string &pin, std::string name);
 
   /**
    * @brief Decide whether a client may use the clipboard endpoint (/actions/clipboard).
@@ -225,7 +441,13 @@ namespace nvhttp {
     const std::list<std::string> &session_uuids
   );
 
-  std::string request_otp(const std::string& passphrase, const std::string& deviceName);
+  /**
+   * @brief Create a one-time PIN for pairing without entering a PIN in the Web UI (Apollo).
+   * @param passphrase Passphrase the client must use together with the PIN; at least 4 characters.
+   * @param deviceName Name given to the client that pairs with the PIN, or empty to keep the client's own name.
+   * @return The 4-digit PIN, valid for OTP_EXPIRE_DURATION, or an empty string when the passphrase is too short.
+   */
+  std::string request_otp(const std::string &passphrase, const std::string &deviceName);
 
   /**
    * @brief Remove single client.
@@ -233,8 +455,28 @@ namespace nvhttp {
    * @examples
    * nvhttp::unpair_client("4D7BB2DD-5704-A405-B41C-891A022932E1");
    * @examples_end
+   *
+   * @return Whether the client was found and removed (`applied`; its streams are stopped) and the change saved.
+   * A revocation stays in effect when it can't be saved.
    */
-  bool unpair_client(std::string_view uuid);
+  client_change_t unpair_client(std::string_view uuid);
+
+  /**
+   * @brief Enable or disable a client.
+   * @param uuid The UUID of the client.
+   * @param enabled Whether the client should be enabled.
+   * Disabling a client stops its streams, and the running app when no stream is left.
+   * @return Whether the change is in effect and saved. Enabling that can't be saved is undone; disabling stays in
+   * effect.
+   */
+  client_change_t set_client_enabled(std::string_view uuid, bool enabled);
+  /**
+   * @brief Get cert by UUID.
+   *
+   * @param uuid Client UUID being looked up or removed.
+   * @return PEM certificate for the paired client, or an empty string when unknown.
+   */
+  std::string get_cert_by_uuid(std::string_view uuid);
 
   /**
    * @brief Get all paired clients.
@@ -247,11 +489,12 @@ namespace nvhttp {
 
   /**
    * @brief Remove all paired clients.
+   * @return Whether the change was saved; it is in effect either way.
    * @examples
    * nvhttp::erase_all_clients();
    * @examples_end
    */
-  void erase_all_clients();
+  client_change_t erase_all_clients();
 
   /**
    * @brief      Stops a session.
@@ -299,9 +542,10 @@ namespace nvhttp {
    * @param[in]  allow_client_commands  Allow client commands
    * @param[in]  always_use_virtual_display  Always use virtual display
    * 
-   * @return     Whether the update is successful
+   * @return     Whether the change is in effect and saved. An edit that only takes permissions or client commands
+   *             away stays in effect when it can't be saved; any other edit is then undone.
    */
-  bool update_device_info(
+  client_change_t update_device_info(
     const std::string& uuid,
     const std::string& name,
     const std::string& display_mode,
@@ -312,4 +556,96 @@ namespace nvhttp {
     const bool allow_client_commands,
     const bool always_use_virtual_display
   );
+
+  /**
+   * @brief Get codec mode flags.
+   *
+   * @return Moonlight codec capability bitmask for the currently probed encoders.
+   */
+  uint32_t get_codec_mode_flags();
+
+#ifdef SUNSHINE_TESTS
+  /**
+   * @brief Test-only accessors for paired-client authorization state.
+   */
+  namespace test_support {
+    /**
+     * @brief Create the production HTTPS server and expose its callback lifetime guard.
+     *
+     * @param certificate_file Path to the server certificate PEM file.
+     * @param private_key_file Path to the matching private key PEM file.
+     * @param handler_scope Receives the scope runner that prevents destruction during callbacks.
+     * @return HTTPS server ready for test endpoint configuration.
+     */
+    std::unique_ptr<SimpleWeb::ServerBase<SunshineHTTPS>> make_https_server(
+      const std::string &certificate_file,
+      const std::string &private_key_file,
+      std::shared_ptr<SimpleWeb::ScopeRunner> &handler_scope
+    );
+
+    /**
+     * @brief Dispatch a plain-HTTP pairing request through the production handler.
+     *
+     * @param response HTTP response object to populate.
+     * @param request HTTP request data from the test client.
+     */
+    void pair_http(
+      std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response> response,
+      std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Request> request
+    );
+
+    /**
+     * @brief Clear in-memory paired-client records without changing persisted state.
+     */
+    void reset_client_state();
+
+    /**
+     * @brief Add a paired-client record for authorization tests.
+     *
+     * @param name Human-readable client name.
+     * @param cert PEM-encoded client certificate.
+     * @param enabled Whether the client may connect.
+     * @return Persistent UUID for the added client, or an empty string when invalid.
+     */
+    std::string add_client(const std::string &name, std::string cert, bool enabled);
+
+    /**
+     * @brief Duplicate a paired-client record to simulate legacy conflicting state.
+     *
+     * @param uuid Persistent UUID of the record to duplicate.
+     * @return `true` when the source record was found and duplicated.
+     */
+    bool duplicate_client(std::string_view uuid);
+
+    /**
+     * @brief Run the production certificate authorization checks against PEM input.
+     *
+     * @param cert PEM-encoded certificate presented by a client.
+     * @return `true` when the exact certificate belongs to one enabled paired client.
+     */
+    bool authorize_client_certificate(std::string_view cert);
+
+    /**
+     * @brief Complete and remove a pairing session without running the protocol phases.
+     *
+     * @param pairing_id Operator approval identifier of the test session.
+     * @param success Pairing result delivered to the waiting PIN submitter.
+     * @return `true` when the session was found and completed.
+     */
+    bool complete_pairing(std::string_view pairing_id, bool success);
+
+    /**
+     * @brief Reload paired-client authorization state from the configured state file.
+     */
+    void reload_client_state();
+
+    /**
+     * @brief Run the per-request client check of GameStream HTTPS handlers (verified_handler()).
+     *
+     * @param cert PEM certificate the connection presented.
+     * @return Copy of the client's current record, or nullptr when it may no longer connect.
+     */
+    std::shared_ptr<crypto::named_cert_t> current_client_record(std::string_view cert);
+  }  // namespace test_support
+#endif
 }  // namespace nvhttp

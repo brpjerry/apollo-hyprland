@@ -27,7 +27,7 @@
   #include <src/input.h>
   #include <src/platform/common.h>
   #include <src/platform/linux/hyprland/ipc.h>
-  #include <src/platform/linux/input/inputtino_abs.h>
+  #include <src/platform/linux/input/abs_input.h>
   #include <src/video.h>
 
 namespace video {
@@ -137,6 +137,7 @@ namespace {
         ASSERT_TRUE(wait_for_output(name, 1920, 1.0)) << name << " did not appear";
       }
 
+      platf::abs_input::set_compositor_for_testing(platf::abs_input::real_hyprland_compositor());
       input = platf::input();
       client = platf::allocate_client_input_context(input);
     }
@@ -144,6 +145,7 @@ namespace {
     void TearDown() override {
       client.reset();
       input.reset();
+      platf::abs_input::set_compositor_for_testing(nullptr);
       if (!ipc) {
         return;
       }
@@ -170,9 +172,14 @@ namespace {
     }
 
     /**
-     * @brief The port input would use while streaming `name`, through the real capture and video code.
+     * @brief The ports input.cpp would use while streaming `name`, through the real capture and video code.
      */
-    std::optional<platf::touch_port_t> port_for(const std::string &name, int *logical_w, int *logical_h) {
+    struct ports_t {
+      platf::touch_port_t mouse;  ///< platform_touch_port(): the layout box and the output in it
+      platf::touch_port_t touch;  ///< monitor_touch_port(): the output
+    };
+
+    std::optional<ports_t> ports_for(const std::string &name) {
       video::config_t config {};
       config.width = 1920;
       config.height = 1080;
@@ -184,32 +191,34 @@ namespace {
       config.width = disp->width;
       config.height = disp->height;
       auto tp = video::make_port(disp.get(), config);
-      *logical_w = tp.logical_width;
-      *logical_h = tp.logical_height;
-      return input::make_abs_port(tp);
+      ports_t ports;
+      ports.mouse = {tp.offset_x, tp.offset_y, tp.env_logical_width, tp.env_logical_height, tp.logical_width, tp.logical_height, tp.env_offset_x, tp.env_offset_y, tp.output_name};
+      ports.touch = {tp.offset_x, tp.offset_y, tp.logical_width, tp.logical_height, tp.logical_width, tp.logical_height, tp.env_offset_x, tp.env_offset_y, tp.output_name};
+      return ports;
     }
 
     /**
      * @brief Absolute mouse and pen hover at points of `name`; checks the pointer lands within 1 logical px.
      */
     void check_output(const std::string &name) {
-      int w = 0;
-      int h = 0;
-      auto port = port_for(name, &w, &h);
-      ASSERT_TRUE(port) << name;
-      std::cout << name << ": logical " << w << 'x' << h << " at " << port->offset_x << ',' << port->offset_y
-                << ", layout " << port->width << 'x' << port->height << " at " << port->layout_x << ','
-                << port->layout_y << std::endl;
+      auto ports = ports_for(name);
+      ASSERT_TRUE(ports) << name;
+      const auto &port = ports->mouse;
+      const int w = port.logical_width;
+      const int h = port.logical_height;
+      std::cout << name << ": logical " << w << 'x' << h << " at " << port.offset_x << ',' << port.offset_y
+                << ", layout " << port.width << 'x' << port.height << " at " << port.env_offset_x << ','
+                << port.env_offset_y << std::endl;
 
       const std::pair<double, double> points[] {{0, 0}, {0.25, 0.75}, {0.5, 0.5}, {1, 1}};
       for (auto [fx, fy] : points) {
         // Display-local coordinates, as input::client_to_touchport() returns them; stay on the last pixel.
         float lx = std::min<float>(fx * w, w - 1);
         float ly = std::min<float>(fy * h, h - 1);
-        point_t want {port->offset_x + lx, port->offset_y + ly};
+        point_t want {port.offset_x + lx, port.offset_y + ly};
 
         auto pos = inject_until(*ipc, want, lx, ly, [&](float x, float y) {
-          platf::abs_mouse(input, *port, x, y);
+          platf::abs_mouse(input, port, port.offset_x + x, port.offset_y + y);
         });
         ASSERT_TRUE(pos);
         std::cout << "  mouse " << lx << ',' << ly << " -> " << pos->x << ',' << pos->y << " (want " << want.x << ','
@@ -227,13 +236,13 @@ namespace {
             0,
             LI_TILT_UNKNOWN,
             LI_ROT_UNKNOWN,
-            x / port->width,
-            y / port->height,
+            x / w,
+            y / h,
             0.5f,
             0,
             0,
           };
-          platf::pen_update(client.get(), *port, pen);
+          platf::pen_update(client.get(), ports->touch, pen);
         });
         ASSERT_TRUE(pos);
         std::cout << "  pen   " << lx << ',' << ly << " -> " << pos->x << ',' << pos->y << std::endl;
@@ -277,19 +286,20 @@ TEST_F(AbsInputLiveTest, AbsoluteMouseAndPenLandOnStreamedOutput) {
 
 // Bugs caught: 0, False positives: 0
 TEST_F(AbsInputLiveTest, RelativeMouseIsOneToOne) {
-  int w = 0;
-  int h = 0;
-  auto port = port_for(outputs[0], &w, &h);
-  ASSERT_TRUE(port);
-  point_t start {port->offset_x + w / 2.0, port->offset_y + h / 2.0};
+  auto ports = ports_for(outputs[0]);
+  ASSERT_TRUE(ports);
+  const auto &port = ports->mouse;
+  const int w = port.logical_width;
+  const int h = port.logical_height;
+  point_t start {port.offset_x + w / 2.0, port.offset_y + h / 2.0};
   auto pos = inject_until(*ipc, start, w / 2.0f, h / 2.0f, [&](float x, float y) {
-    platf::abs_mouse(input, *port, x, y);
+    platf::abs_mouse(input, port, port.offset_x + x, port.offset_y + y);
   });
   ASSERT_TRUE(pos);
   ASSERT_NEAR(pos->x, start.x, 1);
 
   point_t want {pos->x + 37, pos->y - 23};
-  platf::move_mouse(input, 37, -23);
+  platf::move_mouse(input, port, 37, -23);
   auto deadline = std::chrono::steady_clock::now() + 1s;
   std::optional<point_t> moved;
   while (std::chrono::steady_clock::now() < deadline) {
@@ -311,14 +321,13 @@ TEST_F(AbsInputLiveTest, TouchIsBoundToStreamedOutput) {
   ASSERT_TRUE(focus_monitor(*ipc, outputs[0]));
   ASSERT_EQ(focused_monitor(*ipc), outputs[0]);
 
-  int w = 0;
-  int h = 0;
-  auto port = port_for(outputs[1], &w, &h);
-  ASSERT_TRUE(port);
+  auto ports = ports_for(outputs[1]);
+  ASSERT_TRUE(ports);
+  const auto &port = ports->touch;
 
   std::optional<std::string> focused;
   for (int i = 0; i < 20 && focused != outputs[1]; ++i) {
-    tap(*port, w / 2.0f, h / 2.0f);
+    tap(port, port.width / 2.0f, port.height / 2.0f);
     focused = focused_monitor(*ipc);
   }
   EXPECT_EQ(focused, outputs[1]);
@@ -326,12 +335,14 @@ TEST_F(AbsInputLiveTest, TouchIsBoundToStreamedOutput) {
   if (const char *extra = std::getenv("APOLLO_TEST_TOUCH_OUTPUT")) {
     std::string name {extra};
     ASSERT_TRUE(name.starts_with("APOLLO-TEST-")) << "APOLLO_TEST_TOUCH_OUTPUT must name an APOLLO-TEST-* output";
-    port = port_for(name, &w, &h);
-    ASSERT_TRUE(port) << name;
+    ports = ports_for(name);
+    ASSERT_TRUE(ports) << name;
+    const auto &extra_port = ports->touch;
     for (auto [fx, fy] : {std::pair {0.5f, 0.5f}, {0.25f, 0.75f}, {0.75f, 0.25f}}) {
-      std::cout << name << ": touch at " << fx * w << ',' << fy * h << " (global " << port->offset_x + fx * w << ','
-                << port->offset_y + fy * h << ')' << std::endl;
-      tap(*port, fx * w, fy * h);
+      std::cout << name << ": touch at " << fx * extra_port.width << ',' << fy * extra_port.height << " (global "
+                << extra_port.offset_x + fx * extra_port.width << ',' << extra_port.offset_y + fy * extra_port.height
+                << ')' << std::endl;
+      tap(extra_port, fx * extra_port.width, fy * extra_port.height);
     }
     EXPECT_EQ(focused_monitor(*ipc), name);
   }

@@ -5,7 +5,12 @@
 #pragma once
 
 // standard includes
+#include <array>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
 #include <memory>
 #include <list>
 
@@ -25,45 +30,117 @@ namespace stream {
 }
 
 namespace rtsp_stream {
-  constexpr auto RTSP_SETUP_PORT = 21;
+  /**
+   * @brief Describe the codecs advertised by a host, independently of client identity.
+   *
+   * @param codec_modes Validated ServerCodecModeSupport capability bits.
+   * @return GameStream DESCRIBE codec attributes; these do not change RTP packetization.
+   */
+  std::string describe_video_codecs(uint32_t codec_modes);
 
-  struct launch_session_t {
-    uint32_t id;
+  constexpr auto RTSP_SETUP_PORT = 21;  ///< GameStream base-port offset used for the RTSP setup listener.
 
-    crypto::aes_t gcm_key;
-    crypto::aes_t iv;
+#pragma pack(push, 1)
 
-    std::string av_ping_payload;
-    uint32_t control_connect_data;
+  /**
+   * @brief Encrypted RTSP message header used by GameStream.
+   */
+  struct encrypted_rtsp_header_t {
+    // We set the MSB in encrypted RTSP messages to allow format-agnostic
+    // parsing code to be able to tell encrypted from plaintext messages.
+    static constexpr std::uint32_t ENCRYPTED_MESSAGE_TYPE_BIT = 0x80000000;  ///< Protocol or platform constant for encrypted message type bit.
 
-    std::string device_name;
-    std::string unique_id;
-    crypto::PERM perm;
+    /**
+     * @brief Return a pointer to the protocol payload following the packet header.
+     *
+     * @return Parsed or serialized payload data.
+     */
+    uint8_t *payload() {
+      return (uint8_t *) (this + 1);
+    }
 
-    bool input_only;
-    bool host_audio;
-    int width;
-    int height;
-    int fps;
-    int gcmap;
-    int surround_info;
-    std::string surround_params;
-    bool enable_hdr;
-    bool enable_sops;
-    bool virtual_display;
-    uint32_t scale_factor;
+    /**
+     * @brief Decode the RTSP interleaved-frame payload length.
+     *
+     * @return Payload byte count with the encrypted-message flag masked out.
+     */
+    std::uint32_t payload_length() const {
+      return util::endian::big<std::uint32_t>(typeAndLength) & ~ENCRYPTED_MESSAGE_TYPE_BIT;
+    }
 
-    std::optional<crypto::cipher::gcm_t> rtsp_cipher;
-    std::string rtsp_url_scheme;
-    uint32_t rtsp_iv_counter;
+    /**
+     * @brief Inspect the encrypted-message flag without modifying the wire header.
+     *
+     * @return True when the encrypted-message flag is set.
+     */
+    bool is_encrypted() const {
+      return !!(util::endian::big<std::uint32_t>(typeAndLength) & ENCRYPTED_MESSAGE_TYPE_BIT);
+    }
 
-    std::list<crypto::command_entry_t> client_do_cmds;
-    std::list<crypto::command_entry_t> client_undo_cmds;
+    // This field is the length of the payload + ENCRYPTED_MESSAGE_TYPE_BIT in big-endian
+    std::uint32_t typeAndLength;  ///< Type and length.
 
-    // Identity of the virtual display created for this session (see platf::vdisplay::create()).
-    uuid_util::uuid_t display_guid{};
+    // This field is the number used to initialize the bottom 4 bytes of the AES IV in big-endian
+    std::uint32_t sequenceNumber;  ///< Sequence number.
+
+    // This field is the AES GCM authentication tag
+    std::array<std::uint8_t, 16> tag;  ///< Authentication tag appended to the encrypted payload.
   };
 
+#pragma pack(pop)
+
+  static_assert(sizeof(encrypted_rtsp_header_t) == 24);
+  static_assert(offsetof(encrypted_rtsp_header_t, tag) == 8);
+
+  /**
+   * @brief RTSP launch session state shared with stream setup.
+   */
+  struct launch_session_t {
+    uint32_t id;  ///< RTSP launch-session identifier assigned before stream startup.
+
+    crypto::aes_t gcm_key;  ///< AES-GCM key negotiated for encrypted RTSP messages.
+    crypto::aes_t iv;  ///< Initial RTSP AES-GCM IV supplied by the client.
+
+    std::string av_ping_payload;  ///< AV ping payload.
+    uint32_t control_connect_data;  ///< Client-provided token used when connecting the control channel.
+
+    std::string device_name;  ///< Apollo: name of the paired client (same value as client_name).
+    std::string unique_id;  ///< Moonlight client unique identifier for this launch request.
+    crypto::PERM perm;  ///< Apollo: permissions granted to the paired client.
+
+    bool input_only;  ///< Apollo: stream carries input only (no video or audio).
+    bool host_audio;  ///< Whether host audio should be played locally.
+    int width;  ///< Frame or display width in pixels.
+    int height;  ///< Frame or display height in pixels.
+    int fps;  ///< Requested video frame rate.
+    int gcmap;  ///< Game controller mapping requested by the client.
+    int appid;  ///< Application ID requested for launch or resume.
+    int surround_info;  ///< Encoded GameStream surround-sound capability flags.
+    std::string surround_params;  ///< Client-provided surround-sound layout parameters.
+    bool continuous_audio;  ///< Whether audio packets continue during silence.
+    bool enable_hdr;  ///< Whether HDR streaming is requested.
+    bool enable_sops;  ///< Whether sequence output protection is requested.
+    bool virtual_display;  ///< Apollo: stream to a per-client virtual display.
+    uint32_t scale_factor;  ///< Apollo: virtual display scale factor in percent.
+    std::string client_name;  ///< Friendly client name from initial pairing.
+
+    std::optional<crypto::cipher::gcm_t> rtsp_cipher;  ///< AES-GCM cipher used once encrypted RTSP is negotiated.
+    std::string rtsp_url_scheme;  ///< URL scheme selected by the RTSP SETUP flow.
+    uint32_t rtsp_iv_counter;  ///< Counter value mixed into encrypted RTSP IVs.
+    std::string client_cert;  ///< PEM certificate for the paired Moonlight client.
+
+    std::list<crypto::command_entry_t> client_do_cmds;  ///< Apollo: per-client commands run when the stream starts.
+    std::list<crypto::command_entry_t> client_undo_cmds;  ///< Apollo: per-client commands run when the stream ends.
+
+    // Identity of the virtual display created for this session (see platf::vdisplay::create()).
+    uuid_util::uuid_t display_guid {};  ///< Apollo: virtual display identity for this session.
+  };
+
+  /**
+   * @brief Queue a launch session until the RTSP client connects.
+   *
+   * @param launch_session Session state prepared by the GameStream launch handler.
+   */
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
 
   /**
@@ -81,6 +158,14 @@ namespace rtsp_stream {
   std::shared_ptr<stream::session_t>
   find_session(const std::string_view& uuid);
 
+  /**
+   * @brief Every active session of a paired client (a client may stream more than once).
+   *
+   * @param uuid UUID of the paired client.
+   * @return The client's sessions.
+   */
+  std::vector<std::shared_ptr<stream::session_t>> find_sessions(std::string_view uuid);
+
   std::list<std::string>
   get_all_session_uuids();
 
@@ -88,6 +173,12 @@ namespace rtsp_stream {
    * @brief Terminates all running streaming sessions.
    */
   void terminate_sessions();
+  /**
+   * @brief Terminate active sessions associated with a client certificate.
+   *
+   * @param cert Certificate data or object used by the operation.
+   */
+  void terminate_sessions_by_cert(std::string_view cert);
 
   /**
    * @brief Runs the RTSP server loop.

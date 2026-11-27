@@ -43,6 +43,11 @@ namespace file_handler {
 
   /**
    * @brief Writes a file.
+   *
+   * On Linux the contents go to a temporary sibling that replaces the file once it is complete, so a failed write
+   * leaves the previous file as it was. The file keeps its owner, group and mode; a symlink keeps pointing at the new
+   * contents. A file that a replacement would change otherwise (other hard links, an access ACL, an owner or group we
+   * can't set, a bind mount, a directory we can't create files in) is overwritten in place instead.
    * @param path The path of the file.
    * @param contents The contents to write.
    * @return ``0`` on success, ``-1`` on failure.

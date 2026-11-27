@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue'
+import { Info, Trash2 } from '@lucide/vue'
 import Checkbox from "../../../Checkbox.vue";
 
 const props = defineProps({
@@ -7,6 +8,8 @@ const props = defineProps({
   config: Object
 })
 const config = ref(props.config)
+// Apollo keeps the display device options folded unless they are in use.
+const expanded = config.value.dd_configuration_option && config.value.dd_configuration_option !== 'disabled'
 
 const REFRESH_RATE_ONLY = "refresh_rate_only"
 const RESOLUTION_ONLY = "resolution_only"
@@ -53,19 +56,21 @@ function addRemappingEntry() {
       <div class="mb-3 accordion">
         <div class="accordion-item">
           <h2 class="accordion-header">
-            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+            <button class="accordion-button" :class="{ collapsed: !expanded }" type="button" data-bs-toggle="collapse"
                     data-bs-target="#panelsStayOpen-collapseOne">
               {{ $t('config.dd_options_header') }}
             </button>
           </h2>
-          <div id="panelsStayOpen-collapseOne" class="accordion-collapse collapse"
+          <div id="panelsStayOpen-collapseOne" class="accordion-collapse collapse" :class="{ show: expanded }"
                aria-labelledby="panelsStayOpen-headingOne">
             <div class="accordion-body">
               <div class="alert alert-info" v-if="platform === 'windows'">
-                <i class="fa-solid fa-xl fa-circle-info"></i> {{ $t('config.dd_resolution_option_vdisplay_desc') }} {{ $t('config.dd_resolution_option_multi_instance_desc') }}
+                <Info :size="18" class="icon"></Info>
+                {{ $t('config.dd_resolution_option_vdisplay_desc') }} {{ $t('config.dd_resolution_option_multi_instance_desc') }}
               </div>
               <div class="alert alert-info" v-if="platform === 'linux'">
-                <i class="fa-solid fa-xl fa-circle-info"></i> {{ $t('config.dd_linux_hyprland_desc') }} {{ $t('config.dd_resolution_option_multi_instance_desc') }}
+                <Info :size="18" class="icon"></Info>
+                {{ $t('config.dd_linux_hyprland_desc') }} {{ $t('config.dd_resolution_option_multi_instance_desc') }}
               </div>
 
               <!-- Configuration option -->
@@ -99,9 +104,9 @@ function addRemappingEntry() {
 
                 <!-- Manual resolution -->
                 <div class="mt-2 ps-4" v-if="config.dd_resolution_option === 'manual'">
-                  <div class="form-text">
+                  <label for="dd_manual_resolution" class="form-label">
                     {{ $t('config.dd_manual_resolution') }}
-                  </div>
+                  </label>
                   <input type="text" class="form-control" id="dd_manual_resolution" placeholder="2560x1440"
                          v-model="config.dd_manual_resolution" />
                 </div>
@@ -120,9 +125,9 @@ function addRemappingEntry() {
 
                 <!-- Manual refresh rate -->
                 <div class="mt-2 ps-4" v-if="config.dd_refresh_rate_option === 'manual'">
-                  <div class="form-text">
+                  <label for="dd_manual_refresh_rate" class="form-label">
                     {{ $t('config.dd_manual_refresh_rate') }}
-                  </div>
+                  </label>
                   <input type="text" class="form-control" id="dd_manual_refresh_rate" placeholder="59.9558"
                          v-model="config.dd_manual_refresh_rate" />
                 </div>
@@ -189,26 +194,38 @@ function addRemappingEntry() {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="(value, idx) in config.dd_mode_remapping[getRemappingType()]">
+                    <tr v-for="(value, idx) in config.dd_mode_remapping[getRemappingType()]" :key="idx">
                       <td v-if="getRemappingType() !== REFRESH_RATE_ONLY">
-                        <input type="text" class="form-control monospace" v-model="value.requested_resolution"
+                        <label :for="`dd-requested-resolution-${idx}`" class="visually-hidden">
+                          {{ $t('config.dd_mode_remapping_requested_resolution') }}
+                        </label>
+                        <input :id="`dd-requested-resolution-${idx}`" type="text" class="form-control monospace" v-model="value.requested_resolution"
                                :placeholder="'1920x1080'" />
                       </td>
                       <td v-if="getRemappingType() !== RESOLUTION_ONLY">
-                        <input type="text" class="form-control monospace" v-model="value.requested_fps"
+                        <label :for="`dd-requested-fps-${idx}`" class="visually-hidden">
+                          {{ $t('config.dd_mode_remapping_requested_fps') }}
+                        </label>
+                        <input :id="`dd-requested-fps-${idx}`" type="text" class="form-control monospace" v-model="value.requested_fps"
                                :placeholder="'60'" />
                       </td>
                       <td v-if="getRemappingType() !== REFRESH_RATE_ONLY">
-                        <input type="text" class="form-control monospace" v-model="value.final_resolution"
+                        <label :for="`dd-final-resolution-${idx}`" class="visually-hidden">
+                          {{ $t('config.dd_mode_remapping_final_resolution') }}
+                        </label>
+                        <input :id="`dd-final-resolution-${idx}`" type="text" class="form-control monospace" v-model="value.final_resolution"
                                :placeholder="'2560x1440'" />
                       </td>
                       <td v-if="getRemappingType() !== RESOLUTION_ONLY">
-                        <input type="text" class="form-control monospace" v-model="value.final_refresh_rate"
+                        <label :for="`dd-final-refresh-rate-${idx}`" class="visually-hidden">
+                          {{ $t('config.dd_mode_remapping_final_refresh_rate') }}
+                        </label>
+                        <input :id="`dd-final-refresh-rate-${idx}`" type="text" class="form-control monospace" v-model="value.final_refresh_rate"
                                :placeholder="'119.95'" />
                       </td>
                       <td>
                         <button class="btn btn-danger" @click="config.dd_mode_remapping[getRemappingType()].splice(idx, 1)">
-                          <i class="fas fa-trash"></i>
+                          <Trash2 :size="16" />
                         </button>
                       </td>
                     </tr>
@@ -232,19 +249,21 @@ function addRemappingEntry() {
           <option value="disabled">{{ $t('config.dd_hdr_option_disabled') }}</option>
           <option value="auto">{{ $t('config.dd_hdr_option_auto') }}</option>
         </select>
-        <!-- HDR toggle -->
-        <!-- <label for="dd_wa_hdr_toggle_delay" class="form-label">
-          {{ $t('config.dd_wa_hdr_toggle_delay') }}
-        </label>
-        <input type="number" class="form-control" id="dd_wa_hdr_toggle_delay" placeholder="0" min="0" max="3000"
-              v-model="config.dd_wa_hdr_toggle_delay" />
-        <div class="form-text">
-          {{ $t('config.dd_wa_hdr_toggle_delay_desc_1') }}
-          <br>
-          {{ $t('config.dd_wa_hdr_toggle_delay_desc_2') }}
-          <br>
-          {{ $t('config.dd_wa_hdr_toggle_delay_desc_3') }}
-        </div> -->
+        <!-- HDR toggle workaround (Windows virtual display drivers) -->
+        <template v-if="platform === 'windows'">
+          <label for="dd_wa_hdr_toggle_delay" class="form-label">
+            {{ $t('config.dd_wa_hdr_toggle_delay') }}
+          </label>
+          <input type="number" class="form-control" id="dd_wa_hdr_toggle_delay" placeholder="0" min="0" max="3000"
+                 v-model="config.dd_wa_hdr_toggle_delay" />
+          <div class="form-text">
+            {{ $t('config.dd_wa_hdr_toggle_delay_desc_1') }}
+            <br>
+            {{ $t('config.dd_wa_hdr_toggle_delay_desc_2') }}
+            <br>
+            {{ $t('config.dd_wa_hdr_toggle_delay_desc_3') }}
+          </div>
+        </template>
       </div>
   </template>
 </template>

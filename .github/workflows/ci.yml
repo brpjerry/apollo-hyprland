@@ -29,7 +29,8 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
           df -h /
 
-      # makepkg clones this checkout, so it needs the history of the commit; it fetches the submodules itself.
+      # makepkg clones this checkout, so it needs the history of the commit; it fetches the lizardbyte-common
+      # submodule itself, and CMake fetches the other dependencies with CPM (package-lock.cmake).
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -128,8 +129,8 @@ jobs:
           docker run --rm --device /dev/dri -v "$GITHUB_WORKSPACE:/w" -v "$GITHUB_WORKSPACE:/home/builder/pkg/src/apollo:ro" \
             -w /w archlinux:latest bash -euo pipefail -c '
             pacman -Syu --noconfirm --needed base-devel hyprland mesa \
-              libva libdrm wayland libpulse libevdev avahi libayatana-appindicator libnotify miniupnpc libcap numactl \
-              opus icu pipewire pipewire-pulse wireplumber dbus wl-clipboard wev zenity
+              libva libdrm wayland libpulse libevdev avahi qt6-base qt6-svg libpipewire vulkan-icd-loader libxkbcommon \
+              miniupnpc libcap numactl opus icu pipewire pipewire-pulse wireplumber dbus wl-clipboard wev zenity
             chmod +x build/tests/test_sunshine
             if ldd build/tests/test_sunshine | grep "not found"; then
               echo "test_sunshine has unresolved libraries; update the package list above" >&2

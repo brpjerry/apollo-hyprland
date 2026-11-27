@@ -3,17 +3,21 @@ import { ref } from 'vue'
 import { $tp } from '../../../platform-i18n'
 import PlatformLayout from '../../../PlatformLayout.vue'
 
-const props = defineProps([
-  'platform',
-  'config'
-])
+const props = defineProps({
+  platform: String,
+  config: Object,
+})
 
 const config = ref(props.config)
-const outputNamePlaceholders = {
-  windows: '{de9bb7e2-186e-505b-9e93-f48793333810}',
-  linux: 'DP-1',
+let _outputNamePlaceholder = '0';
+if(props.platform === 'windows') {
+  _outputNamePlaceholder = '{de9bb7e2-186e-505b-9e93-f48793333810}';
+} else if(props.platform === 'linux') {
+  _outputNamePlaceholder = 'DP-1';
+} else if(props.platform === 'freebsd') {
+  _outputNamePlaceholder = 'DP-0';
 }
-const outputNamePlaceholder = outputNamePlaceholders[props.platform] ?? '0'
+const outputNamePlaceholder = _outputNamePlaceholder;  // NOSONAR(javascript:S1481,javascript:S1854): Constant used by vue.js binding for placeholder below
 </script>
 
 <template>
@@ -32,6 +36,15 @@ const outputNamePlaceholder = outputNamePlaceholders[props.platform] ?? '0'
             <b>&nbsp;&nbsp;&nbsp;&nbsp;"friendly_name": "ROG PG279Q"</b>
             <b>&nbsp;&nbsp;&nbsp;&nbsp;...</b>
             <b>&nbsp;&nbsp;}</b>
+          </pre>
+        </template>
+        <template #freebsd>
+          <pre style="white-space: pre-line;">
+            Info: Detecting displays
+            Info: Detected display: HDMI-A-1 connected: true
+            Info: Detected display: DP-1 connected: true
+            Info: Detected display: DP-2 connected: false
+            Info: Detected display: DVI-D-3 connected: false
           </pre>
         </template>
         <template #linux>

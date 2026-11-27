@@ -6,11 +6,15 @@
 #
 # The release version is pkgver: bump it here before tagging, and tag the release v$pkgver
 # (.github/workflows/release.yml refuses a tag that does not match).
+#
+# build() needs network access: CMake fetches the pinned dependencies in package-lock.cmake with CPM (including
+# the Apollo patches in patches/) and the prebuilt FFmpeg from LizardByte/build-deps. Boost, Wayland protocols and
+# Vulkan headers come from the Arch packages below instead.
 
 : "${_run_unit_tests:=false}"
 
 pkgname='apollo-hyprland'
-pkgver=0.4.8.1
+pkgver=0.4.8.2
 pkgrel=1
 pkgdesc='Self-hosted game stream host for Artemis, with virtual displays on Hyprland'
 arch=('x86_64')
@@ -24,16 +28,16 @@ options=('!debug' '!lto')
 depends=(
   'avahi'
   'curl'
+  'gcc-libs'
   'glib2'
-  'gtk3'
+  'hicolor-icon-theme'
   'icu'
-  'libayatana-appindicator'
   'libcap'
   'libdrm'
   'libevdev'
   'libice'
   'libmfx'
-  'libnotify'
+  'libpipewire'
   'libpulse'
   'libsm'
   'libva'
@@ -49,15 +53,20 @@ depends=(
   'numactl'
   'openssl'
   'opus'
+  'qt6-base'
+  'qt6-svg'
   'systemd-libs'
+  'udev'
+  'vulkan-icd-loader'
   'wayland'
   'which'
 )
 
 # CUDA is only needed to build NVENC support: the CUDA runtime is linked statically, and at run time the encoder
-# uses the NVIDIA driver's libcuda.
+# uses the NVIDIA driver's libcuda. Boost is linked statically from boost-libs' archives.
 makedepends=(
   'boost'
+  'boost-libs'
   'cmake'
   'cuda'
   'git'
@@ -65,9 +74,17 @@ makedepends=(
   'nlohmann-json'
   'nodejs'
   'npm'
+  'python-jinja'  # glad OpenGL/EGL loader generator
+  'shaderc'  # glslc, for the Vulkan encoder's shaders
   'systemd'
+  'vulkan-headers'
   'wayland-protocols'
 )
+
+# test.sh hides /dev/uinput and /dev/uhid from the unit tests with bubblewrap when the build user can write them.
+if [[ "${_run_unit_tests::1}" == "t" ]]; then
+  checkdepends=('bubblewrap')
+fi
 
 optdepends=(
   'hyprland: virtual displays and per-stream workspaces'
@@ -88,7 +105,8 @@ sha256sums=('SKIP')
 
 prepare() {
   cd apollo
-  git submodule update --init --recursive
+  # The only submodule the build uses; the other dependencies come from CPM at configure time.
+  git submodule update --init --recursive --depth 1 third-party/lizardbyte-common
 }
 
 build() {
@@ -101,6 +119,10 @@ build() {
   export CFLAGS="${CFLAGS/-Werror=format-security/}"
   export CXXFLAGS="${CXXFLAGS/-Werror=format-security/}"
   export CUDA_PATH=/opt/cuda
+  # No CPM source cache: CPM reuses a cached checkout without running its PATCH_COMMAND, so a cached tree that was
+  # reset or half-patched would be built as it is. Without one, the dependencies are fetched into build/_deps (inside
+  # the makepkg tree) and cmake/scripts/apply_patches_once.cmake checks their patches on every configure.
+  unset CPM_SOURCE_CACHE
 
   local _tests=OFF
   [[ "${_run_unit_tests::1}" == "t" ]] && _tests=ON
@@ -110,7 +132,8 @@ build() {
     -D CMAKE_INSTALL_PREFIX=/usr \
     -D BUILD_DOCS=OFF \
     -D BUILD_TESTS="${_tests}" \
-    -D BOOST_ALLOW_NEWER_SYSTEM=ON \
+    -D SUNSHINE_SYSTEM_WAYLAND_PROTOCOLS=ON \
+    -D SUNSHINE_SYSTEM_VULKAN_HEADERS=ON \
     -D SUNSHINE_ENABLE_CUDA=ON \
     -D CMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
     -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine \
@@ -133,4 +156,12 @@ check() {
 
 package() {
   DESTDIR="${pkgdir}" cmake --install build
+
+  # 0.4.8.1-1 shipped the user unit as sunshine.service; Sunshine now names it after the app id so that
+  # xdg-desktop-portal can identify it. Keep the old name as a vendor alias, so units enabled under the old name
+  # still resolve after an upgrade.
+  local unit_dir="${pkgdir}/usr/lib/systemd/user"
+  if [[ -f "${unit_dir}/app-dev.lizardbyte.app.Sunshine.service" && ! -e "${unit_dir}/sunshine.service" ]]; then
+    ln -s app-dev.lizardbyte.app.Sunshine.service "${unit_dir}/sunshine.service"
+  fi
 }

@@ -3,6 +3,8 @@
  * @brief Definitions for audio control on Linux.
  */
 // standard includes
+#include <algorithm>
+#include <array>
 #include <bitset>
 #include <condition_variable>
 #include <cstring>
@@ -25,7 +27,10 @@
 namespace platf {
   using namespace std::literals;
 
-  constexpr pa_channel_position_t position_mapping[] {
+  /**
+   * @brief PulseAudio position for each `speaker::speaker_e`, in `speaker_e` order.
+   */
+  constexpr std::array<pa_channel_position_t, speaker::MAX_SPEAKERS> position_mapping {
     PA_CHANNEL_POSITION_FRONT_LEFT,
     PA_CHANNEL_POSITION_FRONT_RIGHT,
     PA_CHANNEL_POSITION_FRONT_CENTER,
@@ -85,23 +90,71 @@ namespace platf {
         }
         BOOST_LOG(error) << "pa_simple_read() failed: "sv << pa_strerror(status);
 
-        return capture_e::error;
+        return capture_e::capture_error;
       }
 
       return capture_e::ok;
     }
   };
 
-  std::unique_ptr<mic_attr_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, std::string source_name) {
+  /**
+   * @brief Fill a PulseAudio channel map with the canonical layout for a channel count.
+   *
+   * Capture always uses the canonical layout, never the Opus channel mapping: the Opus mapping
+   * is applied by the multistream encoder and undone by the client, so applying it here too
+   * would leave the samples permuted. `speaker::map_stereo`, `map_surround51` and
+   * `map_surround71` are the identity over `speaker::speaker_e`, so the canonical position of
+   * channel `i` is `position_mapping[i]`.
+   *
+   * @param channels Number of audio channels in the stream.
+   * @param pa_map Channel map to fill; left untouched when `channels` is out of range.
+   * @return `true` when the channel count maps onto a known speaker layout.
+   */
+  bool fill_canonical_channel_map(int channels, pa_channel_map &pa_map) {
+    if (channels < 1 || channels > speaker::MAX_SPEAKERS) {
+      return false;
+    }
+
+    pa_channel_map_init(&pa_map);
+    pa_map.channels = static_cast<std::uint8_t>(channels);
+    for (int i = 0; i < channels; ++i) {
+      pa_map.map[i] = position_mapping[i];
+    }
+
+    return true;
+  }
+
+  /**
+   * @brief Create a microphone capture stream for the requested layout.
+   * @details Capture always uses the canonical channel layout; Opus mapping is applied by the encoder.
+   *
+   * @param channels Number of audio channels in the stream.
+   * @param sample_rate Audio sample rate in hertz.
+   * @param frame_size Number of samples captured per audio frame.
+   * @param source_name Source name.
+   * @return Microphone capture object for the requested audio layout, or nullptr on failure.
+   */
+  std::unique_ptr<mic_attr_t> microphone(int channels, std::uint32_t sample_rate, std::uint32_t frame_size, std::string source_name) {
+    // Capture in the canonical channel layout, not the one described by the Opus mapping.
+    //
+    // The Opus mapping is applied by the multistream encoder in audio.cpp and is undone by
+    // the client when it decodes, so the two cancel out. Passing it to PulseAudio as the
+    // capture channel map makes PulseAudio reorder the samples as well, and that reordering
+    // is never undone: the client ends up rendering permuted channels.
+    //
+    // This is invisible with the built-in mappings, which are all identities, but it
+    // scrambles the audio whenever a client requests custom surround-params (the webOS
+    // client asks for 0,1,4,5,2,3). The WASAPI backend ignores the mapping for this reason.
+    //
+    pa_channel_map pa_map;
+    if (!fill_canonical_channel_map(channels, pa_map)) {
+      BOOST_LOG(error) << "Unsupported channel count for audio capture: "sv << channels;
+      return nullptr;
+    }
+
     auto mic = std::make_unique<mic_attr_t>();
 
     pa_sample_spec ss {PA_SAMPLE_FLOAT32, sample_rate, (std::uint8_t) channels};
-    pa_channel_map pa_map;
-
-    pa_map.channels = channels;
-    std::for_each_n(pa_map.map, pa_map.channels, [mapping](auto &channel) mutable {
-      channel = position_mapping[*mapping++];
-    });
 
     pa_buffer_attr pa_attr = {
       .maxlength = uint32_t(-1),
@@ -311,6 +364,7 @@ namespace platf {
         }
 
         event_worker = std::thread {[this] {
+          platf::set_thread_name("audio::pulseaudio");
           handle_events();
         }};
 
@@ -518,7 +572,7 @@ namespace platf {
         }
 
         if (index.stereo == PA_INVALID_INDEX) {
-          index.stereo = load_null(stereo, speaker::map_stereo, sizeof(speaker::map_stereo));
+          index.stereo = load_null(stereo, speaker::map_stereo.data(), static_cast<int>(speaker::map_stereo.size()));
           if (index.stereo == PA_INVALID_INDEX) {
             BOOST_LOG(warning) << "Couldn't create virtual sink for stereo: "sv << pa_strerror(context_errno());
           } else {
@@ -527,7 +581,7 @@ namespace platf {
         }
 
         if (index.surround51 == PA_INVALID_INDEX) {
-          index.surround51 = load_null(surround51, speaker::map_surround51, sizeof(speaker::map_surround51));
+          index.surround51 = load_null(surround51, speaker::map_surround51.data(), static_cast<int>(speaker::map_surround51.size()));
           if (index.surround51 == PA_INVALID_INDEX) {
             BOOST_LOG(warning) << "Couldn't create virtual sink for surround-51: "sv << pa_strerror(context_errno());
           } else {
@@ -536,7 +590,7 @@ namespace platf {
         }
 
         if (index.surround71 == PA_INVALID_INDEX) {
-          index.surround71 = load_null(surround71, speaker::map_surround71, sizeof(speaker::map_surround71));
+          index.surround71 = load_null(surround71, speaker::map_surround71.data(), static_cast<int>(speaker::map_surround71.size()));
           if (index.surround71 == PA_INVALID_INDEX) {
             BOOST_LOG(warning) << "Couldn't create virtual sink for surround-71: "sv << pa_strerror(context_errno());
           } else {
@@ -579,7 +633,7 @@ namespace platf {
         return monitor_name;
       }
 
-      std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size) override {
+      std::unique_ptr<mic_t> microphone(const std::uint8_t *, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool, [[maybe_unused]] bool host_audio_enabled) override {
         // Read the generation first: a default change while this mic is set up then reinitialises it.
         auto generation = policy.capture_generation();
         auto start_generation = generation->load();
@@ -590,7 +644,7 @@ namespace platf {
         // 3. Default Sink
         auto sink_name = policy.capture_sink(config::audio.sink);
 
-        auto mic = ::platf::microphone(mapping, channels, sample_rate, frame_size, get_monitor_name(sink_name));
+        auto mic = ::platf::microphone(channels, sample_rate, frame_size, get_monitor_name(sink_name));
         if (mic && config::audio.auto_capture) {
           mic->generation = std::move(generation);
           mic->start_generation = start_generation;

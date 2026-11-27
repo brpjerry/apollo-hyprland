@@ -17,10 +17,16 @@ using namespace std::literals;
 namespace ip = boost::asio::ip;
 
 namespace net {
-  std::vector<ip::network_v4> pc_ips_v4 {
+  /**
+   * @brief IPv4 loopback networks used for local-client classification.
+   */
+  std::vector pc_ips_v4 {
     ip::make_network_v4("127.0.0.0/8"sv),
   };
-  std::vector<ip::network_v4> lan_ips_v4 {
+  /**
+   * @brief IPv4 private and link-local networks used for LAN classification.
+   */
+  std::vector lan_ips_v4 {
     ip::make_network_v4("192.168.0.0/16"sv),
     ip::make_network_v4("172.16.0.0/12"sv),
     ip::make_network_v4("10.0.0.0/8"sv),
@@ -28,14 +34,23 @@ namespace net {
     ip::make_network_v4("169.254.0.0/16"sv),
   };
 
-  std::vector<ip::network_v6> pc_ips_v6 {
+  /**
+   * @brief IPv6 loopback networks used for local-client classification.
+   */
+  std::vector pc_ips_v6 {
     ip::make_network_v6("::1/128"sv),
   };
-  std::vector<ip::network_v6> lan_ips_v6 {
+  /**
+   * @brief IPv6 private and link-local networks used for LAN classification.
+   */
+  std::vector lan_ips_v6 {
     ip::make_network_v6("fc00::/7"sv),
     ip::make_network_v6("fe80::/64"sv),
   };
 
+  /**
+   * @brief Convert configuration text to a network enum value.
+   */
   net_e from_enum_string(const std::string_view &view) {
     if (view == "wan") {
       return WAN;
@@ -47,29 +62,30 @@ namespace net {
     return PC;
   }
 
+  /**
+   * @brief Classify an address using the configured loopback and LAN ranges without modifying them.
+   */
   net_e from_address(const std::string_view &view) {
-    auto addr = normalize_address(ip::make_address(view));
-
-    if (addr.is_v6()) {
-      for (auto &range : pc_ips_v6) {
+    if (auto addr = normalize_address(ip::make_address(view)); addr.is_v6()) {
+      for (const auto &range : pc_ips_v6) {
         if (range.hosts().find(addr.to_v6()) != range.hosts().end()) {
           return PC;
         }
       }
 
-      for (auto &range : lan_ips_v6) {
+      for (const auto &range : lan_ips_v6) {
         if (range.hosts().find(addr.to_v6()) != range.hosts().end()) {
           return LAN;
         }
       }
     } else {
-      for (auto &range : pc_ips_v4) {
+      for (const auto &range : pc_ips_v4) {
         if (range.hosts().find(addr.to_v4()) != range.hosts().end()) {
           return PC;
         }
       }
 
-      for (auto &range : lan_ips_v4) {
+      for (const auto &range : lan_ips_v4) {
         if (range.hosts().find(addr.to_v4()) != range.hosts().end()) {
           return LAN;
         }
@@ -79,6 +95,9 @@ namespace net {
     return WAN;
   }
 
+  /**
+   * @brief Convert a network enum value to configuration text.
+   */
   std::string_view to_enum_string(net_e net) {
     switch (net) {
       case PC:
@@ -105,7 +124,17 @@ namespace net {
     return BOTH;
   }
 
-  std::string_view af_to_any_address_string(af_e af) {
+  af_e get_effective_address_family(const af_e af) {
+    if (af != BOTH || config::sunshine.bind_address.empty()) {
+      return af;
+    }
+
+    boost::system::error_code ec;
+    const auto bind_address = ip::make_address(config::sunshine.bind_address, ec);
+    return !ec && bind_address.is_v4() ? IPV4 : af;
+  }
+
+  std::string_view af_to_any_address_string(const af_e af) {
     switch (af) {
       case IPV4:
         return "0.0.0.0"sv;
@@ -115,6 +144,16 @@ namespace net {
 
     // avoid warning
     return "::"sv;
+  }
+
+  std::string get_bind_address(const af_e af) {
+    // If bind_address is configured, use it
+    if (!config::sunshine.bind_address.empty()) {
+      return config::sunshine.bind_address;
+    }
+
+    // Otherwise use the wildcard address for the given address family
+    return std::string(af_to_any_address_string(af));
   }
 
   boost::asio::ip::address normalize_address(boost::asio::ip::address address) {
@@ -144,6 +183,16 @@ namespace net {
     }
   }
 
+  std::string get_bind_address_url_host() {
+    if (config::sunshine.bind_address.empty()) {
+      return "localhost";
+    }
+
+    boost::system::error_code ec;
+    const auto bind_address = ip::make_address(config::sunshine.bind_address, ec);
+    return ec ? config::sunshine.bind_address : addr_to_url_escaped_string(bind_address);
+  }
+
   int encryption_mode_for_address(boost::asio::ip::address address) {
     auto nettype = net::from_address(address.to_string());
     if (nettype == net::net_e::PC || nettype == net::net_e::LAN) {
@@ -153,18 +202,42 @@ namespace net {
     }
   }
 
+  bool set_enet_address(ENetAddress &addr, const std::string &host, std::uint16_t port) {
+    boost::system::error_code ec;
+    const auto address = ip::make_address(host, ec);
+    if (ec) {
+      // Not a numeric address, so resolve the host name through ENet
+      return enet_address_set_host(&addr, host.c_str()) == 0 && enet_address_set_port(&addr, port) == 0;
+    }
+
+    // Numeric addresses are converted directly because ENet's resolver uses AI_ADDRCONFIG,
+    // which rejects IPv6 addresses such as "::" on hosts without a non-loopback IPv6 address.
+    ip::udp::endpoint endpoint {address, port};
+    return enet_address_set_address(&addr, endpoint.data(), static_cast<socklen_t>(endpoint.size())) == 0;
+  }
+
+  /**
+   * @brief Create an ENet host with the requested address family.
+   */
   host_t host_create(af_e af, ENetAddress &addr, std::uint16_t port) {
     static std::once_flag enet_init_flag;
     std::call_once(enet_init_flag, []() {
       enet_initialize();
     });
 
-    auto any_addr = net::af_to_any_address_string(af);
-    enet_address_set_host(&addr, any_addr.data());
-    enet_address_set_port(&addr, port);
+    af = get_effective_address_family(af);
+    const auto bind_addr = net::get_bind_address(af);
+    if (!set_enet_address(addr, bind_addr, port)) {
+      BOOST_LOG(error) << "Failed to resolve ENet bind address ["sv << bind_addr << ']';
+      return host_t {};
+    }
 
     // Maximum of 128 clients, which should be enough for anyone
     auto host = host_t {enet_host_create(af == IPV4 ? AF_INET : AF_INET6, &addr, 128, 0, 0, 0)};
+    if (!host) {
+      BOOST_LOG(error) << "Failed to create ENet host on ["sv << bind_addr << "]:"sv << port;
+      return host;
+    }
 
     // Enable opportunistic QoS tagging (automatically disables if the network appears to drop tagged packets)
     enet_socket_set_option(host->socket, ENET_SOCKOPT_QOS, 1);
@@ -172,6 +245,9 @@ namespace net {
     return host;
   }
 
+  /**
+   * @brief Destroy an ENet host allocated by host_create().
+   */
   void free_host(ENetHost *host) {
     std::for_each(host->peers, host->peers + host->peerCount, [](ENetPeer &peer_ref) {
       ENetPeer *peer = &peer_ref;

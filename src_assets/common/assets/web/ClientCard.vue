@@ -1,48 +1,52 @@
 <template>
-    <div class="card p-2">
-        <div class="card-body">
-            <h2>{{ $t('client_card.clients') }}</h2>
-            <br>
-            <p>{{ $t('client_card.clients_desc') }}</p>
-            <div class="card-group p-4 align-items-center">
-                <a v-for="{ platform, icon, name, link } of clients" class="btn m-1" :class="[link && 'btn-success' || 'btn-secondary']" :href="link" target="_blank" @click="shouldOpen($event, link)"><i v-if="icon" :class="icon"></i> <span class="platform-text">{{ platform }}</span> [ {{ name }} ] </a>
-            </div>
-            <i>* {{ $t('client_card.generic_moonlight_clients_desc') }}</i>
-        </div>
+  <div class="card">
+    <div class="card-body">
+      <h2>{{ $t('client_card.clients') }}</h2>
+      <p>{{ $t('client_card.clients_desc') }}</p>
+      <div class="d-flex flex-wrap gap-2 mt-3">
+        <component
+          :is="client.link ? 'a' : 'span'"
+          v-for="client in clients"
+          :key="client.platform"
+          class="btn"
+          :class="client.link ? 'btn-success' : 'btn-secondary disabled'"
+          :href="client.link || undefined"
+          :target="client.link ? '_blank' : undefined"
+          :rel="client.link ? 'noopener noreferrer' : undefined"
+          :aria-disabled="client.link ? undefined : 'true'"
+        >
+          <component :is="client.icon" :size="18" class="icon"></component>
+          <span class="fw-bold">{{ client.platform }}</span>
+          [ {{ client.name }} ]
+        </component>
+      </div>
+      <p class="form-text mt-3 mb-0"><i>* {{ $t('client_card.generic_moonlight_clients_desc') }}</i></p>
     </div>
+  </div>
 </template>
 
-<style scoped>
-    .platform-text {
-        font-weight: bold;
-    }
-</style>
-
 <script setup>
-    const clients = [
-        {
-            platform: 'Android',
-            icon: 'fa-brands fa-android',
-            name: 'Artemis',
-            link: 'https://github.com/ClassicOldSong/moonlight-android'
-        },
-        {
-            platform: 'iOS',
-            icon: 'fa-brands fa-apple',
-            name: 'Coming soon...',
-            link: ''
-        },
-        {
-            platform: 'Desktop',
-            icon: 'fa-solid fa-desktop',
-            name: 'Coming soon...',
-            link: ''
-        }
-    ]
+import { Apple, Monitor, Smartphone } from '@lucide/vue'
 
-    const shouldOpen = (e, link) => {
-        if (!link) {
-            e.preventDefault();
-        }
-    }
+/** @brief Moonlight clients tuned for Apollo (Artemis). */
+const clients = [
+  {
+    platform: 'Android',
+    icon: Smartphone,
+    name: 'Artemis',
+    link: 'https://github.com/ClassicOldSong/moonlight-android',
+  },
+  {
+    platform: 'iOS',
+    icon: Apple,
+    name: 'Coming soon...',
+    link: '',
+  },
+  {
+    platform: 'Desktop',
+    icon: Monitor,
+    name: 'Coming soon...',
+    link: '',
+  },
+]
 </script>

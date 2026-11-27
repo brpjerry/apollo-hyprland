@@ -1,18 +1,9 @@
-import { fileURLToPath, URL } from 'node:url'
-import fs from 'fs';
-import { resolve } from 'path'
+import fs from 'node:fs';
+import { resolve } from 'node:path'
 import { defineConfig } from 'vite'
-import { ViteEjsPlugin } from "vite-plugin-ejs";
 import vue from '@vitejs/plugin-vue'
-import process from 'process'
+import process from 'node:process'
 
-/**
- * Before actually building the pages with Vite, we do an intermediate build step using ejs
- * Importing this separately and joining them using ejs
- * allows us to split some repeating HTML that cannot be added
- * by Vue itself (e.g. style/script loading, common meta head tags, Widgetbot)
- * The vite-plugin-ejs handles this automatically
- */
 let assetsSrcPath = 'src_assets/common/assets/web';
 let assetsDstPath = 'build/assets/web';
 
@@ -39,7 +30,38 @@ else {
     }
 }
 
-let header = fs.readFileSync(resolve(assetsSrcPath, "template_header.html"))
+/**
+ * Images the C++ side loads from the built web directory: the tray icons (src/system_tray.cpp) and the favicon and
+ * logo that src/confighttp.cpp serves. They live in `public/images`, which Vite copies to `images/`.
+ */
+const requiredImages = [
+    'images/logo-apollo.svg',
+    'images/apollo-playing.svg',
+    'images/apollo-pausing.svg',
+    'images/apollo-locked.svg',
+    'images/apollo.ico',
+    'images/logo-apollo-45.png',
+];
+
+const emitTrayIconsPlugin = {
+    name: 'emit-tray-icons',
+    buildStart() {
+        // Fail the build instead of shipping a server whose tray icons or logo are missing.
+        const missing = requiredImages.filter(image => !fs.existsSync(resolve(assetsSrcPath, 'public', image)));
+        if (missing.length > 0) {
+            this.error(`Missing images in ${resolve(assetsSrcPath, 'public')}: ${missing.join(', ')}`);
+        }
+
+        const virtualHidIcon = process.env.SUNSHINE_LIBVIRTUALHID_ICON;
+        if ((process.platform === 'win32' || process.platform === 'darwin') && virtualHidIcon) {
+            this.emitFile({
+                type: 'asset',
+                fileName: 'images/logo-libvirtualhid.svg',
+                source: fs.readFileSync(virtualHidIcon),
+            });
+        }
+    },
+};
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -48,26 +70,14 @@ export default defineConfig({
             vue: 'vue/dist/vue.esm-bundler.js'
         }
     },
-    base: './',
+    base: '/',
     plugins: [
         vue(),
-        ViteEjsPlugin({ header }),
+        emitTrayIconsPlugin,
     ],
     root: resolve(assetsSrcPath),
     build: {
         outDir: resolve(assetsDstPath),
         emptyOutDir: true,
-        rollupOptions: {
-            input: {
-                apps: resolve(assetsSrcPath, 'apps.html'),
-                config: resolve(assetsSrcPath, 'config.html'),
-                index: resolve(assetsSrcPath, 'index.html'),
-                password: resolve(assetsSrcPath, 'password.html'),
-                pin: resolve(assetsSrcPath, 'pin.html'),
-                troubleshooting: resolve(assetsSrcPath, 'troubleshooting.html'),
-                welcome: resolve(assetsSrcPath, 'welcome.html'),
-                login: resolve(assetsSrcPath, 'login.html')
-            },
-        },
     },
 })

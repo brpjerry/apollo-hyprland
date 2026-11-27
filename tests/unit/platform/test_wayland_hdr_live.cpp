@@ -59,8 +59,9 @@ namespace {
       0.0690970 * lin[0] + 0.9195400 * lin[1] + 0.0113612 * lin[2],
       0.0163916 * lin[0] + 0.0880132 * lin[1] + 0.8955950 * lin[2],
     };
-    auto vectors = video::color_vectors_from_colorspace(colorspace);
-    double y = 0;
+    auto vectors = video::color_vectors_from_colorspace(colorspace, true);  // as the GL converter (graphics.cpp)
+    // color_vec_y[3] is the limited-range offset; the luma shader adds it since Sunshine #4404.
+    double y = vectors->color_vec_y[3];
     for (int i = 0; i < 3; ++i) {
       y += vectors->color_vec_y[i] * pq_encode(bt2020[i]);
     }
@@ -152,17 +153,17 @@ TEST_F(WaylandHdrLiveTest, VideoMemoryFramesOfAnHdrOutputBecomePq) {
     auto ctx = egl::make_ctx(display.get());
     ASSERT_TRUE(ctx);
 
-    auto nv12 = egl::create_target(1280, 720, AV_PIX_FMT_P010);
+    auto nv12 = egl::create_nv12_target(1280, 720, AV_PIX_FMT_P010);
     ASSERT_TRUE(nv12);
-    auto sws = egl::sws_t::make(1280, 720, 1280, 720, AV_PIX_FMT_P010);
+    auto sws = egl::sws_t::make(1280, 720, 1280, 720, AV_PIX_FMT_P010, false);
     ASSERT_TRUE(sws);
     const video::sunshine_colorspace_t colorspace {video::colorspace_e::bt2020, false, 10};
-    sws->apply_colorspace(colorspace);
+    sws->apply_colorspace(colorspace, false);
 
     auto rgb = egl::import_source(display.get(), descriptor.sd);
     ASSERT_TRUE(rgb);
-    sws->load_vram(descriptor, 0, 0, (*rgb)->tex[0]);
-    ASSERT_EQ(sws->convert((*nv12)->buf), 0);
+    sws->load_vram(descriptor, 0, 0, (*rgb)->tex[0], false);
+    ASSERT_EQ(sws->convert_nv12((*nv12)->buf), 0);
 
     std::vector<std::uint16_t> y_plane(1280 * 720);
     gl::ctx.GetTextureSubImage((*nv12)->tex[0], 0, 0, 0, 0, 1280, 720, 1, GL_RED, GL_UNSIGNED_SHORT, y_plane.size() * 2, y_plane.data());
@@ -185,8 +186,8 @@ TEST_F(WaylandHdrLiveTest, VideoMemoryFramesOfAnHdrOutputBecomePq) {
 
     // An SDR output's frames are not converted, even in an HDR stream (e.g. a PQ framebuffer from KMS).
     descriptor.sdr_white_nits = 0;
-    sws->load_vram(descriptor, 0, 0, (*rgb)->tex[0]);
-    ASSERT_EQ(sws->convert((*nv12)->buf), 0);
+    sws->load_vram(descriptor, 0, 0, (*rgb)->tex[0], false);
+    ASSERT_EQ(sws->convert_nv12((*nv12)->buf), 0);
     gl::ctx.GetTextureSubImage((*nv12)->tex[0], 0, 0, 0, 0, 1280, 720, 1, GL_RED, GL_UNSIGNED_SHORT, y_plane.size() * 2, y_plane.data());
     EXPECT_GT(std::abs(y_plane[360 * 1280 + 640] - center), 128) << "the conversion did not switch off";
   }

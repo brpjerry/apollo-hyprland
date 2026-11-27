@@ -1,35 +1,81 @@
 <template>
-    <div class="card p-2 mt-4">
+    <div class="card">
         <div class="card-body">
             <h2>{{ $t('resource_card.resources') }}</h2>
-            <br>
             <p>{{ $t('resource_card.resources_desc') }}</p>
-            <div class="card-group p-4 align-items-center">
-                <!-- <a class="btn btn-success m-1" href="https://app.lizardbyte.dev" target="_blank">
-                    {{ $t('resource_card.lizardbyte_website') }}</a> -->
-                <a class="btn btn-secondary m-1" href="https://github.com/ClassicOldSong/Apollo/discussions" target="_blank">
-                    <i class="fab fa-fw fa-github"></i> {{ $t('resource_card.github_discussions') }}</a>
-                <a class="btn btn-secondary m-1" href="https://github.com/ClassicOldSong/Apollo/wiki" target="_blank">
-                    <i class="fab fa-fw fa-github"></i> {{ $t('resource_card.github_wiki') }}</a>
-                <a class="btn btn-secondary m-1" href="https://github.com/ClassicOldSong/Apollo/wiki/Stuttering-Clinic" target="_blank">
-                    <i class="fab fa-fw fa-github"></i> {{ $t('resource_card.github_stuttering_clinic') }}</a>
+            <div class="d-flex flex-wrap gap-2 mt-4">
+                <a class="btn btn-info" :href="links.documentation" target="_blank" rel="noopener noreferrer">
+                  <BookOpen :size="18" class="icon"></BookOpen>
+                  {{ $t('resource_card.documentation') }}
+                </a>
+                <a class="btn btn-secondary" :href="links.repository" target="_blank" rel="noopener noreferrer">
+                  <SimpleIcon icon="GitHub" :size="18" class="icon"></SimpleIcon>
+                  {{ $t('resource_card.github_repository') }}
+                </a>
+                <a class="btn btn-secondary" :href="links.wiki" target="_blank" rel="noopener noreferrer">
+                  <SimpleIcon icon="GitHub" :size="18" class="icon"></SimpleIcon>
+                  {{ $t('resource_card.github_wiki') }}
+                </a>
+                <a class="btn btn-secondary" :href="links.stutteringClinic" target="_blank" rel="noopener noreferrer">
+                  <SimpleIcon icon="GitHub" :size="18" class="icon"></SimpleIcon>
+                  {{ $t('resource_card.github_stuttering_clinic') }}
+                </a>
             </div>
         </div>
     </div>
     <!-- Legal -->
-    <div class="card p-2 mt-4">
+    <div class="card mt-4">
         <div class="card-body">
             <h2>{{ $t('resource_card.legal') }}</h2>
-            <br>
             <p>{{ $t('resource_card.legal_desc') }}</p>
-            <div class="card-group p-4 align-items-center">
-                <a class="btn btn-danger m-1" href="https://github.com/ClassicOldSong/Apollo/blob/master/LICENSE"
-                    target="_blank">
-                    <i class="fas fa-fw fa-file-alt"></i> {{ $t('resource_card.license') }}</a>
-                <a class="btn btn-danger m-1" href="https://github.com/ClassicOldSong/Apollo/blob/master/NOTICE"
-                    target="_blank">
-                    <i class="fas fa-fw fa-exclamation"></i> {{ $t('resource_card.third_party_notice') }}</a>
+            <div class="d-flex flex-wrap gap-2 mt-4">
+                <a class="btn btn-danger" :href="links.license" target="_blank" rel="noopener noreferrer">
+                  <FileText :size="18" class="icon"></FileText>
+                  {{ $t('resource_card.license') }}
+                </a>
+                <a class="btn btn-danger" :href="links.notice" target="_blank" rel="noopener noreferrer">
+                  <AlertCircle :size="18" class="icon"></AlertCircle>
+                  {{ $t('resource_card.third_party_notice') }}
+                </a>
             </div>
         </div>
     </div>
 </template>
+
+<script>
+import {
+  AlertCircle,
+  BookOpen,
+  FileText,
+} from '@lucide/vue'
+import SimpleIcon from './SimpleIcon.vue'
+import { APOLLO_WIKI_URL, FORK_URL, apolloWikiPage, forkFile } from './links'
+
+export default {
+  props: {
+    // Kept for callers that pass it; the fork documents one version only.
+    installedVersionNotStable: {
+      type: Boolean,
+      default: false
+    }
+  },
+  components: {
+    SimpleIcon,
+    AlertCircle,
+    BookOpen,
+    FileText,
+  },
+  data() {
+    return {
+      links: {
+        documentation: `${FORK_URL}#readme`,
+        repository: FORK_URL,
+        wiki: APOLLO_WIKI_URL,
+        stutteringClinic: apolloWikiPage('Stuttering-Clinic'),
+        license: forkFile('LICENSE'),
+        notice: forkFile('NOTICE'),
+      },
+    }
+  },
+}
+</script>
