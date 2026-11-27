@@ -81,9 +81,10 @@ namespace file_handler {
     /**
      * @brief Overwrite an existing file in place, keeping its inode (hard links, owner, group, ACLs).
      *
-     * Not atomic: used only where replacing the file would change it in some other way. The file is truncated only
-     * once the opened file is known to be the one inspected earlier: a file put in its place meanwhile (by an editor
-     * or a configuration manager) is left alone, and a FIFO doesn't block the open.
+     * Not atomic: used only where replacing the file would change it in some other way. Before truncating, the opened
+     * file must be a regular file with the device and inode numbers inspected earlier, so a file put in its place
+     * meanwhile (by an editor or a configuration manager) is left alone; only a new file that reuses the inode in
+     * between can't be told apart. Opening a FIFO doesn't block.
      *
      * @param target File to overwrite.
      * @param path Path to name in log messages.

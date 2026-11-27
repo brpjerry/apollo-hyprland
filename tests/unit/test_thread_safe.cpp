@@ -61,9 +61,21 @@ TEST(ThreadSafeEvent, PeekIsSynchronizedWithRaiseAndStop) {
   EXPECT_TRUE(event.peek());
   EXPECT_TRUE(event.running());
 
+  // Reads race stop() and reset() here, not only raise().
+  std::atomic_bool stopped {false};
   std::thread stopper {[&] {
+    for (int i = 0; i < 1000; ++i) {
+      event.stop();
+      event.reset();
+      event.raise(true);
+    }
     event.stop();
+    stopped = true;
   }};
+  while (!stopped) {
+    event.peek();
+    event.running();
+  }
   stopper.join();
   EXPECT_FALSE(event.peek());
   EXPECT_FALSE(event.running());

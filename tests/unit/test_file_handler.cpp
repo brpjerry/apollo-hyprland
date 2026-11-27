@@ -105,6 +105,7 @@ TEST(FileHandlerTests, ReadMissingFileTest) {
   #include <cerrno>
   #include <chrono>
   #include <cstdlib>
+  #include <fcntl.h>
   #include <filesystem>
   #include <fstream>
   #include <future>
@@ -303,7 +304,17 @@ TEST(FileHandlerTests, InPlaceWriteLeavesAFileReplacedMeanwhileAlone) {
   auto result = std::async(std::launch::async, [&] {
     return file_handler::detail::write_in_place(file.c_str(), "ours", fifo.st_dev, fifo.st_ino);
   });
-  ASSERT_EQ(result.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  const bool finished = result.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+  if (!finished) {
+    // A writer stuck opening the FIFO waits for a reader: give it one, so the test fails instead of hanging the suite.
+    // (A death test can't run here: BaseTest already captures stderr.)
+    const int reader = ::open(file.c_str(), O_RDONLY | O_NONBLOCK);
+    result.wait();
+    if (reader >= 0) {
+      ::close(reader);
+    }
+  }
+  EXPECT_TRUE(finished) << "Opening the FIFO blocked";
   EXPECT_NE(result.get(), 0);
 
   fs::remove_all(dir, ec);

@@ -74,13 +74,13 @@ namespace file_handler {
     bool access_acl_absent(long probe_result, int probe_errno);
 
     /**
-     * @brief Overwrite a file in place, provided it is still the regular file inspected earlier.
+     * @brief Overwrite a regular file in place if its device and inode numbers are still the ones inspected.
      *
      * @param path File to overwrite.
      * @param contents New contents.
      * @param device Device of the file inspected earlier.
      * @param inode Inode of the file inspected earlier.
-     * @return ``0`` on success, ``-1`` on failure (another file, or not a regular file, is left as it is).
+     * @return ``0`` on success, ``-1`` on failure. A file of another type or identity is detected before truncating.
      */
     int write_in_place(const char *path, std::string_view contents, std::uint64_t device, std::uint64_t inode);
   }  // namespace detail
