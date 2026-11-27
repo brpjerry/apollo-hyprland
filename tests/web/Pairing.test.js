@@ -426,6 +426,32 @@ describe('OTP pairing', () => {
     wrapper.unmount()
   })
 
+  // The QR code is only redrawn on Save, so nothing may show the edited address before that.
+  // Bugs caught: 0, False positives: 0
+  it('hides the link and QR code while the host is edited, and finishes editing on Save', async () => {
+    vi.stubGlobal('location', { hostname: 'localhost', port: '47990', hash: '' })
+    vi.stubGlobal('QRCode', vi.fn())
+    apiFetch.mockResolvedValueOnce(jsonResponse({ status: true, otp: '4321', ip: '192.168.1.5', name: 'My PC' }))
+    const wrapper = mount(OtpPairing, { global: globalOptions, attachTo: document.body })
+
+    await wrapper.get('#otp-passphrase').setValue('abcd')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await wrapper.get('button[title="pin.otp_edit_host"]').trigger('click')
+    await wrapper.get('#otp-host').setValue('10.0.0.9')
+
+    expect(wrapper.find('a[href^="art://"]').exists()).toBe(false)
+    expect(wrapper.get('.qr-container').isVisible()).toBe(false)
+    await wrapper.get('button[title="pin.otp_edit_host"]').trigger('click')
+    expect(wrapper.find('#otp-host').exists()).toBe(true)
+
+    await wrapper.get('#otp-host').element.parentElement.querySelector('.btn-primary').click()
+    await flushPromises()
+    expect(wrapper.get('a[href^="art://"]').text()).toBe('art://10.0.0.9:47989')
+    expect(QRCode).toHaveBeenLastCalledWith(expect.anything(), expect.stringContaining('art://10.0.0.9:47989'))
+    wrapper.unmount()
+  })
+
   // Bugs caught: 0, False positives: 0
   it('opens the host editor when the server cannot tell its address', async () => {
     vi.useFakeTimers()

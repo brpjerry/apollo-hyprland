@@ -1,11 +1,12 @@
 <template>
   <form class="form d-flex flex-column align-items-center" @submit.prevent="requestOTP">
     <div class="card flex-column d-flex p-4 mb-4 otp-card">
-      <div v-show="showLink" ref="qrContainer" class="qr-container mb-2 p-2 bg-white align-self-center"></div>
+      <!-- The QR code is redrawn on Save, so neither it nor the link is shown while the host is being edited. -->
+      <div v-show="showLink && !editingHost" ref="qrContainer" class="qr-container mb-2 p-2 bg-white align-self-center"></div>
       <p v-if="showLink" class="text-center text-secondary d-flex align-items-center justify-content-center gap-2">
-        <a class="text-secondary" :href="deepLink">art://{{ hostAddr }}:{{ hostPort }}</a>
+        <a v-if="!editingHost" class="text-secondary" :href="deepLink">art://{{ hostAddr }}:{{ hostPort }}</a>
         <button type="button" class="btn btn-link btn-sm p-0 text-secondary" :title="$t('pin.otp_edit_host')"
-                :disabled="editingHost && !hostAddr" @click="editHost">
+                :disabled="editingHost" @click="editingHost = true">
           <pencil :size="16" class="icon"></pencil>
         </button>
       </p>
@@ -151,13 +152,6 @@
         this.otpMessage = this.i18n.t('pin.otp_expired_msg')
         this.otpStatus = 'warning'
         this.passphrase = ''
-      },
-      /** @brief Open or close the host editor; it stays open while it is the only way to enter an address. */
-      editHost() {
-        if (this.editingHost && !this.hostAddr) {
-          return
-        }
-        this.editingHost = !this.editingHost
       },
       async saveHost() {
         if (!this.canSaveHost) {
