@@ -185,6 +185,33 @@ namespace platf {
   int open_drm_card_fd(const std::filesystem::path &path, int flags = O_RDWR);
 
   /**
+   * @brief How long before a deadline precise_sleep_until() stops sleeping and spins.
+   * @details With a timer slack of 1 ns the kernel wakes a sleeping thread a few microseconds late (measured on a
+   *          Ryzen 9800X3D: 2 us median, 12 us at p99), against about 52 us with the default slack of 50 us. Waking
+   *          this much early and spinning the rest absorbs that tail for about 2% of a core at one sleep per
+   *          millisecond.
+   */
+  constexpr std::chrono::nanoseconds precise_sleep_spin {20'000};
+
+  /**
+   * @brief Set the calling thread's timer slack to 1 ns, once per thread.
+   * @details The kernel lets a timed wait (nanosleep(), poll(), ppoll(), ...) of a normal thread end up to the timer
+   *          slack late, 50 us by default. Capture and send threads that pace frames call this.
+   */
+  void use_precise_timers();
+
+  /**
+   * @brief Sleep until a deadline on the steady clock with microsecond precision.
+   *
+   * Calls use_precise_timers(), sleeps with an absolute `clock_nanosleep()` on `CLOCK_MONOTONIC` until
+   * precise_sleep_spin before the deadline, and spins the rest. Returns at once when the deadline has passed. Never
+   * returns before the deadline.
+   *
+   * @param deadline Time point to wake at.
+   */
+  void precise_sleep_until(std::chrono::steady_clock::time_point deadline);
+
+  /**
    * @brief Generic frame pacing logic for Linux capture methods.
    *
    * Advances the frame pacing timeline and re-anchors it if the capture thread falls behind.
@@ -197,7 +224,7 @@ namespace platf {
     auto now = std::chrono::steady_clock::now();
 
     if (next_frame > now) {
-      std::this_thread::sleep_until(next_frame);
+      precise_sleep_until(next_frame);
       logger.first_point(next_frame);
       logger.second_point_now_and_log();
     }

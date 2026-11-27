@@ -35,6 +35,7 @@
 #include <pwd.h>
 #include <sys/resource.h>  // For setpriority
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #if !defined(__FreeBSD__)
@@ -1843,13 +1844,51 @@ namespace platf {
     return std::make_unique<deinit_t>();
   }
 
+  void use_precise_timers() {
+#if !defined(__FreeBSD__)
+    // The default slack of 50 us is added to every timed wait of the thread. Set once per thread.
+    thread_local const bool slack_set = prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL) == 0;
+    (void) slack_set;
+#endif
+  }
+
+  void precise_sleep_until(std::chrono::steady_clock::time_point deadline) {
+    use_precise_timers();
+
+    // steady_clock is CLOCK_MONOTONIC with libstdc++ and libc++ on Linux and FreeBSD.
+    static_assert(std::chrono::steady_clock::is_steady);
+    if (const auto wake = deadline - precise_sleep_spin; wake > std::chrono::steady_clock::now()) {
+      const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wake.time_since_epoch()).count();
+      const timespec ts {.tv_sec = static_cast<time_t>(ns / 1'000'000'000), .tv_nsec = static_cast<long>(ns % 1'000'000'000)};
+      while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR) {
+        // A signal handler ran; the deadline is absolute, so sleep on.
+      }
+    }
+
+    while (std::chrono::steady_clock::now() < deadline) {
+#if defined(__x86_64__) || defined(__i386__)
+      __builtin_ia32_pause();
+#elif defined(__aarch64__)
+      asm volatile("yield");
+#endif
+    }
+  }
+
   /**
-   * @brief Explicitly linux high-precision timer implementation backed by `timerfd`.
+   * @brief High-precision timer for Linux: precise_sleep_until() the end of the duration.
    */
   class linux_high_precision_timer: public high_precision_timer {
   public:
+    /**
+     * @brief Sleep for a duration with microsecond precision.
+     *
+     * @param duration Time to sleep. Zero or negative returns at once.
+     */
     void sleep_for(const std::chrono::nanoseconds &duration) override {
-      std::this_thread::sleep_for(duration);
+      if (duration <= std::chrono::nanoseconds::zero()) {
+        return;
+      }
+      precise_sleep_until(std::chrono::steady_clock::now() + duration);
     }
 
     explicit operator bool() override {

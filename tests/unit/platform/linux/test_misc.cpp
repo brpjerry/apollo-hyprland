@@ -11,19 +11,23 @@
 
   // standard includes
   #include <array>
+  #include <chrono>
   #include <cstdlib>
   #include <cstring>
-  #include <vector>
   #include <optional>
   #include <string>
+  #include <thread>
+  #include <vector>
 
   // system includes
   #include <arpa/inet.h>
   #include <linux/rtnetlink.h>
+  #include <sys/prctl.h>
 
   // local includes
   #include "src/config.h"
   #include "src/logging.h"
+  #include "src/platform/common.h"
   #include "src/platform/linux/misc.h"
   #include "src/utility.h"
 
@@ -236,6 +240,46 @@ TEST(GatewayRouteTest, OnlyTheDefaultRouteCounts) {
   append_netlink_message(datagram, RTM_NEWROUTE, route_payload("192.168.1.1", "192.168.1.50"));
   EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), datagram.size(), local_ip), platf::route_scan_e::found);
   EXPECT_EQ(local_ip, "192.168.1.50");
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(PreciseSleepTest, NeverReturnsBeforeTheDeadline) {
+  for (int i = 0; i < 200; ++i) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds((i % 10) * 50);
+    platf::precise_sleep_until(deadline);
+    ASSERT_GE(std::chrono::steady_clock::now(), deadline) << "sleep " << i;
+  }
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(PreciseSleepTest, SetsTheTimerSlackOfItsThread) {
+  int slack = -1;
+  std::thread worker {[&]() {
+    platf::precise_sleep_until(std::chrono::steady_clock::now() + std::chrono::microseconds(100));
+    slack = prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0);
+  }};
+  worker.join();
+  EXPECT_EQ(slack, 1);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(PreciseSleepTest, PassedDeadlineReturnsAtOnce) {
+  const auto start = std::chrono::steady_clock::now();
+  platf::precise_sleep_until(start - std::chrono::seconds(1));
+  auto timer = platf::create_high_precision_timer();
+  ASSERT_TRUE(timer);
+  EXPECT_TRUE(static_cast<bool>(*timer));
+  timer->sleep_for(std::chrono::nanoseconds(-1'000'000));
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(5));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(PreciseSleepTest, TimerSleepsForTheDuration) {
+  auto timer = platf::create_high_precision_timer();
+  ASSERT_TRUE(timer);
+  const auto start = std::chrono::steady_clock::now();
+  timer->sleep_for(std::chrono::microseconds(500));
+  EXPECT_GE(std::chrono::steady_clock::now() - start, std::chrono::microseconds(500));
 }
 
 #endif  // __linux__
