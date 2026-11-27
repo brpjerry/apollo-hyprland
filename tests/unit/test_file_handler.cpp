@@ -102,7 +102,9 @@ TEST(FileHandlerTests, ReadMissingFileTest) {
 
 #ifndef _WIN32
   #include <filesystem>
+  #include <cstdlib>
   #include <sys/stat.h>
+  #include <sys/xattr.h>
   #include <unistd.h>
 
 // Bugs caught: 0, False positives: 0
@@ -126,11 +128,11 @@ TEST(FileHandlerTests, WriteFileReplacesAtomicallyAndKeepsPermissionsAndSymlinks
   EXPECT_TRUE(fs::is_symlink(link));
   EXPECT_EQ(file_handler::read_file(target.c_str()), "through link");
 
-  // A failed write reports the failure and leaves the old contents (root can write anywhere, so skip that part).
+  // A writable file in a directory we can't create files in is written in place, as the in-place writer did.
   if (::geteuid() != 0) {
     fs::permissions(dir, fs::perms::owner_read | fs::perms::owner_exec);
-    EXPECT_NE(file_handler::write_file(target.c_str(), "lost"), 0);
-    EXPECT_EQ(file_handler::read_file(target.c_str()), "through link");
+    EXPECT_EQ(file_handler::write_file(target.c_str(), "in place"), 0);
+    EXPECT_EQ(file_handler::read_file(target.c_str()), "in place");
     fs::permissions(dir, fs::perms::owner_all);
   }
   std::error_code ec;
@@ -176,6 +178,37 @@ TEST(FileHandlerTests, WriteFileOnlyReplacesWhatItCouldWriteInPlace) {
   EXPECT_EQ(fs::status(secret).permissions() & fs::perms::all, fs::perms::owner_read | fs::perms::owner_write);
 
   fs::permissions(read_only, fs::perms::owner_all);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(FileHandlerTests, WriteFileKeepsHardLinksAndAccessAcls) {
+  namespace fs = std::filesystem;
+  const auto dir = fs::path {SUNSHINE_TEST_BIN_DIR} / "write_file_links";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+
+  // Every hard link sees the new contents: the file is not split into two inodes.
+  const auto file = dir / "sunshine.conf";
+  const auto alias = dir / "alias.conf";
+  ASSERT_EQ(file_handler::write_file(file.c_str(), "old"), 0);
+  fs::create_hard_link(file, alias);
+  ASSERT_EQ(file_handler::write_file(file.c_str(), "new"), 0);
+  EXPECT_EQ(file_handler::read_file(alias.c_str()), "new");
+  EXPECT_EQ(fs::hard_link_count(file), 2U);
+
+  // An access ACL survives the save (skipped where setfacl or ACL support is missing).
+  const auto acl_file = dir / "acl.json";
+  ASSERT_EQ(file_handler::write_file(acl_file.c_str(), "old"), 0);
+  const auto set_acl = std::format("setfacl -m u:nobody:r '{}' 2>/dev/null", acl_file.string());
+  if (std::system(set_acl.c_str()) == 0) {
+    ASSERT_GE(::getxattr(acl_file.c_str(), "system.posix_acl_access", nullptr, 0), 0);
+    ASSERT_EQ(file_handler::write_file(acl_file.c_str(), "new"), 0);
+    EXPECT_EQ(file_handler::read_file(acl_file.c_str()), "new");
+    EXPECT_GE(::getxattr(acl_file.c_str(), "system.posix_acl_access", nullptr, 0), 0);
+  }
+
   std::error_code ec;
   fs::remove_all(dir, ec);
 }
