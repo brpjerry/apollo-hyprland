@@ -5,10 +5,13 @@
 #pragma once
 
 // standard includes
+#include <atomic>
 #include <chrono>
 #include <fcntl.h>
 #include <filesystem>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -210,6 +213,91 @@ namespace platf {
    * @param deadline Time point to wake at.
    */
   void precise_sleep_until(std::chrono::steady_clock::time_point deadline);
+
+  /**
+   * @brief Thread priority requests and the way they are carried out (RTKit, else setpriority()).
+   */
+  namespace thread_priority {
+    /**
+     * @brief Outcome of asking RTKit for a nice level.
+     */
+    enum class rtkit_result_e {
+      ok,  ///< RTKit set the nice level.
+      failed,  ///< RTKit answered but refused, or the call failed.
+      unavailable,  ///< No RTKit on the system bus (or no system bus): it will not be asked again.
+    };
+
+    /**
+     * @brief How a request was carried out.
+     */
+    enum class method_e {
+      rtkit,  ///< RTKit set the nice level.
+      setpriority,  ///< setpriority() set the requested nice level.
+      clamped,  ///< setpriority() set the lowest nice level RLIMIT_NICE allows, above the requested one.
+      failed,  ///< The nice level is unchanged.
+    };
+
+    /**
+     * @brief The system calls a priority request uses, replaceable in tests.
+     */
+    struct backend_t {
+      /// Ask RTKit (MakeThreadHighPriority) for a nice level. The string receives the error message on failure.
+      std::function<rtkit_result_e(pid_t tid, int nice, std::string &error)> rtkit;
+      /// Set a thread's nice level. Returns 0, or the errno of the failure.
+      std::function<int(pid_t tid, int nice)> set_nice;
+      /// Lowest nice level RLIMIT_NICE lets the process set without CAP_SYS_NICE (20 - rlim_cur).
+      std::function<int()> nice_floor;
+    };
+
+    /**
+     * @brief Result of one request.
+     */
+    struct outcome_t {
+      method_e method;  ///< How the request was carried out.
+      int nice;  ///< Nice level the thread has now, when the method is not `failed`.
+      bool warned;  ///< Whether this request logged the warning that is logged once per process.
+    };
+
+    /**
+     * @brief Carries out thread priority requests, logging each kind of failure once per process.
+     *
+     * Negative nice levels (higher priority) are asked of RTKit first. Once RTKit turns out to be missing it is not
+     * asked again. Otherwise, and for nice levels of 0 and above, setpriority() is used. When it is refused and
+     * RLIMIT_NICE allows a level between the requested one and 0, that level is set instead. A refusal is logged
+     * as a warning once, with what would grant the priority, and at debug level after that. Thread-safe.
+     */
+    class adjuster_t {
+    public:
+      /**
+       * @brief Create an adjuster that uses the given system calls.
+       *
+       * @param backend RTKit, setpriority() and RLIMIT_NICE access.
+       */
+      explicit adjuster_t(backend_t backend);
+
+      /**
+       * @brief Set the nice level of a thread.
+       *
+       * @param tid Kernel thread id.
+       * @param nice Requested nice level, -20 to 19.
+       * @param thread_name Name used in log messages.
+       * @return How the request was carried out.
+       */
+      outcome_t apply(pid_t tid, int nice, std::string_view thread_name);
+
+    private:
+      backend_t backend_;  ///< System calls in use.
+      std::atomic<bool> rtkit_unavailable_ {false};  ///< RTKit was found missing; not asked again.
+      std::atomic<bool> warned_ {false};  ///< The refusal warning was logged.
+    };
+
+    /**
+     * @brief The system calls used outside tests: RTKit on the system bus, setpriority() and getrlimit().
+     *
+     * @return Backend for the running system.
+     */
+    backend_t system_backend();
+  }  // namespace thread_priority
 
   /**
    * @brief Generic frame pacing logic for Linux capture methods.

@@ -11,6 +11,7 @@
 
   // standard includes
   #include <array>
+  #include <cerrno>
   #include <chrono>
   #include <cstdlib>
   #include <cstring>
@@ -23,6 +24,8 @@
   #include <arpa/inet.h>
   #include <linux/rtnetlink.h>
   #include <sys/prctl.h>
+  #include <sys/resource.h>
+  #include <unistd.h>
 
   // local includes
   #include "src/config.h"
@@ -240,6 +243,156 @@ TEST(GatewayRouteTest, OnlyTheDefaultRouteCounts) {
   append_netlink_message(datagram, RTM_NEWROUTE, route_payload("192.168.1.1", "192.168.1.50"));
   EXPECT_EQ(platf::scan_gateway_routes(datagram.data(), datagram.size(), local_ip), platf::route_scan_e::found);
   EXPECT_EQ(local_ip, "192.168.1.50");
+}
+
+namespace {
+  namespace tp = platf::thread_priority;
+
+  /**
+   * @brief Fake system calls for thread priority requests, counting how often each is used.
+   */
+  struct fake_priority_backend_t {
+    tp::rtkit_result_e rtkit_result {tp::rtkit_result_e::unavailable};  ///< What RTKit answers.
+    int lowest_allowed {0};  ///< Lowest nice level set_nice accepts; lower ones fail with EACCES.
+    int floor {20};  ///< What nice_floor reports.
+    int rtkit_calls {0};  ///< RTKit requests made.
+    std::vector<int> set_nice_calls;  ///< Nice levels passed to set_nice.
+
+    /**
+     * @brief Backend whose calls go to this fake.
+     *
+     * @return Backend for an adjuster.
+     */
+    tp::backend_t backend() {
+      return {
+        .rtkit = [this](pid_t, int, std::string &error) {
+          ++rtkit_calls;
+          error = "The name is not activatable";
+          return rtkit_result;
+        },
+        .set_nice = [this](pid_t, int nice) {
+          set_nice_calls.push_back(nice);
+          return nice < lowest_allowed ? EACCES : 0;
+        },
+        .nice_floor = [this]() {
+          return floor;
+        },
+      };
+    }
+  };
+}  // namespace
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, RtkitSetsHigherPriority) {
+  fake_priority_backend_t fake;
+  fake.rtkit_result = tp::rtkit_result_e::ok;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  auto outcome = adjuster.apply(1, -10, "test");
+  EXPECT_EQ(outcome.method, tp::method_e::rtkit);
+  EXPECT_EQ(outcome.nice, -10);
+  EXPECT_EQ(fake.rtkit_calls, 1);
+  EXPECT_TRUE(fake.set_nice_calls.empty());
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, MissingRtkitIsAskedOnlyOnce) {
+  fake_priority_backend_t fake;
+  fake.lowest_allowed = -20;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, -10, "first").method, tp::method_e::setpriority);
+  EXPECT_EQ(adjuster.apply(2, -15, "second").method, tp::method_e::setpriority);
+  EXPECT_EQ(fake.rtkit_calls, 1);
+  EXPECT_EQ(fake.set_nice_calls, (std::vector<int> {-10, -15}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, RtkitRefusalIsRetriedOnTheNextThread) {
+  fake_priority_backend_t fake;
+  fake.rtkit_result = tp::rtkit_result_e::failed;
+  fake.lowest_allowed = -20;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  adjuster.apply(1, -10, "first");
+  adjuster.apply(2, -10, "second");
+  EXPECT_EQ(fake.rtkit_calls, 2);
+  EXPECT_EQ(fake.set_nice_calls.size(), 2u);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, RefusalWarnsOncePerProcess) {
+  fake_priority_backend_t fake;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  auto first = adjuster.apply(1, -10, "first");
+  auto second = adjuster.apply(2, -15, "second");
+  auto third = adjuster.apply(3, -10, "third");
+  EXPECT_EQ(first.method, tp::method_e::failed);
+  EXPECT_TRUE(first.warned);
+  EXPECT_EQ(second.method, tp::method_e::failed);
+  EXPECT_FALSE(second.warned);
+  EXPECT_FALSE(third.warned);
+  EXPECT_TRUE(log_checker::line_contains("test_sunshine.log", "Could not raise the priority of thread [first] to nice -10"));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, ClampsToRlimitNice) {
+  fake_priority_backend_t fake;
+  fake.lowest_allowed = -5;
+  fake.floor = -5;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  auto outcome = adjuster.apply(1, -15, "test");
+  EXPECT_EQ(outcome.method, tp::method_e::clamped);
+  EXPECT_EQ(outcome.nice, -5);
+  EXPECT_FALSE(outcome.warned);
+  EXPECT_EQ(fake.set_nice_calls, (std::vector<int> {-15, -5}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, NoClampWhenRlimitNiceAllowsNothing) {
+  fake_priority_backend_t fake;
+  fake.floor = 0;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, -10, "test").method, tp::method_e::failed);
+  EXPECT_EQ(fake.set_nice_calls, (std::vector<int> {-10}));
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, LowerPriorityDoesNotAskRtkit) {
+  fake_priority_backend_t fake;
+  fake.rtkit_result = tp::rtkit_result_e::ok;
+  tp::adjuster_t adjuster {fake.backend()};
+
+  EXPECT_EQ(adjuster.apply(1, 10, "test").method, tp::method_e::setpriority);
+  EXPECT_EQ(fake.rtkit_calls, 0);
+}
+
+// Bugs caught: 0, False positives: 0
+TEST(ThreadPriorityTest, SystemBackendSetsOnlyTheGivenThread) {
+  const auto backend = tp::system_backend();
+  const int main_nice = getpriority(PRIO_PROCESS, static_cast<id_t>(gettid()));
+  if (main_nice >= 19) {
+    GTEST_SKIP() << "The test runs at the lowest priority already";
+  }
+  int thread_nice = -100;
+  int status = -1;
+
+  // Raising the nice level needs no privilege. It is done on a thread of its own, which then ends.
+  std::thread worker {[&]() {
+    status = backend.set_nice(gettid(), main_nice + 1);
+    thread_nice = getpriority(PRIO_PROCESS, static_cast<id_t>(gettid()));
+  }};
+  worker.join();
+
+  EXPECT_EQ(status, 0);
+  EXPECT_EQ(thread_nice, main_nice + 1);
+  EXPECT_EQ(getpriority(PRIO_PROCESS, static_cast<id_t>(gettid())), main_nice);
+  const int floor = backend.nice_floor();
+  EXPECT_GE(floor, -20);
+  EXPECT_LE(floor, 20);
 }
 
 // Bugs caught: 0, False positives: 0
