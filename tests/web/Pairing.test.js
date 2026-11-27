@@ -245,6 +245,27 @@ describe('client manager', () => {
     wrapper.unmount()
   })
 
+  // A successful save closes the submitted draft, so edits made while it is in flight would be lost.
+  // Bugs caught: 0, False positives: 0
+  it('locks the editor while its save is in flight', async () => {
+    const wrapper = await mountManager()
+    let answer
+    apiFetch.mockImplementationOnce(() => new Promise(resolve => { answer = resolve }))
+
+    await wrapper.findAll('.client-row')[1].get('.btn-primary').trigger('click')
+    await wrapper.get('form.client-editor').trigger('submit')
+    await flushPromises()
+
+    for (const id of ['#client-name-c2', '#perm-input_kbd-c2', '#display_mode_override-c2']) {
+      expect(wrapper.get(id).element.matches(':disabled'), id).toBe(true)
+    }
+
+    answer(jsonResponse({ status: false, error: 'Disk full' }))
+    await flushPromises()
+    expect(wrapper.get('#client-name-c2').element.matches(':disabled')).toBe(false)
+    wrapper.unmount()
+  })
+
   // Bugs caught: 0, False positives: 0
   it('keeps an open editor and the client list across a background refresh', async () => {
     const wrapper = await mountManager()
